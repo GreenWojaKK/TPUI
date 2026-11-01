@@ -1,7 +1,7 @@
-//! Arrow 값을 그리드 셀에 그릴 한 줄 미리보기로 바꾼다. worker thread에서 실행한다.
+//! Turns Arrow values into one-line previews drawn in grid cells. Runs on the worker thread.
 //!
-//! 미리보기는 화면에 그리기 위한 요약이다. 긴 문자열과 Binary는 앞부분만 복사하고,
-//! 중첩 값은 개수만 요약한다. 원본 값 전체는 값 상세 보기가 보여준다.
+//! A preview is a summary for drawing. Long strings and Binary copy only their beginning, and
+//! nested values are summarized by count. The value detail view shows the full raw value.
 
 use std::fmt::Write;
 use std::ops::Range;
@@ -12,20 +12,20 @@ use arrow_cast::display::{ArrayFormatter, FormatOptions};
 use arrow_schema::DataType;
 use gpui::SharedString;
 
-/// 문자열 미리보기에 담는 최대 Unicode scalar value 수.
+/// Maximum Unicode scalar values kept in a string preview.
 pub const STRING_PREVIEW_CHARS: usize = 256;
-/// Binary 미리보기에 16진수로 담는 최대 byte 수.
+/// Maximum bytes kept as hexadecimal in a Binary preview.
 pub const BINARY_PREVIEW_BYTES: usize = 32;
 
-/// 셀을 그리는 방식.
+/// How a cell is drawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CellKind {
     Text,
-    /// 오른쪽 정렬하는 수치.
+    /// Right-aligned number.
     Number,
-    /// 빈 문자열과 구분하는 Null.
+    /// Null, distinguished from the empty string.
     Null,
-    /// Struct·List·Map의 개수 요약.
+    /// Count summary of Struct, List or Map.
     Summary,
     Unsupported,
 }
@@ -34,7 +34,7 @@ pub enum CellKind {
 pub struct CellPreview {
     pub text: SharedString,
     pub kind: CellKind,
-    /// 찾기 입력과 값 전체가 같은 셀.
+    /// Cell whose whole value equals the find input.
     pub matched: bool,
 }
 
@@ -52,11 +52,14 @@ impl CellPreview {
     }
 
     fn unsupported(data_type: &DataType) -> Self {
-        Self::new(format!("{data_type} · 표시 미지원"), CellKind::Unsupported)
+        Self::new(
+            format!("{data_type} · display unsupported"),
+            CellKind::Unsupported,
+        )
     }
 }
 
-/// 배열의 `rows` 위치 값을 미리보기로 바꾼다.
+/// Turns the values at positions `rows` of an array into previews.
 pub fn preview_column(array: &dyn Array, rows: Range<usize>) -> Vec<CellPreview> {
     preview_rows(array, &rows.collect::<Vec<_>>())
 }
@@ -80,25 +83,27 @@ fn preview_rows(array: &dyn Array, rows: &[usize]) -> Vec<CellPreview> {
     }
 }
 
-/// Dictionary는 참조된 값의 타입에 따라 표시한다.
+/// Dictionary is displayed by the type of its referenced values.
 fn preview_dictionary(array: &dyn Array, rows: &[usize]) -> Vec<CellPreview> {
     let keys: Vec<Option<usize>> = downcast_dictionary_array!(
         array => rows.iter().map(|&row| array.key(row)).collect(),
-        other => unreachable!("Dictionary가 아닌 타입: {other}")
+        other => unreachable!("not a Dictionary type: {other}")
     );
     let referenced: Vec<usize> = keys.iter().flatten().copied().collect();
     let values = array.as_any_dictionary().values();
     let mut previews = preview_rows(values.as_ref(), &referenced).into_iter();
     keys.into_iter()
         .map(|key| match key {
-            Some(_) => previews.next().expect("참조한 값마다 미리보기가 있다"),
+            Some(_) => previews
+                .next()
+                .expect("every referenced value has a preview"),
             None => CellPreview::null(),
         })
         .collect()
 }
 
-/// 수치·시간 타입은 arrow-cast의 표시 규칙을 따른다. Decimal scale과 시간 정밀도를 유지하고,
-/// timezone이 있는 Timestamp만 그 timezone의 offset을 함께 표시한다.
+/// Numeric and time types follow arrow-cast's display rules. Decimal scale and time precision are kept, and
+/// only Timestamps with a timezone show that timezone's offset.
 fn preview_formatted(array: &dyn Array, rows: &[usize]) -> Vec<CellPreview> {
     let data_type = array.data_type();
     let kind = if is_number(data_type) {
@@ -155,7 +160,7 @@ fn summary_list(len: usize) -> CellPreview {
     CellPreview::new(format!("List [{len}]"), CellKind::Summary)
 }
 
-/// 앞 [`STRING_PREVIEW_CHARS`]개 문자만 복사하고, 줄바꿈과 제어 문자는 표시 기호로 바꾼다.
+/// Copies only the first [`STRING_PREVIEW_CHARS`] characters and replaces newlines and control characters with display symbols.
 fn preview_string(value: &str) -> CellPreview {
     let mut text = String::new();
     let mut chars = value.chars().peekable();
@@ -167,7 +172,7 @@ fn preview_string(value: &str) -> CellPreview {
         taken += 1;
         match ch {
             '\r' => {
-                // `\r\n`은 줄바꿈 하나로 표시한다.
+                // `\r\n` shows as a single newline.
                 if chars.peek() == Some(&'\n') {
                     chars.next();
                     taken += 1;
@@ -186,7 +191,7 @@ fn preview_string(value: &str) -> CellPreview {
     CellPreview::new(text, CellKind::Text)
 }
 
-/// 제어 문자를 Unicode Control Pictures 기호로 바꾼다.
+/// Replaces control characters with Unicode Control Pictures symbols.
 pub(crate) fn control_picture(ch: char) -> char {
     match ch as u32 {
         code @ 0x00..=0x1f => char::from_u32(0x2400 + code).unwrap_or('\u{2426}'),
@@ -195,7 +200,7 @@ pub(crate) fn control_picture(ch: char) -> char {
     }
 }
 
-/// 앞 [`BINARY_PREVIEW_BYTES`] byte의 16진수와 전체 byte 길이를 표시한다.
+/// Shows the first [`BINARY_PREVIEW_BYTES`] bytes in hexadecimal and the total byte length.
 fn preview_binary(bytes: &[u8]) -> CellPreview {
     let mut text = String::with_capacity(BINARY_PREVIEW_BYTES * 2 + 16);
     text.push_str("0x");
@@ -402,6 +407,6 @@ mod tests {
         .unwrap();
         let preview = &preview_column(&array, 0..1)[0];
         assert_eq!(preview.kind, CellKind::Unsupported);
-        assert!(preview.text.ends_with("표시 미지원"));
+        assert!(preview.text.ends_with("display unsupported"));
     }
 }

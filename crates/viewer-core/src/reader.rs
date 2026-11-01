@@ -1,4 +1,4 @@
-//! 선택한 Row Group·행·최상위 컬럼만 읽는 Parquet reader.
+//! Parquet reader that reads only the selected Row Groups, rows and top-level columns.
 
 use std::fs::File;
 use std::ops::Range;
@@ -12,10 +12,10 @@ use parquet::arrow::arrow_reader::{
 
 use crate::{BLOCK_ROWS, BlockRequest, ColumnId, RowGroupIndex, SessionId, ViewerError};
 
-/// 행 범위와 겹치는 블록을 Row Group 순서대로 나열한다.
+/// Lists the blocks overlapping a row range, in Row Group order.
 ///
-/// 블록은 한 Row Group 안에서 [`BLOCK_ROWS`] 경계에 정렬하고, 그룹 끝에서 자른다.
-/// 행 수가 0인 Row Group은 건너뛴다.
+/// Blocks are aligned to [`BLOCK_ROWS`] boundaries within a Row Group and cut at the group's end.
+/// Row Groups with zero rows are skipped.
 pub(crate) fn plan_blocks(
     session: SessionId,
     index: &RowGroupIndex,
@@ -53,10 +53,10 @@ pub(crate) fn plan_blocks(
     blocks
 }
 
-/// 블록의 Row Group 하나와 최상위 컬럼 집합만 디코딩한다.
+/// Decodes only one Row Group of the block and the set of top-level columns.
 ///
-/// `with_row_groups`가 `RowSelection`보다 먼저 적용되므로 selection은 선택한 Row Group 기준
-/// 행 위치로 만든다.
+/// `with_row_groups` is applied before `RowSelection`, so the selection uses row positions relative
+/// to the selected Row Group.
 pub(crate) fn decode_block(
     file: &File,
     metadata: &ArrowReaderMetadata,

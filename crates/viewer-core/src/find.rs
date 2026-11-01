@@ -1,8 +1,8 @@
-//! 찾기. 셀에 표시되는 값 전체가 입력과 같은 셀을 찾는다.
+//! Find. Locates cells whose entire displayed value equals the input.
 //!
-//! 입력은 컬럼별 비교 값으로 해석한다. 수치·시간처럼 표시 텍스트로 바꿔 보이는 값은, 입력을
-//! 컬럼 타입으로 해석한 값의 표시 텍스트가 입력과 같을 때만 비교한다. 표시 텍스트는 값마다
-//! 하나로 정해지므로 값 비교가 표시 텍스트 비교와 같다.
+//! The input is parsed into a comparison value per column. For values shown as display text, such as
+//! numbers and times, a column is compared only when the display text of the parsed value equals the
+//! input. Each value has exactly one display text, so comparing values equals comparing display texts.
 
 use std::sync::Arc;
 
@@ -16,11 +16,11 @@ use crate::row_view::{RowView, TaskStep};
 use crate::scan::ColumnScan;
 use crate::{ColumnId, RowIds, SessionId, ViewerEngine, ViewerError};
 
-/// 찾기 입력을 컬럼별 비교 값으로 해석한 결과.
+/// The find input parsed into a comparison value per column.
 #[derive(Clone, Debug)]
 pub struct FindQuery {
     text: String,
-    /// 비교 대상 컬럼과 그 비교 값. 원본 스키마 순서다.
+    /// Target columns and their comparison values, in source schema order.
     targets: Vec<(ColumnId, ArrayRef)>,
 }
 
@@ -62,12 +62,12 @@ impl FindQuery {
         &self.text
     }
 
-    /// 비교 대상 컬럼. 원본 스키마 순서다.
+    /// Target columns, in source schema order.
     pub fn columns(&self) -> Vec<ColumnId> {
         self.targets.iter().map(|(column, _)| *column).collect()
     }
 
-    /// 배열에서 입력과 같은 셀. 비교 대상이 아닌 컬럼이면 `None`이다.
+    /// Cells of the array equal to the input. `None` if the column is not a target.
     pub fn matches(
         &self,
         column: ColumnId,
@@ -83,15 +83,15 @@ impl FindQuery {
     }
 }
 
-/// 행 보기에서 일치 셀이 있는 원본 행의 bitmap과 일치 셀 수.
+/// Bitmap of source rows with matching cells, and the number of matching cells, for a row view.
 pub struct FindIndex {
     query: FindQuery,
-    /// 원본 행마다 1 bit.
+    /// One bit per source row.
     bitmap: Vec<u64>,
     cells: u64,
 }
 
-/// 일치 위치를 계산하는 작업. 행 보기의 행만 비교 대상 컬럼을 순차 읽기로 읽는다.
+/// Task that computes match positions. Reads the target columns of the row view's rows with a sequential scan.
 pub struct FindTask {
     scan: Option<ColumnScan>,
     filtered: Option<Arc<RowIds>>,
@@ -123,17 +123,17 @@ impl FindTask {
         })
     }
 
-    /// 배치 하나만큼 계산을 진행한다.
+    /// Advances the computation by one batch.
     pub fn step(&mut self) -> Result<TaskStep<FindIndex>, ViewerError> {
         let index = self
             .index
             .as_mut()
-            .ok_or(ViewerError::InvalidRequest("이미 끝난 작업입니다"))?;
+            .ok_or(ViewerError::InvalidRequest("task already finished"))?;
         let Some(scan) = &mut self.scan else {
-            return Ok(TaskStep::Done(self.index.take().expect("결과")));
+            return Ok(TaskStep::Done(self.index.take().expect("result")));
         };
         let Some(batch) = scan.next_batch()? else {
-            return Ok(TaskStep::Done(self.index.take().expect("결과")));
+            return Ok(TaskStep::Done(self.index.take().expect("result")));
         };
         let columns = index.query.columns();
         let mut rows = BooleanBuffer::new_unset(batch.batch.num_rows());
@@ -146,7 +146,9 @@ impl FindTask {
         for ix in rows.set_indices() {
             let sequence = batch.start + ix as u64;
             let row = match &self.filtered {
-                Some(filtered) => filtered.get(sequence as usize).expect("행 목록 안의 위치"),
+                Some(filtered) => filtered
+                    .get(sequence as usize)
+                    .expect("position within the row list"),
                 None => sequence,
             };
             index.bitmap[(row / 64) as usize] |= 1 << (row % 64);
@@ -165,12 +167,12 @@ impl FindIndex {
         &self.query
     }
 
-    /// 행 보기 전체의 일치 셀 수.
+    /// Number of matching cells in the whole row view.
     pub fn cell_count(&self) -> u64 {
         self.cells
     }
 
-    /// bitmap이 쓰는 byte 수.
+    /// Bytes used by the bitmap.
     pub fn byte_size(&self) -> usize {
         self.bitmap.capacity() * 8
     }
@@ -181,8 +183,8 @@ impl FindIndex {
             .is_some_and(|word| word & (1 << (row % 64)) != 0)
     }
 
-    /// `from` 셀 다음(또는 이전)의 일치 셀. 순서는 행 보기의 행 순서, 같은 행 안에서는 컬럼
-    /// 순서이며, 끝에 닿으면 처음으로 돌아간다. `from`이 없으면 처음(또는 끝)부터 찾는다.
+    /// The matching cell after (or before) `from`. Order is the row view's row order, then column order
+    /// within a row, wrapping around at the end. Without `from`, searches from the start (or end).
     pub fn next(
         &self,
         engine: &mut ViewerEngine,
@@ -217,7 +219,7 @@ impl FindIndex {
                 (start, None)
             }
         };
-        // 시작 행에서 시작 컬럼의 다음(이전) 컬럼.
+        // Next (previous) columns after the start column, in the start row.
         if let Some(column) = column
             && self.position_matches(view, start)
         {
@@ -237,7 +239,7 @@ impl FindIndex {
                 return Ok(Some((position, column)));
             }
         }
-        // 다른 행에 일치가 없으면 시작 행으로 돌아온다.
+        // With no match in other rows, come back to the start row.
         if column.is_some() && self.position_matches(view, start) {
             let columns = self.matched_columns(engine, session, view, start, is_cancelled)?;
             return Ok(pick(columns).map(|column| (start, column)));
@@ -249,7 +251,7 @@ impl FindIndex {
         view.file_row(position).is_some_and(|row| self.has_row(row))
     }
 
-    /// 행 보기 위치의 행에서 입력과 같은 컬럼.
+    /// Columns equal to the input in the row at a row view position.
     fn matched_columns(
         &self,
         engine: &mut ViewerEngine,
@@ -274,7 +276,7 @@ impl FindIndex {
         Ok(matched)
     }
 
-    /// `start`를 뺀 다음(이전) 일치 행의 위치. 끝에 닿으면 처음(끝)으로 돌아간다.
+    /// Position of the next (previous) matching row, excluding `start`. Wraps around at the end (start).
     fn next_position(
         &self,
         view: &RowView,
@@ -308,7 +310,7 @@ impl FindIndex {
         Ok(None)
     }
 
-    /// `[from, end)`에서 첫 일치 행.
+    /// First matching row in `[from, end)`.
     fn next_set(&self, from: u64, end: u64) -> Option<u64> {
         let mut row = from;
         while row < end {
@@ -322,7 +324,7 @@ impl FindIndex {
         None
     }
 
-    /// `[floor, before)`에서 마지막 일치 행.
+    /// Last matching row in `[floor, before)`.
     fn previous_set(&self, before: u64, floor: u64) -> Option<u64> {
         let mut end = before;
         while end > floor {
@@ -370,10 +372,10 @@ mod tests {
         assert_eq!(found(&query, 0, strings), Some(vec![true, false, false]));
         let floats: ArrayRef = Arc::new(Float64Array::from(vec![35.5, 35.55]));
         assert_eq!(found(&query, 1, floats), Some(vec![true, false]));
-        // 정수 컬럼은 35.5를 표시할 수 없으므로 비교 대상이 아니다.
+        // An integer column cannot display 35.5, so it is not a target.
         let ints: ArrayRef = Arc::new(Int64Array::from(vec![35]));
         assert_eq!(found(&query, 2, ints), None);
-        // 같은 값이라도 표시 텍스트가 다르면 찾지 않는다.
+        // The same value with a different display text is not found.
         assert!(FindQuery::new(&schema, "35.50").columns() == [ColumnId(0)]);
     }
 

@@ -1,8 +1,8 @@
-//! 열린 파일의 탭 막대. 탭 이름과 활성 표시를 그리고 전환·닫기·순서 이동 입력을 받는다.
+//! Tab bar of open files. Draws tab titles and the active marker, and handles switch, close and reorder input.
 //!
-//! 탭이 많으면 최소 폭까지 폭을 나눠 줄이고, 그래도 넘치면 가로로 스크롤한다. 넘칠 때는 아래쪽에
-//! 스크롤 위치 표시를 그린다. 탭을 끌어 다른 탭 위에 놓으면 그 자리로 옮기고, 끄는 중에 막대 양
-//! 끝에 두면 막대가 그쪽으로 스크롤된다.
+//! With many tabs, widths shrink evenly down to a minimum; beyond that the bar scrolls horizontally and draws a
+//! scroll position indicator at the bottom. Dropping a dragged tab on another tab moves it there, and holding it
+//! near either end of the bar while dragging scrolls the bar that way.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -23,17 +23,17 @@ pub enum TabStatus {
 
 pub struct TabLabel {
     pub title: SharedString,
-    /// 마우스를 올리면 보여주는 전체 경로. 줄어든 탭에서 이름이 잘려도 파일을 구별할 수 있다.
+    /// Full path shown on hover, so files stay distinguishable when shrunk tabs truncate their names.
     pub path: SharedString,
     pub status: TabStatus,
 }
 
-/// 렌더 사이에 유지하는 탭 막대 상태. 스크롤 위치와, 탭을 끌어 막대 끝에 두었을 때의 자동 스크롤
-/// 속도를 담는다.
+/// Tab bar state kept between renders: the scroll position and the auto-scroll speed while a tab is dragged
+/// to an end of the bar.
 #[derive(Clone, Default)]
 pub struct TabBarState {
     scroll: ScrollHandle,
-    /// frame마다 더할 가로 offset. 음수는 왼쪽 탭을 드러낸다. 끄는 중이 아니면 0이다.
+    /// Horizontal offset added each frame. Negative reveals tabs on the left. 0 when not dragging.
     edge_scroll: Rc<Cell<Pixels>>,
 }
 
@@ -42,7 +42,7 @@ impl TabBarState {
         self.scroll.scroll_to_item(ix);
     }
 
-    /// 가로 offset을 `delta`만큼 옮긴다. 이미 끝에 닿아 움직이지 않았으면 `false`다.
+    /// Moves the horizontal offset by `delta`. `false` if already at the end and nothing moved.
     fn scroll_by(&self, delta: Pixels) -> bool {
         let max = self.scroll.max_offset().x;
         let offset = self.scroll.offset();
@@ -52,7 +52,7 @@ impl TabBarState {
     }
 }
 
-/// 끌고 있는 탭. 드래그 미리보기로도 그린다.
+/// The tab being dragged. Also drawn as the drag preview.
 #[derive(Clone)]
 struct DraggedTab {
     index: usize,
@@ -134,7 +134,7 @@ impl RenderOnce for TabBar {
             self.state.edge_scroll.set(px(0.));
         }
         let edge_scroll = self.state.edge_scroll.get();
-        // 끝에 닿을 때까지 frame마다 다시 그려 스크롤을 이어 간다.
+        // Redraw every frame until the end is reached to keep scrolling.
         if edge_scroll != px(0.) && self.state.scroll_by(edge_scroll) {
             window.request_animation_frame();
         }
@@ -214,7 +214,7 @@ impl RenderOnce for TabBar {
                         }),
                 )
         });
-        // 위치 표시는 탭 목록 다음에 그려, 이번 frame의 layout이 정한 스크롤 상태로 계산한다.
+        // The indicator is drawn after the tab list so it uses the scroll state from this frame's layout.
         let scroll = self.state.scroll.clone();
         let indicator = canvas(
             |_, _, _| {},
@@ -251,7 +251,7 @@ impl RenderOnce for TabBar {
                     .on_drag_move::<DraggedTab>(move |event: &DragMoveEvent<DraggedTab>, _, _| {
                         edge.set(edge_scroll_speed(event.bounds, event.event.position));
                     })
-                    // 탭이 아닌 빈 곳에 놓으면 마지막 자리로 옮긴다. 탭 위에 놓으면 탭이 먼저 처리한다.
+                    // Dropping on empty space, not on a tab, moves to the last slot. Drops on a tab are handled by the tab first.
                     .on_drop(move |tab: &DraggedTab, window, cx| {
                         on_move(tab.index, last, window, cx)
                     })
@@ -261,8 +261,8 @@ impl RenderOnce for TabBar {
     }
 }
 
-/// 끌고 있는 탭이 막대 양 끝 가까이 있을 때 frame마다 스크롤할 거리. 끝에 가까울수록 빠르고,
-/// 막대 높이를 벗어나거나 끝에서 멀면 0이다.
+/// Distance to scroll per frame while a dragged tab is near either end of the bar. Faster closer to the end;
+/// 0 outside the bar height or far from the ends.
 fn edge_scroll_speed(bounds: gpui::Bounds<Pixels>, position: Point<Pixels>) -> Pixels {
     if position.y < bounds.top() || position.y > bounds.bottom() {
         return px(0.);
@@ -277,11 +277,11 @@ fn edge_scroll_speed(bounds: gpui::Bounds<Pixels>, position: Point<Pixels>) -> P
     } else {
         return px(0.);
     };
-    // offset이 음수일수록 오른쪽을 보므로, 오른쪽 끝에서는 offset을 줄인다.
+    // A more negative offset shows more of the right side, so the right end decreases the offset.
     -theme::TAB_DRAG_SCROLL_STEP * (depth / edge)
 }
 
-/// 탭이 막대 폭을 넘칠 때 스크롤 위치 표시의 왼쪽 위치와 폭. 넘치지 않으면 `None`이다.
+/// Left position and width of the scroll indicator when tabs overflow the bar. `None` if they fit.
 fn scroll_indicator(scroll: &ScrollHandle) -> Option<(Pixels, Pixels)> {
     let view = scroll.bounds().size.width;
     let hidden = scroll.max_offset().x;
@@ -311,7 +311,7 @@ mod tests {
 
     #[test]
     fn left_edge_reveals_left_tabs_and_right_edge_reveals_right_tabs() {
-        // offset이 커지면(0에 가까워지면) 왼쪽 탭이 드러난다.
+        // A larger offset (closer to 0) reveals tabs on the left.
         let left = edge_scroll_speed(bar(), point(px(100.), px(60.)));
         assert_eq!(left, theme::TAB_DRAG_SCROLL_STEP);
         let right = edge_scroll_speed(bar(), point(px(700.), px(60.)));

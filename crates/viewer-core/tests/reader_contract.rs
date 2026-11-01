@@ -19,7 +19,7 @@ fn sample_schema() -> SchemaRef {
     ]))
 }
 
-/// `start`부터 `len`개의 id와, 3행마다 Null이 섞인 이름 컬럼을 만든다.
+/// `len` ids starting at `start`, and a name column with Null every third row.
 fn sample_batch(schema: &SchemaRef, start: i64, len: usize) -> RecordBatch {
     let ids: Int64Array = (start..start + len as i64).collect();
     let names: StringArray = (start..start + len as i64)
@@ -32,7 +32,7 @@ fn sample_batch(schema: &SchemaRef, start: i64, len: usize) -> RecordBatch {
     .unwrap()
 }
 
-/// 배치를 Row Group당 최대 `rows_per_group`행으로 나눠 쓴다.
+/// Writes the batch split into Row Groups of at most `rows_per_group` rows.
 fn write_parquet(path: &Path, schema: SchemaRef, batches: &[RecordBatch], rows_per_group: usize) {
     let props = WriterProperties::builder()
         .set_max_row_group_row_count(Some(rows_per_group))
@@ -189,7 +189,7 @@ fn opening_does_not_modify_file() {
     assert!(!engine.is_open(SessionId(1)));
 }
 
-/// id, Null이 섞인 이름, 문자열 List, Struct, 문자열→정수 Map 컬럼을 가진 배치.
+/// Batch with id, names mixed with Null, a string List, a Struct, and a string→integer Map column.
 fn nested_batch(len: usize) -> RecordBatch {
     let ids: Int64Array = (0..len as i64).collect();
     let names: StringArray = (0..len)
@@ -262,7 +262,7 @@ fn reads_selected_rows_and_columns_across_row_groups() {
 
     let mut engine = ViewerEngine::new();
     engine.open(SessionId(1), &path).unwrap();
-    // 정렬되지 않고 중복된 컬럼 요청은 원본 스키마 순서로 정리된다.
+    // Unsorted, duplicated column requests are normalized to source schema order.
     let blocks = engine
         .plan_window(&window(1, 900..1600, &[4, 0, 2, 0, 3, 1]))
         .unwrap();
@@ -479,7 +479,7 @@ fn shares_one_cache_budget_across_sessions() {
         })
         .collect();
 
-    // 블록 두세 개 크기만 담는 예산으로 두 파일을 번갈아 읽는다.
+    // Read two files alternately with a budget that holds only two or three blocks.
     let mut probe = ViewerEngine::new();
     probe.open(SessionId(99), &paths[0]).unwrap();
     let first = probe

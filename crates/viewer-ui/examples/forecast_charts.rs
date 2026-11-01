@@ -1,11 +1,11 @@
-//! 확률예측 explorer 데이터(`explorer-data.json`)를 차트 모듈로 그리는 예제.
+//! Example that draws probabilistic forecast explorer data (`explorer-data.json`) with the chart module.
 //!
 //! ```text
 //! cargo run -p viewer-ui --example forecast_charts -- <explorer-data.json> [YYYY-MM-DD]
 //! ```
 //!
-//! 날짜별 24시간 예측구간, 계절별 편향 선 그래프, 분위수 신뢰도, 계절 × 시간대 편향 히트맵을
-//! 그린다. 값은 파일에 있는 그대로 쓰고 다시 계산하지 않는다.
+//! Draws the 24-hour prediction intervals of a date, seasonal bias lines, quantile reliability and a season × hour
+//! bias heatmap. Values are used as stored in the file, never recomputed.
 
 use std::path::PathBuf;
 
@@ -20,7 +20,7 @@ use viewer_ui::heatmap::{DivergingScale, Heatmap};
 use viewer_ui::theme;
 use viewer_ui::widgets::small_button;
 
-/// 분위수 7개(0.05·0.1·0.25·0.5·0.75·0.9·0.95) 중 띠의 아래·위와 투명도.
+/// Lower and upper quantile of each band among the 7 quantiles (0.05·0.1·0.25·0.5·0.75·0.9·0.95), and its opacity.
 const BANDS: [(usize, usize, f32); 3] = [(0, 6, 0.10), (1, 5, 0.14), (2, 4, 0.20)];
 const MEDIAN: usize = 3;
 
@@ -29,12 +29,12 @@ struct Day {
     group: String,
     capacity_mw: f64,
     actual: Vec<Option<f64>>,
-    /// 전문가 순서대로 `[시각][분위수]`.
+    /// `[hour][quantile]` per expert, in expert order.
     quantiles: Vec<Vec<Vec<f64>>>,
 }
 
 struct ForecastData {
-    /// (ID, 표시 이름).
+    /// (ID, display name).
     experts: Vec<(String, String)>,
     seasons: Vec<String>,
     dates: Vec<String>,
@@ -51,20 +51,20 @@ fn load(path: &PathBuf) -> Result<ForecastData, String> {
     let root: Value = serde_json::from_str(&text).map_err(|err| err.to_string())?;
     let experts: Vec<(String, String)> = root["experts"]
         .as_object()
-        .ok_or("experts가 없습니다")?
+        .ok_or("missing experts")?
         .iter()
         .map(|(id, meta)| (id.clone(), meta["label"].as_str().unwrap_or(id).to_string()))
         .collect();
     let seasons = root["seasons"]
         .as_array()
-        .ok_or("seasons가 없습니다")?
+        .ok_or("missing seasons")?
         .iter()
         .filter_map(|season| season.as_str().map(str::to_string))
         .collect();
     let mut dates: Vec<String> = Vec::new();
     let days = root["rows"]
         .as_array()
-        .ok_or("rows가 없습니다")?
+        .ok_or("missing rows")?
         .iter()
         .map(|row| {
             let date = row["date"].as_str().unwrap_or_default().to_string();
@@ -112,7 +112,7 @@ fn load(path: &PathBuf) -> Result<ForecastData, String> {
 struct ForecastCharts {
     data: ForecastData,
     date: usize,
-    /// 마우스가 올라간 차트와 시각 순번.
+    /// Hovered chart and hour index.
     hover: Option<(usize, usize)>,
 }
 
@@ -160,7 +160,7 @@ impl ForecastCharts {
             .collect()
     }
 
-    /// 날짜·그룹·전문가 하나의 24시간 예측구간 차트.
+    /// 24-hour prediction interval chart of one date, group and expert.
     fn fan_chart(
         &self,
         panel: usize,
@@ -177,7 +177,7 @@ impl ForecastCharts {
         let mut chart = LineChart::new(
             Axis::new(1., 24.)
                 .ticks([1., 6., 12., 18., 24.].map(|h| (h, format!("{h}").into())))
-                .title("종료 시각 (KST)"),
+                .title("Hour ending (KST)"),
             Axis::new(0., y_max).nice_ticks(4).title("MWh"),
         );
         for (lower, upper, alpha) in BANDS {
@@ -208,7 +208,7 @@ impl ForecastCharts {
 
     fn hover_text(&self) -> SharedString {
         let Some((panel, hour)) = self.hover else {
-            return "차트에 마우스를 올리면 그 시각의 값을 표시합니다.".into();
+            return "Hover over a chart to show the values at that hour.".into();
         };
         let days = self.selected_days();
         let experts = self.data.experts.len();
@@ -224,7 +224,7 @@ impl ForecastCharts {
             .map(|(ix, (_, label))| {
                 let q = &day.quantiles[ix][hour];
                 format!(
-                    "{label} 중앙값 {}, 80% [{}, {}]",
+                    "{label} median {}, 80% [{}, {}]",
                     fmt(q.get(MEDIAN).copied()),
                     fmt(q.get(1).copied()),
                     fmt(q.get(5).copied())
@@ -232,7 +232,7 @@ impl ForecastCharts {
             })
             .collect();
         format!(
-            "{} {} {}시 · 실제 {} · {} MWh",
+            "{} {} hour {} · actual {} · {} MWh",
             day.date,
             day.group,
             hour + 1,
@@ -242,7 +242,7 @@ impl ForecastCharts {
         .into()
     }
 
-    /// 계절별 중앙값 편향(용량 대비 %). 전문가 × 그룹마다 선 하나.
+    /// Seasonal median bias (% of capacity). One line per expert × group.
     fn seasonal_chart(&self) -> impl IntoElement + use<> {
         let seasons = &self.data.seasons;
         let rows = self.data.tables["seasonal_summary"]
@@ -290,7 +290,7 @@ impl ForecastCharts {
             ),
             Axis::new(-bound, bound)
                 .nice_ticks(4)
-                .title("중앙값 편향 / 용량 (%)"),
+                .title("Median bias / capacity (%)"),
         )
         .layer(Rule::new(
             (-1., 0.),
@@ -303,7 +303,7 @@ impl ForecastCharts {
         chart
     }
 
-    /// 한 그룹·계절의 분위수 신뢰도. 띠는 P(Y<q)와 P(Y≤q) 사이다.
+    /// Quantile reliability of one group and season. The band spans P(Y<q) to P(Y≤q).
     fn reliability_chart(&self, group: &str, season: &str) -> impl IntoElement + use<> {
         let rows = self.data.tables["reliability"]
             .as_array()
@@ -312,7 +312,7 @@ impl ForecastCharts {
         let mut chart = LineChart::new(
             Axis::new(0., 1.)
                 .nice_ticks(4)
-                .title(format!("분위수 수준 · {group} · {season}")),
+                .title(format!("Quantile level · {group} · {season}")),
             Axis::new(0., 1.).nice_ticks(4).title("P(Y<q) ~ P(Y≤q)"),
         )
         .layer(Rule::new((0., 0.), (1., 1.), theme::text_muted().into()).dashed(px(2.), px(3.)));
@@ -343,7 +343,7 @@ impl ForecastCharts {
         chart
     }
 
-    /// 첫 전문가·한 그룹의 계절 × 시간대 중앙값 편향(용량 대비 %).
+    /// Season × hour median bias (% of capacity) of the first expert and one group.
     fn hourly_heatmap(&self, group: &str) -> impl IntoElement + use<> {
         let rows = self.data.tables["hourly_bias"]
             .as_array()
@@ -458,7 +458,7 @@ impl Render for ForecastCharts {
                     .items_center()
                     .gap_2()
                     .p_2()
-                    .child(small_button("previous", "← 이전").on_click(
+                    .child(small_button("previous", "← Previous").on_click(
                         cx.listener(|this, _: &ClickEvent, _, cx| this.move_date(-1, cx)),
                     ))
                     .child(
@@ -468,7 +468,7 @@ impl Render for ForecastCharts {
                             .child(self.data.dates[self.date].clone()),
                     )
                     .child(
-                        small_button("next", "다음 →").on_click(
+                        small_button("next", "Next →").on_click(
                             cx.listener(|this, _: &ClickEvent, _, cx| this.move_date(1, cx)),
                         ),
                     )
@@ -480,22 +480,22 @@ impl Render for ForecastCharts {
                     .flex()
                     .flex_wrap()
                     .child(panel(
-                        "계절별 중앙값 편향 (실선 G1 · 점선 G2)",
+                        "Seasonal median bias (solid G1 · dashed G2)",
                         240.,
                         self.seasonal_chart(),
                     ))
                     .child(panel(
-                        "분위수 신뢰도",
+                        "Quantile reliability",
                         240.,
                         self.reliability_chart("G1", &summer),
                     ))
                     .child(panel(
-                        format!("계절 × 시간대 편향 · {} · G1", self.data.experts[0].1),
+                        format!("Season × hour bias · {} · G1", self.data.experts[0].1),
                         200.,
                         self.hourly_heatmap("G1"),
                     ))
                     .child(panel(
-                        format!("계절 × 시간대 편향 · {} · G2", self.data.experts[0].1),
+                        format!("Season × hour bias · {} · G2", self.data.experts[0].1),
                         200.,
                         self.hourly_heatmap("G2"),
                     )),
@@ -506,13 +506,13 @@ impl Render for ForecastCharts {
 fn main() {
     let mut args = std::env::args().skip(1);
     let Some(path) = args.next().map(PathBuf::from) else {
-        eprintln!("사용법: forecast_charts <explorer-data.json> [YYYY-MM-DD]");
+        eprintln!("usage: forecast_charts <explorer-data.json> [YYYY-MM-DD]");
         std::process::exit(2);
     };
     let data = match load(&path) {
         Ok(data) => data,
         Err(err) => {
-            eprintln!("데이터를 읽을 수 없습니다: {err}");
+            eprintln!("cannot read data: {err}");
             std::process::exit(1);
         }
     };
@@ -527,7 +527,7 @@ fn main() {
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: Some(TitlebarOptions {
-                    title: Some("확률예측 차트".into()),
+                    title: Some("Forecast charts".into()),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -540,7 +540,7 @@ fn main() {
                 })
             },
         )
-        .expect("창을 열 수 없습니다");
+        .expect("cannot open the window");
         cx.on_window_closed(|cx, _| cx.quit()).detach();
         cx.activate(true);
     });

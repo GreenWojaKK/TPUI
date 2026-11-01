@@ -21,9 +21,9 @@ use crate::{
     SessionId, ValueRequest, ValueSlice, ViewerError, WindowRequest,
 };
 
-/// 여러 파일을 세션별로 읽기 전용으로 열어 두는 동기 엔진. 호출 시점은 worker가 관리한다.
+/// Synchronous engine that keeps several files open read-only, one per session. The worker decides when it is called.
 ///
-/// 디코딩한 블록은 모든 세션이 공유하는 byte 예산의 LRU 캐시에 둔다.
+/// Decoded blocks live in an LRU cache with a byte budget shared by all sessions.
 pub struct ViewerEngine {
     datasets: HashMap<SessionId, OpenDataset>,
     cache: BlockCache,
@@ -35,10 +35,10 @@ impl Default for ViewerEngine {
     }
 }
 
-/// 열린 파일의 세션 상태. 파일 핸들과 메타데이터는 세션 동안 재사용한다.
+/// Session state of an open file. The file handle and metadata are reused for the whole session.
 struct OpenDataset {
     file: File,
-    /// 열 때 확인한 파일 크기와 수정 시각. 읽기 전후에 비교해 파일 변경을 감지한다.
+    /// File size and modification time seen at open. Compared before and after reads to detect changes.
     file_len: u64,
     modified: Option<SystemTime>,
     metadata: ArrowReaderMetadata,
@@ -67,15 +67,15 @@ impl ViewerEngine {
         }
     }
 
-    /// 캐시가 유지하는 Arrow buffer의 byte 수.
+    /// Bytes of Arrow buffers held by the cache.
     pub fn cache_bytes(&self) -> usize {
         self.cache.used_bytes()
     }
 
-    /// 파일을 읽기 전용으로 열어 세션으로 추가하고 Footer와 메타데이터만 읽는다. 데이터
-    /// 페이지는 읽지 않으며, 다른 세션은 그대로 둔다.
+    /// Opens the file read-only as a new session and reads only the footer and metadata. Data
+    /// pages are not read, and other sessions are left untouched.
     ///
-    /// 같은 세션 번호가 이미 열려 있으면 성공 여부와 관계없이 먼저 닫는다.
+    /// If the session number is already open, it is closed first, whether or not the open succeeds.
     pub fn open(&mut self, session: SessionId, path: &Path) -> Result<DatasetInfo, ViewerError> {
         self.close(session);
 
@@ -113,15 +113,15 @@ impl ViewerEngine {
         Ok(info)
     }
 
-    /// 요청한 행·열 범위를 Row Group 안의 정렬된 블록 요청으로 나눈다. I/O는 실행하지 않는다.
+    /// Splits the requested row and column ranges into sorted block requests within Row Groups. Performs no I/O.
     ///
-    /// 행 범위는 `[0, total_rows)`와 교차하고, 컬럼은 원본 스키마 순서로 정렬·중복 제거한다.
-    /// 교집합이 비면 빈 목록을 돌려준다.
+    /// Rows are intersected with `[0, total_rows)`; columns are sorted into source schema order and deduplicated.
+    /// An empty intersection yields an empty list.
     pub fn plan_window(&self, request: &WindowRequest) -> Result<Vec<BlockRequest>, ViewerError> {
         let dataset = self.dataset(request.session)?;
         if request.rows.start > request.rows.end {
             return Err(ViewerError::InvalidRequest(
-                "행 범위의 시작이 끝보다 큽니다",
+                "row range start is greater than its end",
             ));
         }
         let field_count = dataset.metadata.schema().fields().len();
@@ -136,8 +136,8 @@ impl ViewerEngine {
         ))
     }
 
-    /// 블록 하나를 캐시에서 찾거나 디코딩한다. 디코딩한 블록은 캐시에 넣는다. 배치 처리 전후로
-    /// `is_cancelled`를 확인한다.
+    /// Finds one block in the cache or decodes it, inserting decoded blocks into the cache. Checks
+    /// `is_cancelled` before and after batch processing.
     pub fn read_block(
         &mut self,
         block: &BlockRequest,
@@ -170,8 +170,8 @@ impl ViewerEngine {
         })
     }
 
-    /// 셀 하나의 원본 값을 읽는다. 블록 읽기와 같은 규칙으로 대상 행이 속한 블록을 정하고, 대상
-    /// 컬럼 하나만 디코딩한 뒤 그 셀만 담은 길이 1의 새 배열로 복사한다.
+    /// Reads the raw value of one cell. Picks the block holding the row with the same rules as block reads,
+    /// decodes only the target column, and copies just that cell into a new array of length 1.
     pub fn read_value(
         &mut self,
         request: &ValueRequest,
@@ -180,12 +180,10 @@ impl ViewerEngine {
         let dataset = lookup(&self.datasets, request.session)?;
         let schema = dataset.metadata.schema();
         let Some(field) = schema.fields().get(request.column.0).cloned() else {
-            return Err(ViewerError::InvalidRequest(
-                "스키마 범위를 벗어난 컬럼입니다",
-            ));
+            return Err(ViewerError::InvalidRequest("column is outside the schema"));
         };
         let Some((row_group, group_row)) = dataset.index.locate(request.row) else {
-            return Err(ViewerError::InvalidRequest("파일 범위를 벗어난 행입니다"));
+            return Err(ViewerError::InvalidRequest("row is outside the file"));
         };
         let group = dataset.index.row_group_range(row_group);
         let block_start = group_row / BLOCK_ROWS * BLOCK_ROWS;
@@ -199,7 +197,7 @@ impl ViewerEngine {
         };
 
         self.ensure_unchanged(request.session)?;
-        // 화면 범위를 읽으며 캐시에 넣은 블록에 대상 컬럼이 있으면 I/O 없이 쓴다.
+        // A block cached while reading the visible range is reused without I/O if it has the target column.
         let cached =
             self.cache
                 .find_column(request.session, row_group, block_start, request.column);
@@ -238,8 +236,8 @@ impl ViewerEngine {
         })
     }
 
-    /// 원본 행 목록의 행을 그 순서대로 읽는다. 행마다 속한 블록을 캐시에서 찾거나 디코딩하고,
-    /// 결과 배치의 i번째 행은 `rows[i]`다. 컬럼은 원본 스키마 순서로 정렬·중복 제거한다.
+    /// Reads rows from a list of source rows, in list order. Each row's block is found in the cache or decoded,
+    /// and row i of the result is `rows[i]`. Columns are sorted into source schema order and deduplicated.
     pub fn read_rows(
         &mut self,
         session: SessionId,
@@ -255,7 +253,7 @@ impl ViewerEngine {
         let mut indices = Vec::with_capacity(rows.len());
         for &row in rows {
             let Some((row_group, group_row)) = dataset.index.locate(row) else {
-                return Err(ViewerError::InvalidRequest("파일 범위를 벗어난 행입니다"));
+                return Err(ViewerError::InvalidRequest("row is outside the file"));
             };
             let block_start = group_row / BLOCK_ROWS * BLOCK_ROWS;
             let ix = match block_ix.entry((row_group, block_start)) {
@@ -292,8 +290,8 @@ impl ViewerEngine {
         interleave_record_batch(&refs, &indices).map_err(|err| ViewerError::Decode(err.into()))
     }
 
-    /// 지정한 컬럼을 Row Group 순서로 읽는 순차 읽기를 만든다. `selection`은 오름차순 원본 행
-    /// 목록이며, 있으면 그 행만 읽는다. 순차 읽기는 캐시를 쓰지 않는다.
+    /// Creates a sequential scan reading the given columns in Row Group order. `selection` is an ascending
+    /// list of source rows; if present, only those rows are read. Scans do not use the cache.
     pub fn scan(
         &self,
         session: SessionId,
@@ -303,7 +301,7 @@ impl ViewerEngine {
         let dataset = self.dataset(session)?;
         let columns = normalize_columns(columns, dataset.metadata.schema().fields().len())?;
         if columns.is_empty() {
-            return Err(ViewerError::InvalidRequest("읽을 컬럼이 없습니다"));
+            return Err(ViewerError::InvalidRequest("no columns to read"));
         }
         dataset.ensure_unchanged()?;
         let groups = (0..dataset.index.row_group_count())
@@ -320,7 +318,7 @@ impl ViewerEngine {
         ))
     }
 
-    /// 파일 구조. 메타데이터에 적힌 저장 정보만 쓰고 데이터 페이지는 읽지 않는다.
+    /// File structure. Uses only the storage information in the metadata and reads no data pages.
     pub fn file_structure(&self, session: SessionId) -> Result<FileStructure, ViewerError> {
         let dataset = self.dataset(session)?;
         Ok(structure::file_structure(
@@ -329,7 +327,7 @@ impl ViewerEngine {
         ))
     }
 
-    /// Row Group 하나의 leaf 컬럼별 저장 정보.
+    /// Per-leaf-column storage information of one Row Group.
     pub fn row_group_columns(
         &self,
         session: SessionId,
@@ -337,7 +335,7 @@ impl ViewerEngine {
     ) -> Result<Vec<ColumnChunkInfo>, ViewerError> {
         let dataset = self.dataset(session)?;
         if row_group >= dataset.index.row_group_count() {
-            return Err(ViewerError::InvalidRequest("Row Group 범위를 벗어났습니다"));
+            return Err(ViewerError::InvalidRequest("Row Group is out of range"));
         }
         Ok(structure::column_infos(
             dataset.metadata.metadata(),
@@ -346,17 +344,17 @@ impl ViewerEngine {
         ))
     }
 
-    /// 세션 파일의 Arrow 스키마.
+    /// Arrow schema of the session's file.
     pub fn schema(&self, session: SessionId) -> Result<SchemaRef, ViewerError> {
         Ok(self.dataset(session)?.metadata.schema().clone())
     }
 
-    /// 세션 파일의 전체 행 수.
+    /// Total rows of the session's file.
     pub fn total_rows(&self, session: SessionId) -> Result<u64, ViewerError> {
         Ok(self.dataset(session)?.index.total_rows())
     }
 
-    /// 세션의 파일 핸들, 메타데이터, 인덱스를 해제한다. 열려 있지 않은 세션이면 아무것도 하지 않는다.
+    /// Releases the session's file handle, metadata and index. Does nothing if the session is not open.
     pub fn close(&mut self, session: SessionId) {
         self.datasets.remove(&session);
         self.cache.remove_session(session);
@@ -370,7 +368,7 @@ impl ViewerEngine {
         lookup(&self.datasets, session)
     }
 
-    /// 파일이 열린 뒤 바뀌었으면 그 세션의 캐시 항목을 버리고 `FileChanged`를 돌려준다.
+    /// If the file changed after opening, drops the session's cache entries and returns `FileChanged`.
     fn ensure_unchanged(&mut self, session: SessionId) -> Result<(), ViewerError> {
         let result = lookup(&self.datasets, session)?.ensure_unchanged();
         if matches!(result, Err(ViewerError::FileChanged)) {
@@ -387,15 +385,13 @@ fn lookup(
     datasets.get(&session).ok_or(ViewerError::StaleSession)
 }
 
-/// 컬럼을 원본 스키마 순서로 정렬하고 중복을 제거한다. 범위를 벗어난 ID는 오류다.
+/// Sorts columns into source schema order and removes duplicates. Out-of-range IDs are an error.
 fn normalize_columns(
     columns: &[ColumnId],
     field_count: usize,
 ) -> Result<Vec<ColumnId>, ViewerError> {
     if columns.iter().any(|column| column.0 >= field_count) {
-        return Err(ViewerError::InvalidRequest(
-            "스키마 범위를 벗어난 컬럼입니다",
-        ));
+        return Err(ViewerError::InvalidRequest("column is outside the schema"));
     }
     let mut columns = columns.to_vec();
     columns.sort_unstable();

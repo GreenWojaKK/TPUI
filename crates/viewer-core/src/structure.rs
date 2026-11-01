@@ -1,5 +1,5 @@
-//! 파일 구조. Parquet 메타데이터에 적힌 저장 정보만으로 컬럼·Row Group의 크기, 압축, 인코딩,
-//! 통계를 만든다. 데이터 페이지는 읽지 않는다.
+//! File structure. Builds column and Row Group sizes, compression, encodings and statistics from the
+//! storage information in the Parquet metadata alone. Data pages are not read.
 
 use std::collections::BTreeSet;
 
@@ -11,35 +11,35 @@ use parquet::arrow::arrow_reader::statistics::StatisticsConverter;
 use parquet::basic::LogicalType;
 use parquet::file::metadata::ParquetMetaData;
 
-/// 파일 전체의 구조.
+/// Structure of the whole file.
 #[derive(Clone, Debug)]
 pub struct FileStructure {
-    /// Parquet 형식 버전.
+    /// Parquet format version.
     pub format_version: i32,
-    /// 파일을 쓴 프로그램.
+    /// Program that wrote the file.
     pub created_by: Option<String>,
-    /// 파일에 적힌 key-value 메타데이터의 key와 값의 byte 길이.
+    /// Keys of the file's key-value metadata and the byte length of each value.
     pub key_values: Vec<(String, usize)>,
     pub row_groups: Vec<RowGroupInfo>,
-    /// 모든 Row Group을 합친 leaf 컬럼별 정보.
+    /// Per-leaf-column information over all Row Groups.
     pub columns: Vec<ColumnChunkInfo>,
 }
 
-/// Row Group 하나의 행 수와 크기.
+/// Row count and size of one Row Group.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RowGroupInfo {
     pub rows: u64,
-    /// 압축 후 크기(byte).
+    /// Compressed size in bytes.
     pub compressed: u64,
-    /// 압축 전 크기(byte).
+    /// Uncompressed size in bytes.
     pub uncompressed: u64,
 }
 
-/// leaf 컬럼 하나의 저장 정보. 여러 Row Group을 합쳤으면 크기와 null 수는 합계, 최솟값·최댓값은
-/// 전체의 최솟값·최댓값이다.
+/// Storage information of one leaf column. Over several Row Groups, sizes and null counts are sums, and min/max
+/// are the overall minimum and maximum.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ColumnChunkInfo {
-    /// 점으로 이은 컬럼 경로. 예: `address.city`.
+    /// Column path joined with dots, e.g. `address.city`.
     pub path: String,
     pub physical_type: String,
     pub logical_type: Option<String>,
@@ -47,24 +47,24 @@ pub struct ColumnChunkInfo {
     pub encodings: Vec<String>,
     pub compressed: u64,
     pub uncompressed: u64,
-    /// 모든 Row Group에 null 수가 적혀 있을 때의 합계.
+    /// Sum of null counts when every Row Group records one.
     pub nulls: Option<u64>,
     pub min: Option<StatValue>,
     pub max: Option<StatValue>,
-    /// 모든 Row Group에 페이지 인덱스가 있다.
+    /// Every Row Group has a page index.
     pub page_index: bool,
-    /// 모든 Row Group에 Bloom filter가 있다.
+    /// Every Row Group has a Bloom filter.
     pub bloom_filter: bool,
 }
 
-/// 통계 값의 표시 텍스트. `exact`가 거짓이면 파일에 잘라 적힌 근삿값이다.
+/// Display text of a statistics value. If `exact` is false, it is an approximation truncated in the file.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StatValue {
     pub text: String,
     pub exact: bool,
 }
 
-/// 파일 전체의 구조를 만든다.
+/// Builds the structure of the whole file.
 pub(crate) fn file_structure(metadata: &ParquetMetaData, schema: &Schema) -> FileStructure {
     let file = metadata.file_metadata();
     let row_groups = metadata
@@ -102,7 +102,7 @@ pub(crate) fn file_structure(metadata: &ParquetMetaData, schema: &Schema) -> Fil
     }
 }
 
-/// 지정한 Row Group들을 합친 leaf 컬럼별 정보.
+/// Per-leaf-column information over the given Row Groups.
 pub(crate) fn column_infos(
     metadata: &ParquetMetaData,
     schema: &Schema,
@@ -159,9 +159,9 @@ pub(crate) fn column_infos(
         .collect()
 }
 
-/// 최상위 스칼라 컬럼의 최솟값·최댓값. Row Group별 통계를 Arrow 타입으로 바꿔 비교하므로
-/// Date·Timestamp·Decimal도 값으로 비교하고 셀과 같은 형식으로 표시한다. 중첩 컬럼과 통계가
-/// 없는 컬럼은 `None`이다.
+/// Min and max of a top-level scalar column. Per-Row-Group statistics are converted to Arrow types before
+/// comparison, so Date, Timestamp and Decimal compare by value and display like cells. Nested columns and
+/// columns without statistics are `None`.
 fn min_max(
     metadata: &ParquetMetaData,
     schema: &Schema,
@@ -221,7 +221,7 @@ fn min_max(
     )
 }
 
-/// 자주 쓰는 논리 타입을 짧게 표시한다.
+/// Short display names for common logical types.
 fn logical_type_label(logical: &LogicalType) -> String {
     match logical {
         LogicalType::String => "String".into(),

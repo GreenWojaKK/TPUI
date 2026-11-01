@@ -1,7 +1,7 @@
-//! 행·열 칸마다 값을 색으로 칠하는 히트맵. 칸은 `paint_quad`로 그린다.
+//! Heatmap that colors each row × column cell by value. Cells are drawn with `paint_quad`.
 //!
-//! 색은 0을 가운데 색으로 두고 음수와 양수를 각각 다른 색으로 진하게 칠하는 발산 색 척도다.
-//! 값이 없는 칸은 칠하지 않는다. 오른쪽에 색 척도 막대와 경계값을 표시한다.
+//! The diverging color scale puts 0 at the middle color and deepens negatives and positives toward two different colors.
+//! Cells without a value are left unpainted. A color scale bar with its bounds is drawn on the right.
 
 use std::rc::Rc;
 
@@ -14,7 +14,7 @@ use gpui::{
 use crate::chart::TextShaper;
 use crate::theme;
 
-/// 0을 가운데로 둔 발산 색 척도. `bound` 이상의 크기는 끝 색으로 칠한다.
+/// Diverging color scale centered at 0. Magnitudes at or above `bound` use the end colors.
 #[derive(Clone, Copy, Debug)]
 pub struct DivergingScale {
     pub bound: f64,
@@ -44,7 +44,7 @@ fn lerp(from: Rgba, to: Rgba, t: f32) -> Rgba {
     }
 }
 
-/// 마우스가 올라간 칸(행, 열)을 알린다. 칸 밖이면 `None`이다.
+/// Reports the hovered cell (row, column). `None` outside the cells.
 pub type CellHoverHandler = Rc<dyn Fn(Option<(usize, usize)>, &mut Window, &mut App)>;
 
 pub struct Heatmap {
@@ -52,7 +52,7 @@ pub struct Heatmap {
     columns: Vec<SharedString>,
     /// `values[row][column]`.
     values: Vec<Vec<Option<f64>>>,
-    /// 이름을 표시할 열. 비어 있으면 모든 열에 표시한다.
+    /// Columns whose labels are shown. Empty shows every column.
     column_ticks: Vec<usize>,
     scale: DivergingScale,
     format: Rc<dyn Fn(f64) -> String>,
@@ -82,13 +82,13 @@ impl Heatmap {
         self
     }
 
-    /// 색 척도 막대의 경계값 표시 형식.
+    /// Label format of the color scale bounds.
     pub fn format(mut self, format: impl Fn(f64) -> String + 'static) -> Self {
         self.format = Rc::new(format);
         self
     }
 
-    /// 마우스가 올라간 칸을 알린다. `hovered` 칸에는 테두리를 그린다.
+    /// Reports the hovered cell and draws a border around the `hovered` cell.
     pub fn on_hover(
         mut self,
         hovered: Option<(usize, usize)>,
@@ -115,7 +115,7 @@ impl IntoElement for Heatmap {
     }
 }
 
-/// 색 척도 막대의 너비와 칸 수.
+/// Width and step count of the color scale bar.
 const LEGEND_WIDTH: Pixels = px(12.);
 const LEGEND_STEPS: usize = 48;
 
@@ -259,7 +259,7 @@ impl Element for Heatmap {
             ));
         }
 
-        // 위가 +bound, 아래가 -bound인 색 척도 막대.
+        // Color scale bar with +bound at the top and -bound at the bottom.
         let legend = layout.legend;
         let step = legend.size.height / LEGEND_STEPS as f32;
         for ix in 0..LEGEND_STEPS {

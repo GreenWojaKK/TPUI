@@ -53,7 +53,7 @@ fn main() {
         ]);
         viewer_ui::text_input::bind_keys(cx);
 
-        // 단일 창 앱이므로 창이 닫히면 앱을 종료한다.
+        // Single-window app: quit when the window closes.
         cx.on_window_closed(|cx, _| {
             if cx.windows().is_empty() {
                 cx.quit();
@@ -73,7 +73,7 @@ fn main() {
             },
             |window, cx| cx.new(|cx| AppController::new(window, cx)),
         )
-        .expect("메인 창을 열 수 없습니다");
+        .expect("cannot open the main window");
         cx.activate(true);
     });
 }

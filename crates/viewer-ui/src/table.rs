@@ -1,6 +1,6 @@
-//! 칸 너비를 비율로 나눈 단순한 표의 머리글과 행. `uniform_list`의 행으로 쓴다.
+//! Header and rows of a simple table whose column widths are split by ratio. Used as `uniform_list` rows.
 //!
-//! 칸이 좁아 잘리는 내용은 툴팁으로 전체를 보여준다.
+//! Content truncated in narrow cells is shown in full as a tooltip.
 
 use gpui::{
     AnyView, App, Context, Div, SharedString, Stateful, Window, div, prelude::*, px, relative,
@@ -8,14 +8,14 @@ use gpui::{
 
 use crate::theme;
 
-/// 칸 이름과 너비 비율.
+/// Column name and width ratio.
 pub type ColumnSpec = (&'static str, f32);
 
-/// 표의 한 칸.
+/// One table cell.
 #[derive(Clone, Debug, Default)]
 pub struct Cell {
     pub text: SharedString,
-    /// 마우스를 올리면 보여줄 내용. 여러 줄이면 줄바꿈으로 나눈다.
+    /// Content shown on hover. Multiple lines are separated by newlines.
     pub tooltip: Option<SharedString>,
     pub align_right: bool,
 }
@@ -28,7 +28,7 @@ impl Cell {
         }
     }
 
-    /// 수치처럼 오른쪽에 맞춘다.
+    /// Right-aligned, like numbers.
     pub fn right(mut self) -> Self {
         self.align_right = true;
         self
@@ -44,13 +44,13 @@ fn total_weight(columns: &[ColumnSpec]) -> f32 {
     columns.iter().map(|(_, weight)| weight).sum()
 }
 
-/// 표의 머리글 행. 모든 칸을 왼쪽에 맞춘다.
+/// Table header row with every column left-aligned.
 pub fn header(columns: &[ColumnSpec]) -> Div {
     header_aligned(columns, |_| false)
 }
 
-/// 표의 머리글 행. `align_right(칸 순번)`이 참인 칸은 오른쪽에 맞춘다. 수치 칸의 머리글을
-/// 값과 같은 쪽에 둘 때 쓴다.
+/// Table header row. Columns where `align_right(column index)` is true are right-aligned, so numeric
+/// column headers sit on the same side as their values.
 pub fn header_aligned(columns: &[ColumnSpec], align_right: impl Fn(usize) -> bool) -> Div {
     let total = total_weight(columns);
     div()
@@ -74,7 +74,7 @@ pub fn header_aligned(columns: &[ColumnSpec], align_right: impl Fn(usize) -> boo
         }))
 }
 
-/// 표의 한 행. `name`과 `row`로 행과 칸의 element id를 만든다.
+/// One table row. Element ids for the row and cells are built from `name` and `row`.
 pub fn row(
     name: &'static str,
     row: usize,
@@ -108,7 +108,7 @@ pub fn row(
         ))
 }
 
-/// 여러 줄 텍스트 툴팁을 만드는 함수. element의 `tooltip`에 넘긴다.
+/// Builds a multi-line text tooltip. Pass it to an element's `tooltip`.
 pub fn text_tooltip(text: SharedString) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
     move |_, cx| cx.new(|_| TextTooltip(text.clone())).into()
 }

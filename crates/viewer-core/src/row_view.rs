@@ -1,7 +1,7 @@
-//! 행 보기. 필터와 정렬이 정한 행과 그 순서를 원본 행 번호의 목록으로 만든다.
+//! Row view. Turns the rows and order decided by filter and sort into a list of source row numbers.
 //!
-//! 계산은 순차 읽기 배치 하나씩 진행하는 작업으로 나눈다. 호출하는 쪽은 배치 사이에 다른
-//! 요청을 처리할 수 있다.
+//! The computation is split into a task that advances one scan batch at a time, so the caller can handle
+//! other requests between batches.
 
 use std::ops::Range;
 use std::sync::Arc;
@@ -15,19 +15,19 @@ use crate::condition::{CompiledFilter, is_sortable, unpack_dictionary};
 use crate::scan::ColumnScan;
 use crate::{RowIds, SessionId, SortKey, ViewSpec, ViewerEngine, ViewerError};
 
-/// 그리드에 나오는 행과 그 순서. 위치 i의 행은 표시 순서 목록, 필터 행 목록, 원본 순서 중
-/// 있는 것의 i번째다.
+/// Rows shown in the grid and their order. The row at position i is the i-th entry of the display order,
+/// the filtered rows or the source order, whichever exists first.
 #[derive(Clone, Debug)]
 pub struct RowView {
     total_rows: u64,
-    /// 필터를 통과한 원본 행의 오름차순 목록. 필터가 없으면 `None`이다.
+    /// Ascending list of source rows that passed the filter. `None` without a filter.
     filtered: Option<Arc<RowIds>>,
-    /// 정렬한 순서의 원본 행. 정렬이 없으면 `None`이다.
+    /// Source rows in sorted order. `None` without a sort.
     order: Option<Arc<RowIds>>,
 }
 
 impl RowView {
-    /// 원본 순서 그대로의 행 보기.
+    /// Row view in source order.
     pub fn identity(total_rows: u64) -> Self {
         Self {
             total_rows,
@@ -40,7 +40,7 @@ impl RowView {
         self.filtered.is_none() && self.order.is_none()
     }
 
-    /// 행 보기의 행 수.
+    /// Number of rows in the row view.
     pub fn len(&self) -> u64 {
         match (&self.order, &self.filtered) {
             (Some(order), _) => order.len() as u64,
@@ -53,12 +53,12 @@ impl RowView {
         self.len() == 0
     }
 
-    /// 원본 파일의 전체 행 수.
+    /// Total rows of the source file.
     pub fn total_rows(&self) -> u64 {
         self.total_rows
     }
 
-    /// 행 보기 위치의 원본 행 번호.
+    /// Source row number at a row view position.
     pub fn file_row(&self, position: u64) -> Option<u64> {
         match (&self.order, &self.filtered) {
             (Some(rows), _) | (None, Some(rows)) => rows.get(usize::try_from(position).ok()?),
@@ -66,7 +66,7 @@ impl RowView {
         }
     }
 
-    /// 행 보기 위치 범위의 원본 행 번호. 범위를 벗어난 부분은 버린다.
+    /// Source row numbers for a range of row view positions. Parts out of range are dropped.
     pub fn file_rows(&self, positions: Range<u64>) -> Vec<u64> {
         let end = positions.end.min(self.len());
         let start = positions.start.min(end);
@@ -76,21 +76,21 @@ impl RowView {
         }
     }
 
-    /// 순차 읽기에 넘길 오름차순 행 목록. 필터가 없으면 `None`이다.
+    /// Ascending row list for sequential scans. `None` without a filter.
     pub fn filtered(&self) -> Option<&Arc<RowIds>> {
         self.filtered.as_ref()
     }
 
-    /// 행 목록이 쓰는 byte 수.
+    /// Bytes used by the row lists.
     pub fn byte_size(&self) -> usize {
         self.filtered.as_ref().map_or(0, |rows| rows.byte_size())
             + self.order.as_ref().map_or(0, |rows| rows.byte_size())
     }
 }
 
-/// 배치 단위 작업의 한 단계 결과.
+/// Result of one step of a batch-by-batch task.
 pub enum TaskStep<T> {
-    /// 진행률. 0부터 1까지다.
+    /// Progress from 0 to 1.
     Progress(f32),
     Done(T),
 }
@@ -107,17 +107,17 @@ enum Phase {
         filtered: Option<Arc<RowIds>>,
     },
     Done(RowView),
-    /// 결과를 돌려준 뒤의 빈 상태.
+    /// Empty state after the result was returned.
     Taken,
 }
 
-/// 필터 행 목록과 표시 순서 목록을 만드는 작업. 필터가 있으면 필터를 먼저 계산하고, 그
-/// 결과의 행만 정렬한다.
+/// Task that builds the filtered row list and the display order. With a filter, the filter is computed first
+/// and only its rows are sorted.
 pub struct RowViewTask {
     session: SessionId,
     total_rows: u64,
     sort: Option<SortKey>,
-    /// 필터와 정렬 중 필요한 단계 수와 지금 단계.
+    /// Number of steps needed for filter and sort, and the current step.
     phases: u32,
     phase_ix: u32,
     phase: Phase,
@@ -133,13 +133,11 @@ impl RowViewTask {
         let total_rows = engine.total_rows(session)?;
         if let Some(sort) = spec.sort {
             let Some(field) = schema.fields().get(sort.column.0) else {
-                return Err(ViewerError::InvalidRequest(
-                    "스키마 범위를 벗어난 컬럼입니다",
-                ));
+                return Err(ViewerError::InvalidRequest("column is outside the schema"));
             };
             if !is_sortable(field.data_type()) {
                 return Err(ViewerError::Unsortable(format!(
-                    "{} 컬럼은 정렬할 수 없습니다.",
+                    "{} columns cannot be sorted.",
                     field.data_type()
                 )));
             }
@@ -172,14 +170,12 @@ impl RowViewTask {
         engine: &ViewerEngine,
         filtered: Option<Arc<RowIds>>,
     ) -> Result<(), ViewerError> {
-        let sort = self.sort.expect("정렬 기준이 있을 때만 정렬한다");
+        let sort = self.sort.expect("sorting only with a sort key");
         let count = filtered
             .as_ref()
             .map_or(self.total_rows, |rows| rows.len() as u64);
         if count > u64::from(u32::MAX) {
-            return Err(ViewerError::Unsortable(
-                "행이 너무 많아 정렬할 수 없습니다.".into(),
-            ));
+            return Err(ViewerError::Unsortable("Too many rows to sort.".into()));
         }
         if count == 0 {
             self.phase = Phase::Done(RowView {
@@ -198,7 +194,7 @@ impl RowViewTask {
         Ok(())
     }
 
-    /// 배치 하나만큼 계산을 진행한다.
+    /// Advances the computation by one batch.
     pub fn step(&mut self, engine: &ViewerEngine) -> Result<TaskStep<RowView>, ViewerError> {
         match &mut self.phase {
             Phase::Filter { scan, filter, rows } => match scan.next_batch()? {
@@ -251,7 +247,7 @@ impl RowViewTask {
                     else {
                         unreachable!()
                     };
-                    let sort = self.sort.expect("정렬 단계");
+                    let sort = self.sort.expect("sort step");
                     let order =
                         sort_order(keys, sort.descending, filtered.as_deref(), self.total_rows)?;
                     self.phase = Phase::Done(RowView {
@@ -268,12 +264,12 @@ impl RowViewTask {
                 };
                 Ok(TaskStep::Done(view))
             }
-            Phase::Taken => Err(ViewerError::InvalidRequest("이미 끝난 작업입니다")),
+            Phase::Taken => Err(ViewerError::InvalidRequest("task already finished")),
         }
     }
 }
 
-/// 전체 단계 중 `phase_ix` 단계에서 순차 읽기가 진행한 비율을 더한 진행률.
+/// Progress: completed steps out of all steps, plus the scanned fraction of step `phase_ix`.
 fn progress(phase_ix: u32, phases: u32, scan: &ColumnScan) -> f32 {
     let within = if scan.total() == 0 {
         1.
@@ -283,8 +279,8 @@ fn progress(phase_ix: u32, phases: u32, scan: &ColumnScan) -> f32 {
     (phase_ix as f32 + within) / phases.max(1) as f32
 }
 
-/// 모은 정렬 값으로 표시 순서 목록을 만든다. `(정렬 값, 위치)`로 정렬하므로 값이 같은 행은
-/// 원본 순서를 유지하고, Null은 방향과 관계없이 마지막에 둔다.
+/// Builds the display order from the collected sort values. Sorting by `(sort value, position)` keeps
+/// equal values in source order; Null always goes last regardless of direction.
 fn sort_order(
     keys: Vec<ArrayRef>,
     descending: bool,
@@ -321,7 +317,9 @@ fn sort_order(
     for position in indices.values() {
         let position = *position as usize;
         let row = match filtered {
-            Some(filtered) => filtered.get(position).expect("필터 행 목록 안의 위치"),
+            Some(filtered) => filtered
+                .get(position)
+                .expect("position within the filtered rows"),
             None => position as u64,
         };
         order.push(row);
@@ -360,7 +358,7 @@ mod tests {
         let keys: Vec<ArrayRef> = vec![Arc::new(Float64Array::from(vec![3.0, f64::NAN, 1.0]))];
         let filtered = ids(&[10, 20, 30]);
         let order = sort_order(keys, false, Some(&filtered), 100).unwrap();
-        // NaN은 가장 큰 값이다.
+        // NaN is the largest value.
         assert_eq!(order.iter().collect::<Vec<_>>(), [30, 10, 20]);
     }
 

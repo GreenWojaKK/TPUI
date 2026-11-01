@@ -23,7 +23,7 @@ use crate::ui::view_bar::{ViewBar, ViewBarAction};
 use crate::worker::{
     FindRequest, StructureRequest, ValueOp, ValueOpKind, ViewId, ViewerWorker, WorkerEvent,
 };
-use viewer_ui::format::{format_bytes, format_count};
+use viewer_ui::format::{format_bytes, format_count, format_quantity};
 use viewer_ui::tab_bar::{TabBar, TabBarState, TabLabel, TabStatus};
 use viewer_ui::theme;
 use viewer_ui::widgets::toggle_button;
@@ -42,29 +42,29 @@ actions!(
     ]
 );
 
-/// 탭 하나의 파일 상태. `Opening → Ready` 또는 `Opening → OpenError`로 전이한다.
+/// File state of a tab. Transitions `Opening → Ready` or `Opening → OpenError`.
 enum TabState {
     Opening,
     Ready(DatasetInfo),
     OpenError(SharedString),
 }
 
-/// 계산 중인 행 보기.
+/// Row view being computed.
 struct PendingView {
     request: RequestId,
     spec: ViewSpec,
     progress: f32,
 }
 
-/// 탭의 행 보기 상태. 그리드는 완성된 행 보기만 표시한다.
+/// Row view state of a tab. The grid shows only completed row views.
 #[derive(Default)]
 struct TabView {
-    /// 그리드에 표시 중인 행 보기의 조건, 번호, 행 수.
+    /// Conditions, number and row count of the row view shown in the grid.
     applied: ViewSpec,
     id: ViewId,
     rows: u64,
     pending: Option<PendingView>,
-    /// 마지막 계산 실패의 원인과 그 조건.
+    /// Reason for the last failed computation, and its conditions.
     failed: Option<(SharedString, ViewSpec)>,
 }
 
@@ -76,7 +76,7 @@ impl TabView {
         }
     }
 
-    /// 사용자가 마지막으로 정한 조건. 계산 중이면 그 조건이다.
+    /// Conditions last set by the user. While computing, these are the conditions being computed.
     fn target(&self) -> &ViewSpec {
         self.pending
             .as_ref()
@@ -84,23 +84,23 @@ impl TabView {
     }
 }
 
-/// 탭 본문에 보여주는 내용.
+/// Content shown in the tab body.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum CenterMode {
-    /// 데이터 그리드.
+    /// Data grid.
     #[default]
     Data,
-    /// 파일 구조.
+    /// File structure.
     Structure,
 }
 
-/// 파일 하나를 연 탭. 스키마 view를 탭마다 두어 펼침 상태를 기억한다.
+/// Tab with one open file. Each tab has its own schema view so it remembers expanded nodes.
 struct Tab {
     session: SessionId,
     path: PathBuf,
     state: TabState,
     schema: Entity<SchemaView>,
-    /// 탭을 떠날 때 저장하는 그리드 스크롤 위치와 선택 셀.
+    /// Grid scroll position and selected cell saved when leaving the tab.
     grid_position: GridPosition,
     view: TabView,
     mode: CenterMode,
@@ -116,38 +116,38 @@ impl Tab {
     }
 }
 
-/// 창의 루트 view. 탭 목록과 활성 탭, 세션·요청 발급, 오류 표시를 소유하고 화면 영역을 배치한다.
+/// Root view of the window. Owns the tab list, the active tab, session and request numbering, and error display, and lays out the areas.
 pub struct AppController {
     focus_handle: FocusHandle,
     worker: ViewerWorker,
     last_session: u64,
     last_request: u64,
-    /// 그리드에 반영할 수 있는 활성 탭의 최신 화면 범위 요청.
+    /// Latest visible range request of the active tab that the grid may apply.
     latest_request: Option<RequestId>,
-    /// Value 패널에 반영할 수 있는 활성 탭의 최신 값 요청.
+    /// Latest value request of the active tab that the Value panel may apply.
     latest_value: Option<RequestId>,
     tabs: Vec<Tab>,
     active: Option<usize>,
-    /// 탭 막대의 가로 스크롤 상태. 활성 탭이 바뀌면 그 탭이 보이도록 스크롤한다.
+    /// Horizontal scroll state of the tab bar. Scrolls to keep the active tab visible when it changes.
     tab_bar: TabBarState,
     explorer: Entity<ExplorerView>,
     grid: Entity<GridView>,
     value: Entity<ValueView>,
-    /// 파일·폴더 선택창 자체를 열지 못한 경우의 오류.
+    /// Error when the file or folder dialog itself could not be opened.
     dialog_error: Option<SharedString>,
     find_bar: Entity<FindBar>,
     find_open: bool,
-    /// 마지막으로 찾은 입력. 찾기 막대가 열려 있으면 그리드에서 이 입력과 같은 셀을 강조한다.
+    /// Last searched input. While the find bar is open, the grid highlights cells equal to it.
     find_query: Option<String>,
     latest_find: Option<RequestId>,
-    /// 열린 필터 창과 그 위치(창 좌표).
+    /// Open filter popover and its position (window coordinates).
     filter_popover: Option<(Entity<FilterPopover>, Point<Pixels>, Subscription)>,
-    /// 필터·정렬 막대에 잠시 표시하는 안내.
+    /// Notice shown briefly in the filter and sort bar.
     notice: Option<SharedString>,
     structure: Entity<StructureView>,
-    /// 파일 구조 화면에 반영할 수 있는 최신 요청.
+    /// Latest request the file structure view may apply.
     latest_structure: Option<RequestId>,
-    /// 운영체제의 앱 색상 설정을 따르는지. 화면 전환 버튼을 누르면 그 뒤로는 따르지 않는다.
+    /// Whether to follow the OS app color setting. Stops following once the theme button is pressed.
     follow_system: bool,
     _subscriptions: Vec<Subscription>,
 }
@@ -166,7 +166,7 @@ impl AppController {
             }
         });
 
-        // 탐색기의 파일 열기는 Open File과 같은 열기 경로를 쓴다.
+        // Opening a file from the explorer uses the same path as Open File.
         let explorer = cx.new(ExplorerView::new);
         let explorer_events =
             cx.subscribe(
@@ -290,7 +290,7 @@ impl AppController {
         );
     }
 
-    /// 네이티브 선택창으로 파일 또는 폴더 하나를 고른다. 취소하면 현재 상태를 유지한다.
+    /// Picks one file or folder with the native dialog. Cancelling keeps the current state.
     fn prompt_for_path(
         &mut self,
         directories: bool,
@@ -314,7 +314,7 @@ impl AppController {
                 }
                 Ok(Ok(None)) | Err(_) => {}
                 Ok(Err(err)) => {
-                    this.dialog_error = Some(format!("선택창을 열 수 없습니다: {err:#}").into());
+                    this.dialog_error = Some(format!("Cannot open the dialog: {err:#}").into());
                     cx.notify();
                 }
             })
@@ -323,7 +323,7 @@ impl AppController {
         .detach();
     }
 
-    /// 파일을 새 탭으로 열고 활성화한다. 이미 탭으로 열린 경로면 그 탭을 활성화한다.
+    /// Opens a file in a new tab and activates it. If the path is already open in a tab, activates that tab.
     fn open_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         if let Some(ix) = self.tabs.iter().position(|tab| same_path(&tab.path, &path)) {
             self.activate(ix, cx);
@@ -363,7 +363,7 @@ impl AppController {
         self.show_active_tab(cx);
     }
 
-    /// 활성 탭을 떠나기 전에 그 탭의 그리드 스크롤 위치와 선택 셀을 저장한다.
+    /// Saves the grid scroll position and selected cell of the active tab before leaving it.
     fn remember_grid_position(&mut self, cx: &mut Context<Self>) {
         let position = self.grid.read(cx).position();
         if let Some(tab) = self.active.and_then(|ix| self.tabs.get_mut(ix))
@@ -373,11 +373,11 @@ impl AppController {
         }
     }
 
-    /// 그리드를 활성 탭의 내용으로 바꾼다. 이전 탭의 셀 미리보기와 진행 중인 화면 범위 읽기는 버린다.
+    /// Switches the grid to the active tab's content. Drops the previous tab's cell previews and in-flight range reads.
     fn show_active_tab(&mut self, cx: &mut Context<Self>) {
         self.worker.cancel_window();
         self.latest_request = None;
-        // 찾기 결과와 필터 창은 이전 탭의 것이다.
+        // Find results and the filter popover belong to the previous tab.
         self.worker.cancel_find();
         self.latest_find = None;
         self.find_bar
@@ -389,9 +389,9 @@ impl AppController {
         }
         let active = self.active.and_then(|ix| self.tabs.get(ix));
         match active.map(|tab| &tab.state) {
-            // 화면 범위는 그리드가 layout에서 계산한 뒤 요청한다.
+            // The visible range is requested after the grid computes it during layout.
             Some(TabState::Ready(info)) => {
-                let tab = active.expect("활성 탭");
+                let tab = active.expect("active tab");
                 let schema = info.schema.clone();
                 let position = tab.grid_position;
                 let rows = GridRows {
@@ -418,12 +418,12 @@ impl AppController {
         } else {
             self.latest_structure = None;
         }
-        // 이전 탭의 선택 값을 해제하고, 새 탭에 선택 셀이 있으면 그 값을 다시 요청한다.
+        // Release the previous tab's selected value, and request the new tab's selected cell value if any.
         self.request_value(cx);
         cx.notify();
     }
 
-    /// 탭을 닫고 그 세션을 해제한다. 활성 탭을 닫으면 오른쪽 탭을, 없으면 왼쪽 탭을 활성화한다.
+    /// Closes a tab and releases its session. Closing the active tab activates the tab to its right, or else to its left.
     fn close_tab(&mut self, ix: usize, cx: &mut Context<Self>) {
         if ix >= self.tabs.len() {
             return;
@@ -445,7 +445,7 @@ impl AppController {
         cx.notify();
     }
 
-    /// 탭을 `from`에서 `to` 자리로 옮긴다. 활성 탭은 순서가 바뀌어도 같은 탭으로 유지한다.
+    /// Moves a tab from slot `from` to `to`. The active tab stays the same tab after reordering.
     fn move_tab(&mut self, from: usize, to: usize, cx: &mut Context<Self>) {
         if from == to || from >= self.tabs.len() || to >= self.tabs.len() {
             return;
@@ -478,7 +478,7 @@ impl AppController {
         }
     }
 
-    /// 파일이 바뀐 활성 탭을 같은 자리에서 새 세션으로 다시 연다.
+    /// Reopens the active tab, whose file changed, in place with a new session.
     fn reopen_active(&mut self, cx: &mut Context<Self>) {
         let Some(ix) = self.active else {
             return;
@@ -489,7 +489,7 @@ impl AppController {
         self.worker.close(tab.session);
         tab.session = session;
         tab.state = TabState::Opening;
-        // 행 보기 조건은 유지하고, 파일이 열리면 다시 계산한다.
+        // Keep the row view conditions and recompute them once the file opens.
         let spec = tab.view.target().clone();
         tab.view = TabView {
             applied: spec,
@@ -501,7 +501,7 @@ impl AppController {
         self.show_active_tab(cx);
     }
 
-    /// 그리드의 현재 화면 범위를 새 요청 번호로 등록한다. 이전 요청의 결과는 반영하지 않는다.
+    /// Registers the grid's current visible range under a new request number. Results of earlier requests are ignored.
     fn request_window(&mut self, cx: &mut Context<Self>) {
         let Some(tab) = self.active_tab() else {
             return;
@@ -537,7 +537,7 @@ impl AppController {
         ) && self.latest_request == Some(request)
     }
 
-    /// 활성 탭의 선택 셀 값을 새 요청 번호로 요청한다. 선택 셀이 없으면 선택 값을 해제한다.
+    /// Requests the active tab's selected cell value under a new request number. Without a selected cell, releases the selected value.
     fn request_value(&mut self, cx: &mut Context<Self>) {
         let (session, view) = match self.active_tab() {
             Some(Tab {
@@ -569,7 +569,7 @@ impl AppController {
         self.value.update(cx, |value, cx| value.set_loading(cx));
     }
 
-    /// 현재 선택 값에 대한 후속 작업을 worker에 보낸다.
+    /// Sends a follow-up operation on the current selected value to the worker.
     fn value_op(&mut self, path: Vec<usize>, kind: ValueOpKind) {
         if let Some(request) = self.latest_value {
             self.worker.value_op(ValueOp {
@@ -587,9 +587,9 @@ impl AppController {
         ) && self.latest_value == Some(request)
     }
 
-    // ----- 행 보기: 필터와 정렬 -----
+    // ----- Row view: filter and sort -----
 
-    /// 활성 탭의 행 보기 조건을 바꾼다. 표시 중인 조건으로 돌아가면 진행 중인 계산을 버린다.
+    /// Changes the row view conditions of the active tab. Returning to the displayed conditions drops the in-flight computation.
     fn apply_view(&mut self, spec: ViewSpec, cx: &mut Context<Self>) {
         let Some(ix) = self.active else {
             return;
@@ -613,7 +613,7 @@ impl AppController {
         cx.notify();
     }
 
-    /// 행 보기 계산을 worker에 요청한다.
+    /// Asks the worker to compute the row view.
     fn send_view(&mut self, ix: usize, spec: ViewSpec) {
         self.last_request += 1;
         let request = RequestId(self.last_request);
@@ -626,7 +626,7 @@ impl AppController {
         });
     }
 
-    /// 헤더를 누를 때마다 오름차순, 내림차순, 정렬 해제 순으로 바꾼다.
+    /// Each header click cycles ascending, descending, then no sort.
     fn toggle_sort(&mut self, column: usize, cx: &mut Context<Self>) {
         let Some(tab) = self.active_tab() else {
             return;
@@ -638,7 +638,7 @@ impl AppController {
         if !is_sortable(field.data_type()) {
             self.notice = Some(
                 format!(
-                    "{} 컬럼({})은 정렬할 수 없습니다.",
+                    "Column {} ({}) cannot be sorted.",
                     field.name(),
                     field.data_type()
                 )
@@ -714,7 +714,7 @@ impl AppController {
         }
     }
 
-    /// 컬럼의 필터 조건을 바꾸거나 추가한다. 컬럼마다 조건은 하나다.
+    /// Changes or adds the filter condition of a column. One condition per column.
     fn set_filter(&mut self, condition: FilterCondition, cx: &mut Context<Self>) {
         let Some(tab) = self.active_tab() else {
             return;
@@ -760,9 +760,9 @@ impl AppController {
         self.apply_view(spec, cx);
     }
 
-    // ----- 파일 구조 -----
+    // ----- File structure -----
 
-    /// 활성 탭의 본문을 데이터 그리드와 파일 구조 중 하나로 바꾼다.
+    /// Switches the active tab's body between the data grid and the file structure.
     fn set_mode(&mut self, mode: CenterMode, cx: &mut Context<Self>) {
         let Some(ix) = self.active else {
             return;
@@ -778,7 +778,7 @@ impl AppController {
         cx.notify();
     }
 
-    /// 활성 탭의 파일 구조를 요청한다. `row_group`이 있으면 그 Row Group의 컬럼 정보를 요청한다.
+    /// Requests the active tab's file structure. With `row_group`, requests that Row Group's column information.
     fn request_structure(&mut self, row_group: Option<usize>, cx: &mut Context<Self>) {
         let Some(TabState::Ready(info)) = self.active_tab().map(|tab| &tab.state) else {
             return;
@@ -803,13 +803,13 @@ impl AppController {
             && self.latest_structure == Some(request)
     }
 
-    // ----- 찾기 -----
+    // ----- Find -----
 
     fn open_find(&mut self, _: &Find, window: &mut Window, cx: &mut Context<Self>) {
         if self.active_tab().is_none() {
             return;
         }
-        // 찾기는 데이터 그리드에서 한다.
+        // Find works in the data grid.
         self.set_mode(CenterMode::Data, cx);
         if !self.find_open {
             self.find_open = true;
@@ -844,7 +844,7 @@ impl AppController {
         cx.notify();
     }
 
-    /// 선택 셀에서 다음(이전) 일치를 찾는다. 입력이 바뀌었으면 그리드의 강조도 바꾼다.
+    /// Finds the next (previous) match from the selected cell. If the input changed, updates the grid highlight too.
     fn search(&mut self, backward: bool, cx: &mut Context<Self>) {
         let query = self.find_bar.read(cx).query(cx);
         if query.is_empty() {
@@ -859,7 +859,9 @@ impl AppController {
         if tab.view.pending.is_some() {
             self.find_bar.update(cx, |bar, cx| {
                 bar.set_status(
-                    FindStatus::Failed("필터·정렬을 적용한 뒤에 찾을 수 있습니다.".into()),
+                    FindStatus::Failed(
+                        "Find is available once the filter and sort are applied.".into(),
+                    ),
                     cx,
                 )
             });
@@ -898,7 +900,7 @@ impl AppController {
     fn handle_worker_event(&mut self, event: WorkerEvent, cx: &mut Context<Self>) {
         match event {
             WorkerEvent::Opened { session, result } => {
-                // 닫힌 탭이나 다시 연 탭의 이전 세션 응답은 폐기한다.
+                // Drop responses for previous sessions of closed or reopened tabs.
                 let Some(ix) = self.tabs.iter().position(|tab| tab.session == session) else {
                     return;
                 };
@@ -908,7 +910,7 @@ impl AppController {
                         let schema = info.schema.clone();
                         tab.schema
                             .update(cx, |view, cx| view.set_schema(Some(schema), cx));
-                        // 다시 연 탭은 기억한 행 보기 조건을 다시 계산한다.
+                        // A reopened tab recomputes its remembered row view conditions.
                         let spec = std::mem::take(&mut tab.view.applied);
                         tab.view = TabView::new(info.total_rows);
                         if !spec.is_identity() {
@@ -963,14 +965,14 @@ impl AppController {
                 {
                     return;
                 }
-                // 새 행 보기는 첫 행부터 보여준다. 가로 위치는 유지한다.
+                // A new row view starts from the first row. The horizontal position is kept.
                 let position = if self.active == Some(ix) {
                     self.grid.read(cx).position()
                 } else {
                     self.tabs[ix].grid_position
                 };
                 let tab = &mut self.tabs[ix];
-                let pending = tab.view.pending.take().expect("계산 중인 행 보기");
+                let pending = tab.view.pending.take().expect("row view being computed");
                 tab.view.applied = pending.spec;
                 tab.view.id = Some(request);
                 tab.view.rows = rows;
@@ -997,7 +999,7 @@ impl AppController {
                 {
                     return;
                 }
-                let pending = tab.view.pending.take().expect("계산 중인 행 보기");
+                let pending = tab.view.pending.take().expect("row view being computed");
                 let message = match &error {
                     ViewerError::InvalidCondition(message) | ViewerError::Unsortable(message) => {
                         message.clone()
@@ -1200,12 +1202,11 @@ impl AppController {
             )
     }
 
-    /// 탭이 있으면 탭 막대와 활성 탭의 그리드를, 없으면 빈 상태를 그린다.
+    /// Draws the tab bar and the active tab's grid if there are tabs, or the empty state otherwise.
     fn render_center(&self, cx: &mut Context<Self>) -> Div {
         let Some(tab) = self.active_tab() else {
-            return panel("Data Grid").child(placeholder(
-                "Open File 또는 Ctrl+O로 Parquet 파일을 엽니다.",
-            ));
+            return panel("Data Grid")
+                .child(placeholder("Open a Parquet file with Open File or Ctrl+O."));
         };
         let labels = self
             .tabs
@@ -1225,12 +1226,12 @@ impl AppController {
         let move_tab =
             cx.listener(|this, (from, to): &(usize, usize), _, cx| this.move_tab(*from, *to, cx));
         let body = match &tab.state {
-            TabState::Opening => placeholder("여는 중"),
+            TabState::Opening => placeholder("Opening"),
             TabState::Ready(_) if tab.mode == CenterMode::Structure => {
                 div().flex_1().min_h_0().child(self.structure.clone())
             }
             TabState::Ready(_) => div().flex_1().min_h_0().child(self.grid.clone()),
-            TabState::OpenError(message) => placeholder("파일을 열 수 없습니다.")
+            TabState::OpenError(message) => placeholder("Cannot open the file.")
                 .flex_col()
                 .gap_2()
                 .text_color(theme::error())
@@ -1289,10 +1290,10 @@ impl AppController {
                 .border_b_1()
                 .border_l_1()
                 .border_color(theme::border())
-                .child(mode_button("mode-data", "데이터", CenterMode::Data))
+                .child(mode_button("mode-data", "Data", CenterMode::Data))
                 .child(mode_button(
                     "mode-structure",
-                    "파일 구조",
+                    "File Structure",
                     CenterMode::Structure,
                 ))
         });
@@ -1322,45 +1323,47 @@ impl AppController {
     fn render_status_bar(&self, cx: &App) -> impl IntoElement {
         let path: SharedString = match self.active_tab() {
             Some(tab) => tab.path.display().to_string().into(),
-            None => "파일 없음".into(),
+            None => "No file".into(),
         };
         let mut summary: Vec<String> = Vec::new();
         let mut is_error = false;
         let state = match self.active_tab().map(|tab| &tab.state) {
-            None => "대기",
-            Some(TabState::Opening) => "여는 중",
+            None => "Idle",
+            Some(TabState::Opening) => "Opening",
             Some(TabState::Ready(info)) => {
-                let view = &self.active_tab().expect("활성 탭").view;
+                let view = &self.active_tab().expect("active tab").view;
                 if view.applied.filters.is_empty() {
-                    summary.push(format!("{}행", format_count(info.total_rows)));
+                    summary.push(format_quantity(info.total_rows, "row", "rows"));
                 } else {
                     summary.push(format!(
-                        "{}행 / 전체 {}행",
+                        "{} of {}",
                         format_count(view.rows),
-                        format_count(info.total_rows)
+                        format_quantity(info.total_rows, "row", "rows")
                     ));
                 }
-                summary.push(format!(
-                    "{}컬럼",
-                    format_count(info.schema.fields().len() as u64)
+                summary.push(format_quantity(
+                    info.schema.fields().len() as u64,
+                    "column",
+                    "columns",
                 ));
-                summary.push(format!(
-                    "Row Group {}개",
-                    format_count(info.row_group_rows.len() as u64)
+                summary.push(format_quantity(
+                    info.row_group_rows.len() as u64,
+                    "Row Group",
+                    "Row Groups",
                 ));
                 summary.push(format_bytes(info.file_size));
                 match self.grid.read(cx).load_state() {
-                    GridLoadState::Loading => "읽는 중",
-                    GridLoadState::Loaded => "열림",
+                    GridLoadState::Loading => "Reading",
+                    GridLoadState::Loaded => "Open",
                     GridLoadState::ReadError => {
                         is_error = true;
-                        "읽기 오류"
+                        "Read error"
                     }
                 }
             }
             Some(TabState::OpenError(_)) => {
                 is_error = true;
-                "열기 실패"
+                "Open failed"
             }
         };
         let state_color = if is_error {
@@ -1466,7 +1469,7 @@ impl Render for AppController {
     }
 }
 
-/// 헤더에 표시할 정렬·필터 상태.
+/// Sort and filter state shown in a header.
 fn header_marks(spec: &ViewSpec) -> HeaderMarks {
     HeaderMarks {
         sort: spec.sort.map(|sort| (sort.column.0, sort.descending)),
@@ -1478,7 +1481,7 @@ fn header_marks(spec: &ViewSpec) -> HeaderMarks {
     }
 }
 
-/// 필터·정렬 막대에 표시할 조건. 예: `stop_name 포함 "역"`.
+/// Condition shown in the filter and sort bar, e.g. `stop_name contains "Station"`.
 fn filter_label(info: &DatasetInfo, condition: &FilterCondition) -> SharedString {
     let name = info.schema.fields()[condition.column.0].name();
     let op = op_label(condition.op);
@@ -1489,7 +1492,7 @@ fn filter_label(info: &DatasetInfo, condition: &FilterCondition) -> SharedString
     }
 }
 
-/// 탭 하나를 `from`에서 `to`로 옮긴 뒤, 원래 `ix`에 있던 탭의 새 위치.
+/// New position of the tab originally at `ix` after moving one tab from `from` to `to`.
 fn moved_index(ix: usize, from: usize, to: usize) -> usize {
     if ix == from {
         to
@@ -1502,34 +1505,34 @@ fn moved_index(ix: usize, from: usize, to: usize) -> usize {
     }
 }
 
-/// 같은 파일을 가리키는 경로인지 비교한다. Windows 경로는 대소문자를 구분하지 않는다.
+/// Whether two paths point to the same file. Windows paths are case-insensitive.
 fn same_path(a: &Path, b: &Path) -> bool {
     a.as_os_str().eq_ignore_ascii_case(b.as_os_str())
 }
 
-/// 엔진 오류를 사용자 문구로 바꾼다.
+/// Turns an engine error into a user message.
 fn open_error_message(err: &ViewerError) -> String {
     match err {
         ViewerError::Io(io_err) => match io_err.kind() {
-            io::ErrorKind::NotFound => "파일이 없습니다.".into(),
-            io::ErrorKind::PermissionDenied => "파일을 읽을 권한이 없습니다.".into(),
-            _ => format!("파일을 읽을 수 없습니다. ({io_err})"),
+            io::ErrorKind::NotFound => "File not found.".into(),
+            io::ErrorKind::PermissionDenied => "No permission to read the file.".into(),
+            _ => format!("Cannot read the file. ({io_err})"),
         },
         ViewerError::InvalidParquet(parquet_err) => {
-            format!("Parquet 파일이 아니거나 메타데이터가 손상되었습니다. ({parquet_err})")
+            format!("Not a Parquet file, or its metadata is corrupted. ({parquet_err})")
         }
-        ViewerError::InvalidRowCount => "Row Group의 행 수 정보가 올바르지 않습니다.".into(),
+        ViewerError::InvalidRowCount => "The Row Group row counts are invalid.".into(),
         other => other.to_string(),
     }
 }
 
-/// 데이터 읽기 오류를 사용자 문구로 바꾼다.
+/// Turns a data read error into a user message.
 fn read_error_message(err: &ViewerError) -> String {
     match err {
         ViewerError::Decode(decode_err) => {
-            format!("데이터를 디코딩할 수 없습니다. ({decode_err})")
+            format!("Cannot decode the data. ({decode_err})")
         }
-        ViewerError::Io(io_err) => format!("파일을 읽을 수 없습니다. ({io_err})"),
+        ViewerError::Io(io_err) => format!("Cannot read the file. ({io_err})"),
         other => other.to_string(),
     }
 }
@@ -1546,7 +1549,7 @@ fn toolbar_button(id: &'static str, label: &'static str) -> Stateful<Div> {
         .child(label)
 }
 
-/// 제목 행이 있는 빈 패널. 호출한 쪽이 크기와 본문을 붙인다.
+/// Empty panel with a title row. The caller adds the size and body.
 fn panel(title: &'static str) -> Div {
     div()
         .flex()

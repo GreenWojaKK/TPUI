@@ -1,4 +1,4 @@
-//! 폴더 탐색기. 펼친 폴더의 직계 자식만 조회하고, 화면에 보이는 행만 그린다.
+//! Folder explorer. Lists only the direct children of expanded folders and draws only the visible rows.
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
@@ -21,20 +21,20 @@ pub enum EntryKind {
     File,
 }
 
-/// 탐색기에 표시하는 디렉터리 항목. 파일은 확장자가 `.parquet`인 것만 담는다.
+/// Directory entry shown in the explorer. Files are limited to the `.parquet` extension.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DirEntry {
     pub name: String,
     pub path: PathBuf,
     pub kind: EntryKind,
-    /// 심볼릭 링크나 디렉터리 junction. 링크된 디렉터리는 펼치지 않는다.
+    /// Symbolic link or directory junction. Linked directories are not expanded.
     pub is_link: bool,
 }
 
-/// 디렉터리의 직계 자식을 읽어 디렉터리를 먼저, 같은 종류 안에서는 이름순으로 정렬한다.
+/// Reads the direct children of a directory, sorting directories first and by name within each kind.
 ///
-/// 링크는 대상의 종류만 확인하고 따라 들어가지 않는다. 대상이 없는 링크와 개별 항목의
-/// 읽기 오류는 건너뛴다.
+/// Links are only checked for their target's kind and never followed. Dangling links and per-entry
+/// read errors are skipped.
 pub fn list_directory(dir: &Path) -> io::Result<Vec<DirEntry>> {
     let mut entries = Vec::new();
     for entry in fs::read_dir(dir)? {
@@ -81,7 +81,7 @@ fn is_parquet(path: &Path) -> bool {
         .is_some_and(|extension| extension.eq_ignore_ascii_case("parquet"))
 }
 
-/// 대소문자를 구분하지 않는 이름순. 같으면 원래 문자열로 순서를 정한다.
+/// Case-insensitive name order, falling back to the original strings on ties.
 fn compare_names(a: &str, b: &str) -> Ordering {
     a.to_lowercase()
         .cmp(&b.to_lowercase())
@@ -98,7 +98,7 @@ enum Listing {
     Failed(SharedString),
 }
 
-/// 펼쳐진 트리를 평평하게 펼친 행 하나.
+/// One row of the flattened expanded tree.
 struct ExplorerRow {
     depth: usize,
     content: RowContent,
@@ -114,7 +114,7 @@ enum RowContent {
 pub struct ExplorerView {
     focus_handle: FocusHandle,
     root: Option<PathBuf>,
-    /// 루트가 바뀔 때마다 증가한다. 이전 루트의 조회 결과를 버리는 데 쓴다.
+    /// Incremented whenever the root changes. Used to drop listings for the previous root.
     generation: u64,
     listings: HashMap<PathBuf, Listing>,
     expanded: HashSet<PathBuf>,
@@ -137,7 +137,7 @@ impl ExplorerView {
         }
     }
 
-    /// 루트 폴더를 바꾸고 펼친다. 이전 루트의 펼침 상태와 진행 중인 조회 결과는 버린다.
+    /// Changes the root folder and expands it. Drops the previous root's expanded state and in-flight listings.
     pub fn set_root(&mut self, root: PathBuf, cx: &mut Context<Self>) {
         self.generation += 1;
         self.listings.clear();
@@ -150,7 +150,7 @@ impl ExplorerView {
         cx.notify();
     }
 
-    /// 다른 경로로 파일을 열었을 때 호출한다. 루트가 없으면 파일의 부모 폴더를 루트로 지정한다.
+    /// Called when a file was opened by another path. Without a root, sets the file's parent folder as the root.
     pub fn file_activated(&mut self, path: &Path, cx: &mut Context<Self>) {
         if self.root.is_none()
             && let Some(parent) = path.parent()
@@ -170,7 +170,7 @@ impl ExplorerView {
         cx.notify();
     }
 
-    /// 폴더의 직계 자식을 background task에서 조회한다. 같은 폴더를 이미 조회 중이면 그 결과를 쓴다.
+    /// Lists the direct children of a folder in a background task. Reuses an in-flight listing of the same folder.
     fn start_listing(&mut self, dir: PathBuf, cx: &mut Context<Self>) {
         if matches!(self.listings.get(&dir), Some(Listing::Loading)) {
             return;
@@ -202,7 +202,7 @@ impl ExplorerView {
         }
         let listing = match result {
             Ok(entries) => Listing::Loaded(entries),
-            Err(err) => Listing::Failed(format!("목록을 읽을 수 없습니다. ({err})").into()),
+            Err(err) => Listing::Failed(format!("Cannot read the folder. ({err})").into()),
         };
         self.listings.insert(dir, listing);
         self.rebuild_rows();
@@ -324,13 +324,13 @@ impl ExplorerView {
                                 .flex_none()
                                 .text_xs()
                                 .text_color(theme::text_muted())
-                                .child("링크"),
+                                .child("link"),
                         )
                     })
                     .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                         this.focus_handle.focus(window, cx);
                         this.selected = Some(entry.path.clone());
-                        // 폴더는 한 번 클릭으로 펼치고, 파일은 두 번 클릭으로 연다.
+                        // Folders expand on a single click; files open on a double click.
                         let activate = match entry.kind {
                             EntryKind::Directory => true,
                             EntryKind::File => event.click_count() >= 2,
@@ -344,11 +344,11 @@ impl ExplorerView {
             RowContent::Loading => base
                 .text_color(theme::text_muted())
                 .child(div().w(theme::TREE_CHEVRON_WIDTH))
-                .child("읽는 중…"),
+                .child("Reading…"),
             RowContent::Empty => base
                 .text_color(theme::text_muted())
                 .child(div().w(theme::TREE_CHEVRON_WIDTH))
-                .child("Parquet 파일 없음"),
+                .child("No Parquet files"),
             RowContent::Failed { dir, message } => {
                 let dir = dir.clone();
                 base.child(div().w(theme::TREE_CHEVRON_WIDTH))
@@ -370,7 +370,7 @@ impl ExplorerView {
                             .hover(|style| style.bg(theme::button_hover()))
                             .cursor_pointer()
                             .text_xs()
-                            .child("다시 시도")
+                            .child("Retry")
                             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                                 this.start_listing(dir.clone(), cx);
                                 this.rebuild_rows();
@@ -396,7 +396,7 @@ impl Render for ExplorerView {
                 .justify_center()
                 .p_4()
                 .text_color(theme::text_muted())
-                .child("Open Folder로 폴더를 엽니다.");
+                .child("Open a folder with Open Folder.");
         }
         container.child(
             uniform_list(
@@ -411,7 +411,7 @@ impl Render for ExplorerView {
     }
 }
 
-/// 폴더 이름. 드라이브 루트처럼 이름이 없으면 전체 경로를 쓴다.
+/// Folder name. Uses the full path when there is no name, as with a drive root.
 fn display_name(path: &Path) -> String {
     path.file_name()
         .map(|name| name.to_string_lossy().into_owned())

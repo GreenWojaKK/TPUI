@@ -1,234 +1,246 @@
-# Parquet Viewer 아키텍처와 구현 계획
+# Parquet Viewer Architecture and Implementation Plan
 
-## 1. 제품 범위와 기술 선택
+## 1. Product scope and technology choices
 
-Parquet Viewer는 로컬 Parquet 파일을 읽기 전용으로 열어 파일 구조와 데이터를 탐색하는 네이티브 데스크톱 앱이다. MVP는 **탐색기, 파일 열기, 탭, 스키마 조회, 행·열 가상화 그리드, 값 상세 보기**로 구성하고, 그 위에 **찾기, 필터, 정렬, 파일 구조 보기**를 더한다. 핵심 스택은 **Rust + GPUI + Arrow/Parquet**다.
+Parquet Viewer is a native desktop app that opens local Parquet files read-only to explore their structure and data. The MVP consists of **the explorer, file opening, tabs, schema view, a grid virtualized over rows and columns, and value detail**, with **find, filter, sort and the file structure view** on top. The core stack is **Rust + GPUI + Arrow/Parquet**.
 
-이 앱은 원본 데이터가 어떻게 생겼는지와 파일이 어떻게 저장되어 있는지를 보는 도구다. 통계 분석과 집계는 다른 분석 도구에서 한다. 찾기·필터·정렬은 값을 계산하는 기능이 아니라 원본 행을 찾아가는 기능으로 둔다.
+The app shows what the raw data looks like and how the file is stored. Statistical analysis and aggregation belong in other analysis tools. Find, filter and sort are ways to locate source rows, not features that compute values.
 
-현재 개발 환경을 기준으로 1차 실행 대상을 Windows x64로 가정한다. 앱은 단일 창에서 여러 파일을 탭으로 열고 한 번에 한 탭을 활성화한다. 필터와 정렬이 없으면 데이터를 원본 파일의 행·열 순서로 표시한다.
+The first target is Windows x64, matching the current development environment. The app opens several files as tabs in a single window and activates one tab at a time. Without filter or sort, data is shown in the source file's row and column order.
 
-| 영역 | 채택 기술과 역할 |
+| Area | Technology and role |
 |---|---|
-| 언어·빌드 | Rust, Cargo workspace |
-| UI | GPUI 직접 사용. 창, 입력, 레이아웃, 텍스트와 그리드 렌더링 |
-| Parquet 읽기 | arrow-rs의 `parquet`. Footer, 스키마, Row Group, 선택한 행·열 디코딩 |
-| 데이터 표현 | `arrow-array`, `arrow-schema`. `RecordBatch`와 타입이 있는 컬럼 배열 |
-| 비교·정렬 | `arrow-ord`. 찾기·필터의 값 비교와 정렬 순서 계산 |
-| 로컬 파일 접근 | `std::fs`. 읽기 전용 파일 핸들과 디렉터리 조회 |
-| 데이터 작업 실행 | 전용 `std::thread` worker 1개. 동기 Parquet 리더 실행 |
-| 결과 전달 | `async-channel`의 bounded channel. worker 결과를 GPUI task에서 수신 |
-| 캐시 | 엔진 내부의 byte budget 기반 LRU. 모든 탭이 한 예산을 공유 |
+| Language and build | Rust, Cargo workspace |
+| UI | GPUI used directly: windows, input, layout, text and grid rendering |
+| Parquet reading | arrow-rs `parquet`: footer, schema, Row Groups, decoding selected rows and columns |
+| Data representation | `arrow-array`, `arrow-schema`: `RecordBatch` and typed column arrays |
+| Comparison and sorting | `arrow-ord`: value comparison for find and filter, and sort order |
+| Local file access | `std::fs`: read-only file handles and directory listing |
+| Data work execution | One dedicated `std::thread` worker running the synchronous Parquet reader |
+| Result delivery | Bounded `async-channel`; worker results are received in a GPUI task |
+| Cache | Byte-budgeted LRU inside the engine; all tabs share one budget |
 
-GPUI Kit은 의존성에 포함하지 않는다. 찾기·필터·정렬은 엔진의 컬럼 순차 읽기와 Arrow 비교·정렬 kernel로 구현하며, SQL·집계용 분석 엔진은 추가하지 않는다. 원본 파일의 수정·저장 API도 제공하지 않는다.
+GPUI Kit is not a dependency. Find, filter and sort are built on the engine's sequential column scans and Arrow comparison and sort kernels; no SQL or aggregation engine is added. There is no API for modifying or saving the source file.
 
-GPUI는 Zed 릴리스 revision 위에 `image` 코덱 축소와 그 변경 고지를 얹은 GitHub fork(`GreenWojaKK/zed`)의 정확한 커밋으로 고정한다. fork는 Zed 루트 `Cargo.toml`의 `image` 기능을 gpui가 직접 쓰거나 클립보드 변환에 쓰는 gif·jpeg·png·webp로 줄이고, 바꾼 줄 옆의 주석과 `FORK.md`에 원본과 달라진 내용을 적는다. GPUI 소스 코드는 바꾸지 않는다. GPUI를 올릴 때는 이 변경과 고지를 새 릴리스 위에 다시 얹는다. 해당 revision의 Windows 예제를 기준으로 필요한 플랫폼 crate와 Rust toolchain을 함께 고정한다. `parquet`와 직접 사용하는 Arrow crate는 동일한 arrow-rs 릴리스 계열로 맞추고, 해석된 의존성을 `Cargo.lock`으로 고정한다.
+GPUI is pinned to an exact commit of a GitHub fork (`GreenWojaKK/zed`) that adds an `image` codec reduction and its change notice on top of a Zed release revision. The fork narrows the `image` features in Zed's root `Cargo.toml` to the gif, jpeg, png and webp that gpui uses directly or for clipboard conversion, and records the difference from upstream in a comment next to the changed lines and in `FORK.md`. GPUI source code is unchanged. Upgrading GPUI means reapplying this change and notice on the new release. The platform crates and Rust toolchain are pinned together, following that revision's Windows examples. `parquet` and the Arrow crates used directly stay on the same arrow-rs release line, and resolved dependencies are pinned in `Cargo.lock`.
 
-## 2. 사용자 흐름과 화면
+## 2. User flow and screens
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────┐
-│ Open File    Open Folder                         활성 파일 이름       │
+│ Open File    Open Folder               Active file name   Light Mode │
 ├────────────────┬──────────────────────────────────┬─────────────────┤
-│ Explorer       │ [a.parquet ×][b.parquet ×] [데이터|파일 구조] │ Schema │
-│                │ 찾기 막대 · 필터·정렬 막대         │ 필드·타입        │
-│ 폴더 펼치기     │ Data Grid                        │ nullable        │
-│ 파일 선택       │ 고정 컬럼 헤더 · 정렬·필터 표시     │ 중첩 필드 트리   │
-│                │ 원본 행 번호 / 보이는 데이터 셀     ├─────────────────┤
-│                │ 수직·수평 스크롤 · 셀 선택         │                 │
-│                │                                  │ Value           │
-│                │                                  │ 선택 셀 원본 값  │
-│                │                                  │ 중첩 값 트리     │
+│ Explorer       │ [a.parquet ×][b.parquet ×] [Data|File Structure] │ Schema │
+│                │ Find bar · Filter and sort bar    │ Fields · types  │
+│ Expand folders │ Data Grid                        │ nullable        │
+│ Select files   │ Fixed headers · sort/filter marks │ Nested fields   │
+│                │ Source row numbers / visible cells├─────────────────┤
+│                │ Vertical/horizontal scroll · cell │                 │
+│                │ selection                        │ Value           │
+│                │                                  │ Raw value       │
+│                │                                  │ Nested value tree│
 ├────────────────┴──────────────────────────────────┴─────────────────┤
-│ 활성 탭의 파일 경로 · 전체 행 수 · 컬럼 수 · Row Group 수 · 읽기 상태  │
+│ Active tab's path · total rows · columns · Row Groups · read state  │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-### 탐색기
+### Explorer
 
-- `Open Folder`로 루트 디렉터리를 선택한다. 폴더를 펼칠 때 직계 자식만 조회한다.
-- 디렉터리와 확장자가 `.parquet`인 파일을 표시한다. 확장자는 대소문자를 구분하지 않는다.
-- 디렉터리를 먼저, 같은 종류 안에서는 이름순으로 표시한다. 심볼릭 링크와 디렉터리 junction은 자동으로 따라가지 않는다.
-- 펼쳐진 트리를 행 목록으로 변환하고, 화면에 보이는 항목만 렌더링한다.
-- 파일 더블클릭 또는 선택 후 Enter는 `Open File`과 동일한 열기 요청을 발생시킨다.
-- 폴더 조회 실패는 해당 노드에 오류와 재시도를 표시한다. 이미 열린 파일의 그리드는 유지한다.
+- `Open Folder` selects the root directory. Expanding a folder lists only its direct children.
+- Directories and files with the `.parquet` extension are shown. The extension is case-insensitive.
+- Directories come first, then names in order within each kind. Symbolic links and directory junctions are not followed automatically.
+- The expanded tree is flattened into a row list, and only visible entries are rendered.
+- Double-clicking a file, or selecting it and pressing Enter, issues the same open request as `Open File`.
+- A failed folder listing shows an error and retry on that node. Grids of files already open are kept.
 
-### 파일 열기
+### Opening files
 
-- `Open File` 또는 `Ctrl+O`로 네이티브 파일 선택창을 연다. 선택창 취소는 현재 상태를 유지한다.
-- 선택한 경로는 확장자와 관계없이 Parquet 리더로 검증한다. 확장자 필터는 탐색기의 표시 정책이다.
-- 새 경로를 확정하면 새 탭을 만들어 활성화하고 `Opening` 상태로 시작한다. 이미 탭으로 열린 경로면 그 탭을 활성화한다.
-- Footer와 메타데이터를 읽어 행 수·스키마를 먼저 표시한 뒤 첫 viewport의 데이터를 요청한다.
-- 파일을 직접 열고 탐색기 루트가 없으면 부모 디렉터리를 탐색기 루트로 지정한다. 기존 루트가 있으면 유지한다.
+- `Open File` or `Ctrl+O` opens the native file dialog. Cancelling keeps the current state.
+- The selected path is validated by the Parquet reader regardless of extension. The extension filter is only the explorer's display policy.
+- Confirming a new path creates a new tab, activates it and starts in the `Opening` state. If the path is already open in a tab, that tab is activated.
+- The footer and metadata are read first to show the row count and schema, then data for the first viewport is requested.
+- When a file is opened directly and the explorer has no root, its parent directory becomes the explorer root. An existing root is kept.
 
-GPUI의 `App::prompt_for_paths`를 파일·폴더 선택에 사용한다. [공식 API](https://docs.rs/gpui/latest/gpui/struct.App.html#method.prompt_for_paths)
+File and folder selection uses GPUI's `App::prompt_for_paths`. [Official API](https://docs.rs/gpui/latest/gpui/struct.App.html#method.prompt_for_paths)
 
-### 탭
+### Tabs
 
-- 파일 하나를 탭 하나로 연다. 같은 경로를 두 탭에 열지 않는다.
-- 탭 막대는 그리드 위에 파일 이름과 닫기 버튼을 표시한다. 탭 클릭으로 전환하고, `Ctrl+Tab`·`Ctrl+Shift+Tab`으로 다음·이전 탭, `Ctrl+W`로 활성 탭을 닫는다.
-- 탭이 많으면 최소 폭까지 폭을 나눠 줄이고, 그래도 넘치면 탭 막대를 가로로 스크롤한다. 마우스 휠로 스크롤할 수 있고, 활성 탭이 바뀌면 그 탭이 보이도록 스크롤한다. 넘칠 때는 막대 아래에 스크롤 위치를 표시한다.
-- 탭에 마우스를 올리면 파일의 전체 경로를 툴팁으로 표시한다. 줄어든 탭에서 이름이 잘려도 파일을 구별할 수 있다.
-- 탭을 끌어 다른 탭 위에 놓으면 그 탭의 자리로 옮기고, 탭이 없는 빈 곳에 놓으면 마지막 자리로 옮긴다. 끄는 동안 놓을 자리의 탭을 강조한다. 순서를 바꿔도 활성 탭은 그대로다. 끄는 중에 탭 막대 양 끝 가까이 두면 막대가 그쪽으로 계속 스크롤되어, 보이지 않는 자리까지 옮길 수 있다.
-- 그리드, 스키마, Value 패널, 상태 표시줄은 활성 탭의 내용을 표시한다.
-- 탭마다 스크롤 위치, 선택 셀, 스키마 펼침 상태를 기억한다. 탭으로 돌아오면 그 상태로 셀 데이터를 다시 요청하고, 캐시에 남은 블록은 I/O 없이 표시한다.
-- 활성 탭을 닫으면 오른쪽 탭을, 없으면 왼쪽 탭을 활성화한다. 탭을 모두 닫으면 빈 상태로 돌아간다.
+- Each file opens in one tab. The same path is never open in two tabs.
+- The tab bar above the grid shows file names and close buttons. Clicking a tab switches to it; `Ctrl+Tab` and `Ctrl+Shift+Tab` go to the next and previous tab, and `Ctrl+W` closes the active tab.
+- With many tabs, widths shrink evenly down to a minimum; beyond that the tab bar scrolls horizontally. It scrolls with the mouse wheel, and scrolls to keep the active tab visible when it changes. When tabs overflow, a scroll position indicator is shown below the bar.
+- Hovering a tab shows the file's full path as a tooltip, so files stay distinguishable when shrunk tabs truncate their names.
+- Dropping a dragged tab on another tab moves it to that tab's slot; dropping it on empty space moves it to the last slot. While dragging, the tab at the drop slot is highlighted. Reordering keeps the active tab. Holding a dragged tab near either end of the bar keeps scrolling the bar that way, so it can be moved to slots out of view.
+- The grid, schema, Value panel and status bar show the active tab's content.
+- Each tab remembers its scroll position, selected cell and schema expansion. Returning to a tab requests cell data again from that state, and blocks still in the cache are shown without I/O.
+- Closing the active tab activates the tab to its right, or else to its left. Closing all tabs returns to the empty state.
 
-### 스키마 조회
+### Schema view
 
-- Arrow 스키마의 필드 이름, 데이터 타입, nullable 속성을 표시한다.
-- `Struct`, `List`, `Map`의 자식 타입은 펼칠 수 있는 트리로 표시한다. 펼쳐진 노드만 행 목록에 포함한다.
-- 그리드의 컬럼 단위는 최상위 필드다. 중첩 필드를 펼쳐도 그리드 컬럼 수와 행 수는 바뀌지 않는다.
-- 파일 요약에는 전체 행 수, 최상위 컬럼 수, Row Group 수, 파일 크기를 표시한다.
-- 행이 0개인 파일도 스키마와 컬럼 헤더를 표시하고 본문에는 빈 데이터 상태를 표시한다.
+- Shows the Arrow schema's field names, data types and nullability.
+- Child types of `Struct`, `List` and `Map` are shown as an expandable tree. Only expanded nodes are included in the row list.
+- Grid columns are top-level fields. Expanding nested fields does not change the grid's column or row count.
+- The file summary shows the total rows, top-level columns, Row Groups and file size.
+- A file with zero rows still shows its schema and column headers, with an empty data state in the body.
 
-### 데이터 그리드
+### Data grid
 
-- 고정 높이 행, 고정 너비 컬럼, 고정 헤더와 행 번호 영역을 사용한다.
-- 수직·수평 스크롤바, 마우스 휠, Shift+휠의 수평 이동을 제공한다.
-- 클릭으로 셀 하나를 선택하고 선택 셀을 강조 표시한다. 선택 셀은 값 상세 보기의 대상이다.
-- 그리드에 포커스가 있을 때 방향키로 선택 셀을 행·열 단위로 이동하고, Page Up/Down으로 화면 단위 이동, Ctrl+Home/End로 첫 행·마지막 행으로 이동한다.
-- 읽기 중인 셀은 placeholder로 표시한다. 데이터가 도착하면 해당 위치를 갱신한다.
-- 셀은 값의 한 줄 미리보기다. 줄바꿈·탭·제어 문자는 표시 기호로 바꾸고 긴 값은 미리보기 길이에서 생략 표시를 붙인다. 원본 값 전체는 값 상세 보기에서 확인한다.
+- Uses fixed-height rows, fixed-width columns, and fixed header and row number areas.
+- Provides vertical and horizontal scrollbars, mouse wheel, and Shift+wheel for horizontal movement.
+- A click selects one cell and highlights it. The selected cell is the target of value detail.
+- With the grid focused, arrow keys move the selected cell by rows and columns, Page Up/Down move by a screen, and Ctrl+Home/End go to the first and last rows.
+- Cells being read show a placeholder and are updated when data arrives.
+- A cell is a one-line preview of its value. Newlines, tabs and control characters become display symbols, and long values get an ellipsis at the preview length. The full raw value is shown in value detail.
 
-### 값 상세 보기
+### Value detail
 
-- Value 패널은 선택 셀의 값을 원본 그대로 표시한다. 선택 셀이 없으면 빈 상태를 표시한다.
-- 패널 상단에 행 번호, 컬럼 이름, 타입, 값 크기를 표시한다. 값 크기는 문자열의 byte 길이와 문자 수, Binary의 byte 길이, List·Map의 원소·entry 개수다.
-- 문자열은 줄바꿈을 유지한 원문 전체를, Binary는 전체 byte의 hex dump를 표시한다. 값의 길이와 관계없이 끝까지 스크롤할 수 있다.
-- `Struct`, `List`, `Map` 값은 값 트리로 펼친다. 트리에서 노드를 선택하면 본문에 그 노드의 원본 값을 표시한다.
-- `Ctrl+C`는 선택한 셀 또는 노드의 원본 값을 복사한다.
-- 선택 셀이 그리드 화면 밖으로 스크롤되어도 Value 패널의 값은 유지한다.
+- The Value panel shows the selected cell's value exactly as stored. Without a selected cell, it shows an empty state.
+- The top of the panel shows the row number, column name, type and value size. The value size is the byte length and character count for strings, the byte length for Binary, and the element or entry count for List and Map.
+- Strings are shown in full with their newlines, and Binary as a hex dump of all bytes. Any value can be scrolled to its end regardless of length.
+- `Struct`, `List` and `Map` values expand into a value tree. Selecting a node in the tree shows that node's raw value in the body.
+- `Ctrl+C` copies the raw value of the selected cell or node.
+- The Value panel keeps its value even when the selected cell scrolls out of the grid.
 
-### 행 보기
+### Row view
 
-- 탭마다 필터 조건과 정렬 기준을 가진다. 이 둘이 그리드에 나오는 행과 그 순서를 정하며, 이를 행 보기라 한다. 필터와 정렬이 없으면 행 보기는 원본 파일의 행 순서다.
-- 그리드의 행 위치, 스크롤, 선택 셀, 키 이동은 행 보기의 순서를 따른다. 행 번호 영역에는 원본 파일의 행 번호를 표시하고, Value 패널도 원본 행 번호를 표시한다.
-- 필터나 정렬을 바꾸면 worker가 새 행 보기를 만든다. 만드는 동안 그리드는 이전 행 보기를 계속 표시하고, 그리드 위의 필터·정렬 막대에 진행률과 `취소`를 표시한다. 완성되면 그리드를 새 행 보기의 첫 행으로 옮기고 선택 셀을 해제한다. 가로 스크롤 위치는 유지한다. `취소`는 바꾸기 전의 조건으로 되돌린다.
-- 필터·정렬 막대는 조건이 있을 때 표시한다. 조건마다 `×`로 해제하는 항목을 두고, `모두 해제`로 원본 순서로 돌아간다. 상태 표시줄은 행 보기의 행 수와 전체 행 수를 함께 표시한다.
-- 행 보기는 탭마다 기억한다. 탭을 전환해도 조건과 결과가 유지된다.
+- Each tab has filter conditions and a sort key. Together they decide which rows the grid shows and in what order; this is the row view. Without filter or sort, the row view is the source file's row order.
+- Grid row positions, scrolling, selection and key movement follow the row view's order. The row number area shows the source file's row numbers, and so does the Value panel.
+- Changing the filter or sort makes the worker build a new row view. While it is being built, the grid keeps showing the previous row view, and the filter and sort bar above the grid shows progress and `Cancel`. When complete, the grid moves to the new row view's first row and clears the selection; the horizontal scroll position is kept. `Cancel` restores the conditions from before the change.
+- The filter and sort bar is shown when there are conditions. Each condition has an item removed with `×`, and `Clear All` returns to source order. The status bar shows the row view's row count together with the total.
+- Each tab remembers its row view. Conditions and results survive tab switches.
 
-### 찾기
+### Find
 
-- `Ctrl+F`로 그리드 위에 찾기 막대를 열고 입력란에 포커스를 옮긴다. `Esc`는 찾기 막대를 닫고 그리드로 포커스를 돌린다.
-- 찾기는 값 전체가 입력과 정확히 같은 셀을 찾는다. 대소문자를 구분하고, 일부만 일치하는 값은 찾지 않는다.
-- 비교 대상은 셀에 표시되는 값의 전체 텍스트다. 문자열은 원문, 수치·시간·Boolean은 셀 표시 계약의 텍스트, Binary는 복사 텍스트와 같은 소문자 16진수다. 입력의 16진수는 대소문자를 구분하지 않는다. Null과 `Struct`·`List`·`Map` 셀은 찾기 대상이 아니다.
-- `Enter`·`F3`은 다음 일치, `Shift+Enter`·`Shift+F3`은 이전 일치로 이동한다. 순서는 행 보기의 행 순서, 같은 행 안에서는 컬럼 순서다. 선택 셀에서 출발하고, 끝에 닿으면 처음으로 돌아간다.
-- 찾은 셀을 선택하고 화면에 보이게 스크롤한다. 찾기 막대에는 행 보기 전체의 일치 셀 수를 표시한다. 그리드에서는 일치하는 셀을 강조한다.
-- 입력을 바꾼 뒤 처음 `Enter`를 누를 때 파일을 읽어 일치 위치를 계산한다. 계산하는 동안 찾기 막대에 진행률을 표시하고, 그리드 스크롤·셀 선택·탭 전환은 계속 동작한다.
-- 필터·정렬을 적용하는 중에는 찾기를 시작하지 않고 찾기 막대에 안내를 표시한다. 탭을 전환하면 찾기 결과는 새 탭 기준으로 다시 계산한다.
+- `Ctrl+F` opens the find bar above the grid and focuses its input. `Esc` closes the find bar and returns focus to the grid.
+- Find locates cells whose whole value exactly equals the input. It is case-sensitive and does not match partial values.
+- The comparison target is the full text shown for the cell: the original text for strings, the text of the cell display contract for numbers, times and Boolean, and the same lowercase hexadecimal as the copy text for Binary. Hexadecimal input is case-insensitive. Null cells and `Struct`, `List` and `Map` cells are not find targets.
+- `Enter` and `F3` move to the next match, `Shift+Enter` and `Shift+F3` to the previous one. The order is the row view's row order, then column order within a row. The search starts from the selected cell and wraps around at the end.
+- The found cell is selected and scrolled into view. The find bar shows the number of matching cells in the whole row view, and the grid highlights matching cells.
+- The first `Enter` after changing the input reads the file to compute match positions. During the computation, the find bar shows progress, and grid scrolling, cell selection and tab switching keep working.
+- While a filter or sort is being applied, find does not start and the find bar shows a notice. After a tab switch, find results are recomputed for the new tab.
 
-### 필터
+### Filter
 
-- 컬럼 헤더 오른쪽의 필터 버튼을 누르면 그 컬럼의 필터 창을 연다. 필터 창은 연산자 버튼, 값 입력란, `적용`, `필터 해제`로 구성한다. `Enter`는 적용, `Esc`와 창 밖 클릭은 닫기다.
-- 컬럼마다 조건 하나를 둔다. 여러 컬럼의 조건은 모두 만족하는 행만 남긴다. 새 조건의 연산자는 문자열 컬럼이면 `포함`, 그 밖에는 목록의 첫 연산자다.
-- 연산자는 컬럼 타입에 따라 다음과 같다.
+- The filter button at the right of a column header opens that column's filter popover. The popover has operator buttons, a value input, `Apply` and `Remove Filter`. `Enter` applies; `Esc` or clicking outside closes it.
+- Each column has one condition. Conditions on several columns keep only rows that satisfy all of them. A new condition starts with `contains` for string columns, and with the first operator in the list otherwise.
+- Operators depend on the column type:
 
-| 컬럼 타입 | 연산자 |
+| Column type | Operators |
 |---|---|
-| 문자열 | `=`, `≠`, `포함`, `<`, `≤`, `>`, `≥`, `null`, `null 아님` |
-| Boolean·정수·실수·Decimal·Date·Time·Timestamp | `=`, `≠`, `<`, `≤`, `>`, `≥`, `null`, `null 아님` |
-| Binary | `=`, `≠`, `null`, `null 아님` |
-| `Struct`·`List`·`Map`과 그 밖의 타입 | `null`, `null 아님` |
+| String | `=`, `≠`, `contains`, `<`, `≤`, `>`, `≥`, `null`, `not null` |
+| Boolean, integer, float, Decimal, Date, Time, Timestamp | `=`, `≠`, `<`, `≤`, `>`, `≥`, `null`, `not null` |
+| Binary | `=`, `≠`, `null`, `not null` |
+| `Struct`, `List`, `Map` and other types | `null`, `not null` |
 
-- 비교 연산자의 값은 컬럼 타입으로 해석해 값끼리 비교한다. 예를 들어 Decimal 컬럼의 `= 1.5`는 `1.50`과 일치하고, Timestamp는 ISO 8601 형식으로 입력한다. 해석할 수 없는 값은 적용하지 않고 필터 창에 오류를 표시한다.
-- 문자열 비교와 `포함`은 대소문자를 구분한다. 문자열의 `<`·`>`는 UTF-8 byte 순서다. Binary 값은 16진수로 입력한다.
-- 비교 연산자와 `포함`은 Null 셀과 일치하지 않는다. Null 셀은 `null` 연산자로 고른다.
-- 필터가 있는 컬럼은 헤더의 필터 버튼을 강조한다.
+- Values of comparison operators are parsed as the column type and compared by value. For example, `= 1.5` on a Decimal column matches `1.50`, and Timestamps are entered in ISO 8601. A value that cannot be parsed is not applied, and the popover shows the error.
+- String comparison and `contains` are case-sensitive. String `<` and `>` use UTF-8 byte order. Binary values are entered as hexadecimal.
+- Comparison operators and `contains` never match Null cells. Null cells are selected with the `null` operator.
+- Columns with a filter highlight the filter button in their header.
 
-### 정렬
+### Sort
 
-- 컬럼 헤더를 누를 때마다 오름차순, 내림차순, 정렬 해제 순으로 바뀐다. 정렬 기준은 컬럼 하나이며, 다른 컬럼 헤더를 누르면 그 컬럼의 오름차순으로 바꾼다. 헤더에 `▲`·`▼`로 방향을 표시한다.
-- 필터가 있으면 필터를 통과한 행만 정렬한다.
-- Null은 방향과 관계없이 마지막에 둔다. 값이 같은 행은 원본 파일의 순서를 유지한다.
-- 문자열은 UTF-8 byte 순서, 실수의 NaN은 가장 큰 값으로 정렬한다.
-- `Struct`·`List`·`Map`과 표시 미지원 타입의 컬럼은 정렬하지 않는다. 이런 헤더를 누르면 필터·정렬 막대에 정렬할 수 없다는 안내를 표시한다.
+- Each header click cycles ascending, descending, then no sort. The sort key is a single column; clicking another column's header switches to ascending on that column. The header shows the direction with `▲` or `▼`.
+- With a filter, only rows that pass the filter are sorted.
+- Null goes last regardless of direction. Rows with equal values keep the source file's order.
+- Strings sort by UTF-8 byte order, and floating-point NaN sorts as the largest value.
+- Columns of `Struct`, `List`, `Map` and types without display support are not sorted. Clicking such a header shows a notice in the filter and sort bar that the column cannot be sorted.
 
-### 파일 구조
+### File structure
 
-- 탭 막대 오른쪽의 `데이터`·`파일 구조`로 탭 본문을 바꾼다. 탭마다 마지막으로 고른 쪽을 기억한다. 파일 구조에서 `Ctrl+F`를 누르면 데이터로 돌아가 찾기를 연다.
-- 파일 구조는 Parquet 메타데이터에 적힌 정보만 보여준다. 데이터 페이지는 읽지 않으므로 파일 크기와 관계없이 바로 표시한다.
-- 위쪽에 파일 요약을 표시한다. Parquet 형식 버전, 파일을 쓴 프로그램, 압축 전후 데이터 크기와 압축률, key-value 메타데이터의 key와 값 크기다.
-- 가운데 표는 leaf 컬럼마다 경로, 물리 타입과 논리 타입, 압축 방식, 압축 후·전 크기, 압축률, null 수, 최솟값, 최댓값, 페이지 인덱스·Bloom filter 유무를 표시한다. 칸에 마우스를 올리면 잘린 내용 전체와 인코딩 목록을 툴팁으로 표시한다.
-- 아래 표는 Row Group마다 행 수, 압축 후·전 크기, 압축률을 표시한다. 첫 행 `전체`는 모든 Row Group의 합계다. Row Group을 고르면 가운데 표가 그 Row Group의 정보로 바뀐다.
-- 최솟값·최댓값은 Row Group별 통계를 Arrow 타입으로 바꿔 비교하고 셀 표시 계약과 같은 형식으로 표시한다. 파일에 잘라 적힌 근삿값은 `≈`를 붙인다. 통계가 없거나 중첩 컬럼의 leaf이면 `-`로 표시한다. null 수는 모든 Row Group에 적혀 있을 때만 합계를 표시한다.
+- `Data` and `File Structure` at the right of the tab bar switch the tab body. Each tab remembers its last choice. `Ctrl+F` in the file structure returns to the data and opens find.
+- The file structure shows only the information in the Parquet metadata. No data pages are read, so it appears immediately regardless of file size.
+- The top shows the file summary: Parquet format version, the program that wrote the file, compressed and uncompressed data size and ratio, and the keys and value sizes of the key-value metadata.
+- The middle table shows, per leaf column, the path, physical and logical type, codec, compressed and uncompressed size, ratio, null count, min, max, and whether a page index and Bloom filter exist. Hovering a cell shows truncated content in full and the list of encodings as a tooltip.
+- The bottom table shows, per Row Group, the row count, compressed and uncompressed size, and ratio. The first row, `All`, is the total over all Row Groups. Selecting a Row Group switches the middle table to that Row Group's information.
+- Min and max convert per-Row-Group statistics to Arrow types for comparison and are shown in the same format as the cell display contract. Approximations truncated in the file get a `≈` prefix. Without statistics, or for leaves of nested columns, `-` is shown. Null counts are summed only when every Row Group records them.
 
-## 3. 구성 요소와 의존성
+### Theme
 
-Cargo workspace는 세 crate로 구성한다.
+- Colors come in a light and a dark set. At startup the app follows the Windows app color setting and keeps following its changes. The toolbar's `Light Mode` / `Dark Mode` button switches the theme, after which the app no longer follows the setting until restart.
 
-| crate | 역할 | 의존 |
+## 3. Components and dependencies
+
+The Cargo workspace consists of three crates.
+
+| Crate | Role | Depends on |
 |---|---|---|
-| `viewer-core` | Parquet 읽기, 행 보기, 찾기, 파일 구조. GPUI에 의존하지 않는다 | arrow-rs, parquet |
-| `viewer-ui` | GPUI 앱이 함께 쓰는 화면 부품. 테마, 한 줄 입력, 탭 막대, 표, 작은 버튼, 차트, 히트맵, 수·크기 표시 형식. 데이터 엔진에 의존하지 않는다 | GPUI |
-| `viewer-app` | Parquet 뷰어 앱. 두 crate를 조합하고 worker와 화면 상태를 소유한다 | `viewer-core`, `viewer-ui`, GPUI |
+| `viewer-core` | Parquet reading, row views, find, file structure. No GPUI dependency | arrow-rs, parquet |
+| `viewer-ui` | UI components shared by GPUI apps: light and dark themes, single-line input, tab bar, table, small buttons, charts, heatmap, route map, number and size formats. No dependency on the data engine | GPUI |
+| `viewer-app` | The Parquet viewer app. Combines the two crates and owns the worker and screen state | `viewer-core`, `viewer-ui`, GPUI |
 
-`viewer-ui`는 다른 저장소의 GPUI 앱이 git 의존성으로 가져다 쓴다. 쓰는 앱은 `viewer-ui`와 같은 GPUI fork 커밋을 의존성으로 지정한다. 커밋이 다르면 GPUI가 두 벌 빌드되어 타입이 맞지 않는다. GPUI를 올릴 때는 이 저장소를 먼저 올리고 쓰는 앱이 그 커밋을 따른다.
+GPUI apps in other repositories use `viewer-ui` as a git dependency. Such an app depends on the same GPUI fork commit as `viewer-ui`; with a different commit, GPUI is built twice and the types do not match. When GPUI is upgraded, this repository moves first and the apps follow its commit.
 
 ```mermaid
 flowchart TB
     subgraph App[viewer-app]
         UI[GPUI: Explorer / Tabs / Find / Filter / Schema / Grid / Value]
-        Controller[AppController: 탭 / 활성 탭 / 행 보기 조건 / viewport / 선택 셀 / 요청 세대]
-        Worker[ViewerWorker: 요청 병합 / 작업 실행 / 행 보기·찾기 계산 / 셀 미리보기 / 값 상세]
+        Controller[AppController: tabs / active tab / row view conditions / viewport / selected cell / request generations]
+        Worker[ViewerWorker: request merging / work execution / row view and find computation / cell previews / value detail]
         UI --> Controller
-        Controller -->|최신 요청| Worker
-        Worker -->|조회 결과| Controller
-        Controller -->|상태 갱신| UI
+        Controller -->|latest requests| Worker
+        Worker -->|results| Controller
+        Controller -->|state updates| UI
     end
     subgraph Core[viewer-core]
         Engine[ViewerEngine]
-        Metadata[세션별 Metadata / Schema / RowGroupIndex]
-        Reader[선택 범위 Parquet Reader]
-        Scan[컬럼 순차 읽기]
-        View[조건 해석 / 행 목록 / 찾기 일치 표]
-        Cache[모든 세션이 공유하는 Arrow Block Cache]
+        Metadata[Per-session Metadata / Schema / RowGroupIndex]
+        Reader[Selected-range Parquet Reader]
+        Scan[Sequential column scan]
+        View[Condition parsing / row lists / find match table]
+        Cache[Arrow block cache shared by all sessions]
         Engine --> Metadata
         Engine --> Reader
         Engine --> Scan
         Engine --> Cache
     end
     Worker --> Engine
-    Reader --> File[읽기 전용 로컬 Parquet 파일]
+    Reader --> File[Read-only local Parquet file]
 ```
 
-| 구성 요소 | 책임과 소유 상태 |
+| Component | Responsibilities and owned state |
 |---|---|
-| `AppController` | 탭 목록과 활성 탭, `SessionId`·`RequestId` 발급, 활성 탭의 viewport·값·찾기 요청별 최신 `RequestId`, 오류 표시 |
-| 탭 상태 | 탭마다 경로, `SessionId`, 파일 상태, 그리드 스크롤 위치, 선택 셀, 스키마 펼침 상태, 적용한 행 보기 조건과 그 `ViewId`·행 수, 만드는 중인 조건 |
-| `TabBar` (`viewer-ui`) | 탭 이름, 활성 표시, 전환·닫기·순서 이동 입력 |
-| `FindBar` | 찾기 입력, 일치 셀 수와 진행률, 이전·다음 입력 |
-| `FilterPopover` | 필터를 거는 컬럼, 연산자, 값 입력, 해석 오류 |
-| `ViewBar` | 행 보기의 필터·정렬 조건 목록, 진행률과 취소, 정렬할 수 없는 컬럼 안내 |
-| `StructureView` | 활성 탭의 파일 구조, 고른 Row Group과 그 컬럼 정보 |
-| `TextInput` (`viewer-ui`) | 한 줄 텍스트 입력. 커서·선택·클립보드·IME 조합 입력 |
-| `ExplorerView` | 루트 경로, 펼쳐진 폴더, 선택한 파일, 디렉터리 조회 상태 |
-| `SchemaView` | 활성 탭의 스키마 노드와 펼침 상태 |
-| `GridView` | 활성 탭의 논리 스크롤 위치, 보이는 행·열 범위, 셀 미리보기와 원본 행 번호, 헤더의 정렬·필터 표시, 입력·렌더링 |
-| `ValueView` | 값 트리 노드와 펼침 상태, 선택 노드, 본문 값과 표시 줄 인덱스, 본문 스크롤 위치 |
-| `ViewerWorker` | 열기·닫기 명령 처리, 최신 요청 선택, 엔진 호출, 결과 세대 검사, Arrow 값의 제한된 텍스트 변환, 선택 값 보유와 상세 표시·복사 텍스트 생성, 세션별 행 목록 보유와 행 보기 위치의 원본 행 변환, 행 보기·찾기 계산 작업 |
-| `ViewerEngine` | 열린 세션별 파일 핸들·메타데이터·Row Group 인덱스, 읽기 계획, 디코딩, 컬럼 순차 읽기, 임의 행 읽기, 모든 세션이 공유하는 캐시 |
+| `AppController` | Tab list and active tab, issuing `SessionId` and `RequestId`, the active tab's latest `RequestId` per viewport, value and find request, error display, theme following |
+| Tab state | Per tab: path, `SessionId`, file state, grid scroll position, selected cell, schema expansion, applied row view conditions with their `ViewId` and row count, conditions being built |
+| `TabBar` (`viewer-ui`) | Tab titles, active marker, switch, close and reorder input |
+| `FindBar` | Find input, matching cell count and progress, previous and next input |
+| `FilterPopover` | Column being filtered, operator, value input, parse errors |
+| `ViewBar` | The row view's filter and sort conditions, progress and cancel, notices for unsortable columns |
+| `StructureView` | The active tab's file structure, the selected Row Group and its column information |
+| `TextInput` (`viewer-ui`) | Single-line text input: cursor, selection, clipboard, IME composition |
+| `ExplorerView` | Root path, expanded folders, selected file, directory listing state |
+| `SchemaView` | The active tab's schema nodes and expansion state |
+| `GridView` | The active tab's logical scroll position, visible row and column ranges, cell previews and source row numbers, sort and filter marks in headers, input and rendering |
+| `ValueView` | Value tree nodes and expansion, selected node, body value and display line index, body scroll position |
+| `ViewerWorker` | Handling open and close commands, picking the latest requests, calling the engine, checking result generations, bounded text conversion of Arrow values, holding the selected value and building detail and copy text, holding per-session row lists and mapping row view positions to source rows, row view and find computation tasks |
+| `ViewerEngine` | Per open session: file handle, metadata, Row Group index; read planning, decoding, sequential column scans, arbitrary row reads, and the cache shared by all sessions |
 
-`viewer-core`의 공개 타입은 Rust 표준 타입과 Arrow 타입으로 구성한다. GPUI의 `Entity`, `Context`, `Window`는 `viewer-app` 안에서만 사용한다. 앱은 엔진의 공개 API로 데이터를 요청하며, GPUI의 layout·paint 콜백은 이미 준비된 화면 상태만 읽는다.
+Public types of `viewer-core` consist of Rust standard and Arrow types. GPUI's `Entity`, `Context` and `Window` are used only inside `viewer-app`. The app requests data through the engine's public API, and GPUI layout and paint callbacks only read screen state that is already prepared.
 
-데이터 엔진의 실행 주체는 `ViewerWorker`다. 탐색기의 디렉터리 조회는 별도의 GPUI background task로 실행하며, 동일 폴더의 진행 중 요청은 합친다. 탐색기 루트가 바뀌면 이전 루트의 응답을 폐기한다.
+`ViewerWorker` runs the data engine. Explorer directory listings run as separate GPUI background tasks, and in-flight requests for the same folder are merged. When the explorer root changes, responses for the previous root are dropped.
 
-### 차트와 히트맵
+### Charts, heatmaps and maps
 
-`viewer-ui`의 차트는 GPUI custom `Element`로 직접 그린다. 차트 라이브러리는 쓰지 않는다.
+Charts and maps in `viewer-ui` are drawn directly as GPUI custom `Element`s. No chart or map library is used.
 
-- `LineChart`는 x·y 축과 층 목록을 받는다. 층은 띠(`Band`), 선(`Line`), 기준선(`Rule`)이며 넣은 순서대로 그린다. 예측구간은 띠 여러 겹, 중앙값·실적은 선, 명목값·대각선은 기준선으로 표현한다.
-- `Heatmap`은 행·열 칸의 값을 0을 가운데로 둔 발산 색 척도로 칠하고, 오른쪽에 색 척도 막대와 경계값을 표시한다.
-- 사각형으로 끝나는 그래프 틀, 눈금선, 안내선, 점 표시, 히트맵 칸, 색 척도는 `paint_quad`로 그린다. 띠는 `PathBuilder::fill`로 위 경계를 앞으로, 아래 경계를 거꾸로 이어 닫고, 선과 기준선은 `PathBuilder::stroke`로 그린다. 점선은 `dash_array`로 만든다.
-- 값이 없는 점에서 띠와 선을 끊는다. 이웃이 없는 점은 원으로 그린다.
-- 축 눈금은 호출한 쪽이 직접 주거나, 범위 안에 1·2·2.5·5×10ⁿ 간격으로 자동으로 둔다. 자동 눈금의 표시는 간격을 나타낼 수 있는 가장 적은 소수 자릿수로 한다.
-- 글자는 `shape_line`으로 그리고, 그래프 영역은 content mask로 잘라 층이 틀 밖으로 나가지 않게 한다.
-- 마우스를 올리면 차트는 가장 가까운 점의 순번을, 히트맵은 칸의 행·열을 호출한 쪽에 알린다. 호출한 쪽이 상태를 바꾸고 안내선이나 강조할 위치를 다시 넘긴다.
-- 차트는 값을 계산하지 않는다. 호출한 쪽이 이미 계산된 값을 넘긴다.
+- `LineChart` takes x and y axes and a list of layers. Layers are bands (`Band`), lines (`Line`) and rules (`Rule`), drawn in insertion order. Prediction intervals are stacked bands, medians and actuals are lines, and nominal values and diagonals are rules.
+- `Heatmap` colors row × column cells with a diverging color scale centered at 0, and draws a color scale bar with its bounds on the right.
+- Rectangular plot frames, grid lines, guides, point markers, heatmap cells and the color scale use `paint_quad`. Bands use `PathBuilder::fill`, joining the upper bound forward and the lower bound backward into a closed path; lines and rules use `PathBuilder::stroke`. Dashes use `dash_array`.
+- Bands and lines break at missing points. Points without neighbours are drawn as circles.
+- Axis ticks are either given by the caller or placed automatically within the range at 1·2·2.5·5×10ⁿ steps. Automatic tick labels use the fewest decimals that can express the step.
+- Text is drawn with `shape_line`, and the plot area is clipped with a content mask so layers do not spill outside the frame.
+- On hover, a chart reports the index of the nearest point and a heatmap reports the cell's row and column to the caller. The caller updates its state and passes back the guide or highlight position.
+- Charts compute no values. The caller passes values that are already computed.
 
-`viewer-ui/examples/forecast_charts.rs`는 확률예측 explorer 데이터(`explorer-data.json`)로 날짜별 24시간 예측구간, 계절별 편향, 분위수 신뢰도, 계절 × 시간대 편향 히트맵을 그리는 예제다.
+`GeoMap` draws background areas, routes, markers and labels at `[latitude, longitude]` coordinates, without map tiles.
 
-### 디렉터리
+- The projection is equirectangular around the center latitude of the fitted region. The view fits the routes, markers and labels with a padding, keeps the aspect ratio and centers them; areas are background and do not affect the fit.
+- Areas are filled with `PathBuilder::fill` using the even-odd rule, so holes need no particular winding, and outlined with `PathBuilder::stroke`. Routes are strokes with bevel joins and optional dashes; markers are circles drawn with `paint_quad`; labels are shaped lines with an optional halo drawn as offset copies under the text.
+- Area geometry is prepared once per view: areas whose bounds miss the element are skipped, rings are clipped to the element plus a margin (Sutherland–Hodgman), vertices are snapped to the device pixel grid and repeated points are removed. Every area snaps to the same grid, so the shared borders of neighbouring areas stay coincident. The snapping error is at most half a device pixel.
+- The tessellated area paths are kept in element state, keyed by the area set (`Arc` identity), the view, the device scale and the border width. Each frame only moves the cached paths to the element's position; colors are applied at paint time, so a theme change reuses the geometry.
+- On the analysis runs of the route map example (55 areas with 29,060 vertices, 8 maps at 1067 × 710 px and scale 1.5), preparation keeps on average 35 areas and 5,234 outline vertices and takes about 2 ms; tessellating every area on every frame takes about 6.9 ms, while reusing the prepared paths takes about 0.06 ms per frame.
+
+`viewer-ui/examples/forecast_charts.rs` is an example that draws, from probabilistic forecast explorer data (`explorer-data.json`), the 24-hour prediction intervals of a date, seasonal bias, quantile reliability and a season × hour bias heatmap.
+
+### Directory layout
 
 ```text
 TPUI/
@@ -270,9 +282,11 @@ TPUI/
     │   │   ├── widgets.rs
     │   │   ├── chart.rs
     │   │   ├── heatmap.rs
+    │   │   ├── map.rs
     │   │   └── format.rs
     │   └── examples/
-    │       └── forecast_charts.rs
+    │       ├── forecast_charts.rs
+    │       └── route_map.rs
     └── viewer-core/
         ├── Cargo.toml
         ├── src/
@@ -293,30 +307,30 @@ TPUI/
             └── view_contract.rs
 ```
 
-## 4. 엔진 API와 데이터 계약
+## 4. Engine API and data contracts
 
-공개 API는 동일 프로세스에서 호출하는 동기 Rust API다. worker가 호출 시점을 관리한다.
+The public API is a synchronous Rust API called within the same process. The worker decides when it is called.
 
-| API | 입력 | 결과와 동작 |
+| API | Input | Result and behavior |
 |---|---|---|
-| `open` | `SessionId`, `Path` | 읽기 전용 핸들과 메타데이터를 열어 세션으로 추가하고 `DatasetInfo` 반환. 다른 세션은 유지 |
-| `plan_window` | `WindowRequest` | 파일 범위와 교차한 행·열을 Row Group별 `BlockRequest`로 분할 |
-| `read_block` | `BlockRequest`, 취소 상태 | 캐시를 조회하거나 선택 범위를 디코딩해 `DecodedBlock` 반환 |
-| `read_value` | `ValueRequest`, 취소 상태 | 대상 셀이 속한 블록을 캐시에서 찾거나 디코딩해 그 셀만 담은 `ValueSlice` 반환 |
-| `read_rows` | `SessionId`, 원본 행 목록, 컬럼 목록, 취소 상태 | 행마다 속한 블록을 캐시에서 찾거나 디코딩하고, 행 목록의 순서대로 모은 `RecordBatch` 반환 |
-| `file_structure` | `SessionId` | 메타데이터만으로 만든 `FileStructure` 반환. 파일 요약, Row Group별 크기, 모든 Row Group을 합친 leaf 컬럼별 저장 정보 |
-| `row_group_columns` | `SessionId`, Row Group 위치 | 그 Row Group의 leaf 컬럼별 저장 정보 반환 |
-| `scan` | `SessionId`, 컬럼 목록, 오름차순 원본 행 목록(선택) | 컬럼 순차 읽기 `ColumnScan` 반환. 호출할 때마다 다음 배치를 원본 순서로 돌려준다. 행 목록이 있으면 그 행만 읽는다. 캐시는 쓰지 않는다 |
-| `close` | `SessionId` | 해당 세션의 파일 핸들, 메타데이터, 인덱스, 캐시 항목 해제 |
+| `open` | `SessionId`, `Path` | Opens a read-only handle and metadata, adds it as a session and returns `DatasetInfo`. Other sessions are kept |
+| `plan_window` | `WindowRequest` | Splits the rows and columns intersected with the file range into `BlockRequest`s per Row Group |
+| `read_block` | `BlockRequest`, cancellation state | Looks up the cache or decodes the selected range and returns a `DecodedBlock` |
+| `read_value` | `ValueRequest`, cancellation state | Finds the block holding the target cell in the cache or decodes it, and returns a `ValueSlice` holding only that cell |
+| `read_rows` | `SessionId`, source row list, column list, cancellation state | Finds each row's block in the cache or decodes it, and returns a `RecordBatch` gathered in row list order |
+| `file_structure` | `SessionId` | Returns a `FileStructure` built from metadata alone: file summary, per-Row-Group sizes, and per-leaf-column storage information over all Row Groups |
+| `row_group_columns` | `SessionId`, Row Group position | Returns that Row Group's per-leaf-column storage information |
+| `scan` | `SessionId`, column list, optional ascending source row list | Returns a sequential column scan, `ColumnScan`. Each call returns the next batch in source order. With a row list, only those rows are read. The cache is not used |
+| `close` | `SessionId` | Releases that session's file handle, metadata, index and cache entries |
 
-`DatasetInfo`에는 `SessionId`, 경로, 파일 크기, 전체 행 수, `SchemaRef`, Row Group별 행 수를 담는다. `DecodedBlock`에는 `SessionId`, 파일 기준 시작 행, 실제 행 수, 원본 컬럼 ID 목록, `RecordBatch`를 담는다. `ValueSlice`에는 `SessionId`, 전역 행, `ColumnId`, 원본 `Field`, 대상 셀 하나를 담은 길이 1의 Arrow 배열을 담는다.
+`DatasetInfo` holds the `SessionId`, path, file size, total rows, `SchemaRef`, and row count per Row Group. `DecodedBlock` holds the `SessionId`, file-level start row, actual row count, source column IDs and the `RecordBatch`. `ValueSlice` holds the `SessionId`, global row, `ColumnId`, source `Field`, and an Arrow array of length 1 holding the target cell.
 
-핵심 요청 타입은 다음 계약을 사용한다.
+The core request types follow this contract:
 
 ```rust
 pub struct SessionId(pub u64);
 pub struct RequestId(pub u64);
-pub struct ColumnId(pub usize); // 원본 스키마의 최상위 필드 위치
+pub struct ColumnId(pub usize); // position of a top-level field in the source schema
 
 pub struct WindowRequest {
     pub session: SessionId,
@@ -337,7 +351,7 @@ pub enum FilterOp { Eq, NotEq, Contains, Lt, LtEq, Gt, GtEq, IsNull, IsNotNull }
 pub struct FilterCondition {
     pub column: ColumnId,
     pub op: FilterOp,
-    pub value: String, // 사용자가 입력한 값. 컬럼 타입으로 해석한다
+    pub value: String, // text typed by the user, parsed as the column type
 }
 
 pub struct SortKey {
@@ -346,317 +360,319 @@ pub struct SortKey {
 }
 
 pub struct ViewSpec {
-    pub filters: Vec<FilterCondition>, // 컬럼마다 하나
+    pub filters: Vec<FilterCondition>, // one per column
     pub sort: Option<SortKey>,
 }
 ```
 
-- 엔진의 행 번호는 0부터 시작하고 범위는 `[start, end)`다. 화면 행 번호만 1부터 표시한다.
-- 전체 행 수와 행 위치는 `u64`로 유지한다. 배치 내부 접근 시 검증된 범위만 `usize`로 변환한다.
-- 요청 컬럼은 원본 스키마 순서로 정렬·중복 제거한다. 범위를 벗어난 컬럼 ID는 오류로 반환한다.
-- 행 범위는 `[0, total_rows)`와 교차한다. 빈 교집합은 빈 결과이며 I/O를 실행하지 않는다. `start > end`는 요청 오류다.
-- `ValueRequest`의 행이 `[0, total_rows)` 밖이면 요청 오류다.
-- 응답의 컬럼 ID로 원본 필드와 projected batch의 위치를 연결한다. 컬럼 이름은 식별자로 사용하지 않는다.
-- 열려 있지 않은 세션의 요청은 `StaleSession`으로 종료한다.
+- Engine row numbers are zero-based and ranges are `[start, end)`. Only on-screen row numbers start at 1.
+- Total rows and row positions stay `u64`. Only validated ranges are converted to `usize` for access within a batch.
+- Requested columns are sorted into source schema order and deduplicated. Out-of-range column IDs are returned as errors.
+- Row ranges are intersected with `[0, total_rows)`. An empty intersection is an empty result with no I/O. `start > end` is a request error.
+- A `ValueRequest` row outside `[0, total_rows)` is a request error.
+- Column IDs in responses link source fields to positions in the projected batch. Column names are not used as identifiers.
+- Requests for sessions that are not open end with `StaleSession`.
 
-## 5. 파일 열기와 선택 범위 읽기
+## 5. Opening files and reading selected ranges
 
-### 메타데이터 우선 열기
+### Metadata-first open
 
-1. `std::fs::File::open`으로 파일을 연다.
-2. Footer와 Parquet 메타데이터를 읽고 Arrow 스키마를 구성한다.
-3. Row Group별 행 수로 누적 offset을 만든다.
-4. `DatasetInfo`를 UI에 전달해 스키마와 파일 요약을 표시한다.
-5. 첫 viewport 요청에 대해 필요한 데이터 블록을 디코딩한다.
+1. Open the file with `std::fs::File::open`.
+2. Read the footer and Parquet metadata and build the Arrow schema.
+3. Build cumulative offsets from the row counts per Row Group.
+4. Send `DatasetInfo` to the UI to show the schema and file summary.
+5. Decode the data blocks needed for the first viewport request.
 
-메타데이터는 파일 세션 동안 재사용한다. `ParquetRecordBatchReaderBuilder::new_with_metadata`는 이미 읽은 메타데이터로 reader를 구성한다. [공식 API](https://docs.rs/parquet/latest/parquet/arrow/arrow_reader/type.ParquetRecordBatchReaderBuilder.html#method.new_with_metadata)
+Metadata is reused for the whole file session. `ParquetRecordBatchReaderBuilder::new_with_metadata` builds a reader from metadata already read. [Official API](https://docs.rs/parquet/latest/parquet/arrow/arrow_reader/type.ParquetRecordBatchReaderBuilder.html#method.new_with_metadata)
 
-### Row Group 인덱스
+### Row Group index
 
-Row Group이 `G`개이고 각 행 수가 `n[i]`이면 길이 `G + 1`의 누적 배열을 만든다.
+With `G` Row Groups of `n[i]` rows each, build a cumulative array of length `G + 1`.
 
 ```text
 offsets[0] = 0
 offsets[i + 1] = offsets[i] + n[i]
-전체 행 수 = offsets[G]
+total rows = offsets[G]
 ```
 
-전역 행 `r`은 `offsets[i] <= r < offsets[i + 1]`을 만족하는 Row Group에 속한다. upper-bound 이진 탐색으로 찾고, 그룹 내부 행은 `r - offsets[i]`로 계산한다. 행 수가 0인 Row Group도 동일 규칙으로 건너뛴다. 누적합은 checked arithmetic으로 계산한다.
+Global row `r` belongs to the Row Group satisfying `offsets[i] <= r < offsets[i + 1]`. It is found by upper-bound binary search, and the row within the group is `r - offsets[i]`. Row Groups with zero rows are skipped by the same rule. The cumulative sum uses checked arithmetic.
 
-인덱스 생성은 `O(G)`, 단일 행의 그룹 조회는 `O(log G)`다. MVP에서는 메타데이터 크기의 누적합을 CPU에서 계산한다.
+Building the index is `O(G)`, and looking up a single row's group is `O(log G)`. In the MVP the cumulative sum over metadata sizes is computed on the CPU.
 
-### 디코딩 단위
+### Decoding unit
 
-읽기 단위는 **한 Row Group 안의 최대 512행 × 요청한 최상위 컬럼 집합**이다. 블록 시작은 Row Group 내부의 512행 경계에 정렬한다. 마지막 블록은 그룹 끝에서 잘린다.
+The read unit is **at most 512 rows within one Row Group × the requested set of top-level columns**. Block starts are aligned to 512-row boundaries within the Row Group. The last block is cut at the group's end.
 
-1. 요청 행 범위를 Row Group별 구간으로 나눈다.
-2. 각 구간과 겹치는 블록을 선택하고, 현재 viewport와 겹치는 블록부터 처리한다.
-3. `with_row_groups`로 Row Group 하나를 선택한다.
-4. `ProjectionMask::roots`로 최상위 컬럼 집합을 지정한다.
-5. `RowSelection`의 skip/select로 그룹 내부 블록을 지정하고 `with_batch_size(512)`로 읽는다.
-6. worker가 실제 필요한 셀의 미리보기를 생성해 UI에 전달한다.
+1. Split the requested row range into intervals per Row Group.
+2. Select the blocks overlapping each interval, processing blocks that overlap the current viewport first.
+3. Select one Row Group with `with_row_groups`.
+4. Specify the set of top-level columns with `ProjectionMask::roots`.
+5. Specify the block within the group with `RowSelection` skip/select runs and read with `with_batch_size(512)`.
+6. The worker builds previews of the cells actually needed and sends them to the UI.
 
-`with_row_groups`는 `RowSelection`보다 먼저 적용되므로, selection의 행 위치는 선택된 Row Group 기준으로 만든다. [Reader API](https://docs.rs/parquet/latest/parquet/arrow/arrow_reader/struct.ArrowReaderBuilder.html#method.with_row_selection)
+`with_row_groups` is applied before `RowSelection`, so selection row positions are relative to the selected Row Group. [Reader API](https://docs.rs/parquet/latest/parquet/arrow/arrow_reader/struct.ArrowReaderBuilder.html#method.with_row_selection)
 
-최상위 필드 projection은 중첩 필드의 leaf projection과 구분한다. `ProjectionMask::roots`는 요청한 최상위 필드의 하위 컬럼을 포함한다. [ProjectionMask API](https://docs.rs/parquet/latest/parquet/arrow/struct.ProjectionMask.html#method.roots)
+Top-level field projection is distinct from leaf projection of nested fields. `ProjectionMask::roots` includes the child columns of the requested top-level fields. [ProjectionMask API](https://docs.rs/parquet/latest/parquet/arrow/struct.ProjectionMask.html#method.roots)
 
-Parquet page의 압축 해제·디코딩 중에는 요청한 행보다 많은 데이터를 처리할 수 있다. 따라서 블록을 순차 실행하고 각 배치 처리 전후에 취소 상태를 검사한다. Page Index가 없는 파일도 같은 읽기 계약으로 처리한다.
+Decompressing and decoding a Parquet page can process more data than the requested rows. Blocks therefore run sequentially, and the cancellation state is checked before and after each batch. Files without a Page Index follow the same read contract.
 
-### 단일 값 조회
+### Single value lookup
 
-`read_value`는 블록 읽기와 같은 규칙으로 대상 행이 속한 블록을 정한다.
+`read_value` picks the block holding the target row with the same rules as block reads.
 
-1. 캐시에서 같은 Row Group과 블록 시작을 가지며 대상 컬럼을 포함한 항목을 찾는다.
-2. 없으면 대상 컬럼 하나만 projection한 블록을 읽고 캐시에 넣는다.
-3. 블록 배치에서 대상 셀만 담은 길이 1의 새 배열로 복사해 `ValueSlice`로 반환한다. 반환 값은 블록 전체의 buffer를 유지하지 않는다.
+1. Find a cache entry with the same Row Group and block start that includes the target column.
+2. Otherwise, read a block projecting only the target column and insert it into the cache.
+3. Copy just the target cell from the block batch into a new array of length 1 and return it as a `ValueSlice`. The returned value does not keep the whole block's buffers alive.
 
-Parquet는 값 하나를 부분적으로 디코딩하지 않으므로, 선택 값은 디코딩 후 전체가 메모리에 올라온다. 큰 값의 화면 처리 비용은 값 상세 보기의 표시 줄 가상화로 제한한다.
+Parquet does not decode part of a single value, so the selected value is fully in memory after decoding. The display cost of large values is bounded by virtualizing display lines in value detail.
 
-## 6. 가상화 그리드
+## 6. Virtualized grid
 
-### viewport 계산과 렌더링
+### Viewport computation and rendering
 
-`GridView`는 `first_visible_row: u64`와 행 내부 pixel offset을 저장한다. 전체 행 수에 행 높이를 곱한 거대한 GPUI element를 생성하지 않고, 화면 내부의 상대 좌표로 셀을 배치한다. 수직 스크롤바의 위치 비율은 `f64`로 계산하고, 행 단위 키 입력은 정수 행 위치를 갱신한다.
+`GridView` stores `first_visible_row: u64` and a pixel offset within that row. It never creates a huge GPUI element of total rows times row height; cells are placed in coordinates relative to the viewport. The vertical scrollbar's position ratio is computed in `f64`, and row-wise key input updates the integer row position.
 
-가로 위치도 첫 컬럼 ID와 컬럼 내부 offset으로 저장한다. 고정 컬럼 너비로 보이는 컬럼 범위를 계산한다. 헤더와 본문은 동일한 가로 위치를 사용하고 행 번호 영역은 수평 이동에서 고정한다.
+The horizontal position is likewise stored as the first column ID and an offset within that column. The visible column range is computed from the fixed column width. Header and body share the horizontal position, and the row number area stays fixed during horizontal movement.
 
-- viewport의 위·아래 각 8행, 좌·우 각 1컬럼을 overscan으로 요청한다.
-- 그리드의 생성·포맷팅 대상 수는 viewport와 overscan의 행 수 × 컬럼 수에 비례한다.
-- 스크롤과 창 크기 변경으로 요청 범위가 바뀌면 최신 `WindowRequest`를 등록한다. 범위가 같으면 재요청하지 않는다.
-- 현재 화면과 겹치는 기존 셀은 유지하고, 새로 노출된 셀만 placeholder로 표시한다.
-- 그리드는 GPUI custom `Element`로 layout·hitbox·paint를 구현한다. 탐색기와 스키마의 일정 높이 행 목록에는 `uniform_list`를 사용한다. [Element API](https://docs.rs/gpui/latest/gpui/trait.Element.html), [uniform_list API](https://docs.rs/gpui/latest/gpui/fn.uniform_list.html)
+- 8 rows above and below and 1 column left and right of the viewport are requested as overscan.
+- The number of cells built and formatted for the grid is proportional to the viewport plus overscan rows × columns.
+- When scrolling or resizing changes the requested range, the latest `WindowRequest` is registered. An unchanged range is not requested again.
+- Existing cells overlapping the current screen are kept, and only newly exposed cells show placeholders.
+- The grid implements layout, hitboxes and paint as a GPUI custom `Element`. The explorer's and schema's fixed-height row lists use `uniform_list`. [Element API](https://docs.rs/gpui/latest/gpui/trait.Element.html), [uniform_list API](https://docs.rs/gpui/latest/gpui/fn.uniform_list.html)
 
-### 셀 표시 계약
+### Cell display contract
 
-셀 미리보기는 그리드에 그리기 위한 요약이며 worker에서 생성한다. GPUI 렌더링은 미리보기의 텍스트와 스타일만 사용한다. 미리보기에서 생략하거나 요약한 내용은 값 상세 보기에서 전체를 표시한다.
+A cell preview is a summary for drawing in the grid, built by the worker. GPUI rendering uses only the preview's text and style. Anything omitted or summarized in a preview is shown in full in value detail.
 
-| 데이터 | 표시 |
+| Data | Display |
 |---|---|
-| Null | `null` 전용 스타일. 빈 문자열과 구분 |
-| Boolean·정수·실수·Decimal | 타입에 맞는 값. Decimal scale 유지 |
-| Date·Time·Timestamp | 값과 정밀도를 유지. Timestamp timezone이 있으면 함께 표시 |
-| 문자열 | 최대 256 Unicode scalar value의 미리보기와 생략 표시 |
-| Binary | 앞 32바이트의 16진수 미리보기와 전체 byte 길이 |
-| Struct | `Struct {필드 수}` 요약 |
-| List·Map | 원소·entry 개수 요약 |
-| Dictionary | 참조된 값의 타입에 따른 표시 |
-| 표시 미지원 타입 | 타입 이름과 `표시 미지원` 상태 |
+| Null | Dedicated `null` style, distinct from the empty string |
+| Boolean, integer, float, Decimal | Value appropriate to the type, keeping the Decimal scale |
+| Date, Time, Timestamp | Value and precision kept; Timestamp timezone shown when present |
+| String | Preview of at most 256 Unicode scalar values with an ellipsis |
+| Binary | Hexadecimal preview of the first 32 bytes and the total byte length |
+| Struct | `Struct {field count}` summary |
+| List, Map | Element or entry count summary |
+| Dictionary | Displayed by the type of the referenced values |
+| Types without display support | Type name and a `display unsupported` state |
 
-문자열은 필요한 접두부만 복사하고, 중첩 값은 요약을 생성한다. Timestamp의 timezone 정보가 없으면 임의의 로컬 timezone으로 변환하지 않는다. 디코딩 오류는 표시 미지원 셀과 구분해 데이터 읽기 오류로 처리한다.
+Strings copy only the prefix they need, and nested values get a summary. Timestamps without timezone information are never converted to an arbitrary local timezone. Decoding errors are handled as data read errors, distinct from unsupported cells.
 
-## 7. 값 상세 보기
+## 7. Value detail
 
-그리드 셀은 화면에 그리기 위한 미리보기다. 원본 값의 확인과 복사는 값 상세 보기가 담당하며, 값의 길이와 형태에 관계없이 전체를 보여준다.
+Grid cells are previews for drawing. Inspecting and copying raw values is the job of value detail, which shows the whole value regardless of length and shape.
 
-### 데이터 흐름
+### Data flow
 
-1. 선택 셀이 바뀌면 `AppController`가 새 `RequestId`로 `ValueRequest`를 등록한다.
-2. worker는 현재 viewport의 블록을 처리한 뒤 값 요청을 처리한다. viewport 안의 선택 셀은 캐시에서 찾는다.
-3. worker는 `read_value`가 반환한 `ValueSlice`를 선택 값으로 보관하고, 루트 노드의 상세 표시 모델을 UI에 보낸다.
-4. 중첩 노드를 펼치면 UI가 루트부터의 자식 위치 목록으로 노드를 지정해 자식 목록을 요청한다. worker는 선택 값에서 자식 노드를 만든다.
-5. 노드를 선택하면 worker가 그 노드의 원본 값 전체를 UI로 보낸다. 문자열은 텍스트 복사본, Binary는 byte 복사본, 그 밖의 스칼라는 표시 텍스트다.
+1. When the selected cell changes, `AppController` registers a `ValueRequest` under a new `RequestId`.
+2. The worker handles the value request after processing the current viewport's blocks. A selected cell within the viewport is found in the cache.
+3. The worker keeps the `ValueSlice` returned by `read_value` as the selected value and sends the root node's detail model to the UI.
+4. Expanding a nested node makes the UI request its children, addressing the node by its child positions from the root. The worker builds child nodes from the selected value.
+5. Selecting a node makes the worker send that node's full raw value to the UI: a text copy for strings, a byte copy for Binary, and the display text for other scalars.
 
-탭을 전환하면 이전 탭의 선택 값을 해제한다. 새 활성 탭에 선택 셀이 있으면 그 값을 다시 요청한다.
+Switching tabs releases the previous tab's selected value. If the new active tab has a selected cell, its value is requested again.
 
-### 값 트리와 본문
+### Value tree and body
 
-| 데이터 | 값 트리의 노드 | 본문 |
+| Data | Value tree node | Body |
 |---|---|---|
-| Null | `null` 전용 스타일 | `null` 전용 스타일. 빈 문자열과 구분 |
-| Boolean·정수·실수·Decimal·Date·Time·Timestamp | 셀 표시 계약과 같은 텍스트 | 셀 표시 계약과 같은 텍스트 |
-| 문자열 | 한 줄 미리보기와 문자 수 | 원문 전체 |
-| Binary | 앞부분의 16진수 미리보기와 byte 길이 | 전체 byte의 hex dump. 줄마다 offset, 16 byte의 16진수, ASCII 표시 |
-| Struct | 필드 이름별 자식 노드 | 필드 수 요약 |
-| List | 원소 위치별 자식 노드 | 원소 개수 요약 |
-| Map | entry별 자식 노드. entry 아래에 key·value 노드 | entry 개수 요약 |
-| Dictionary | 참조된 값의 타입에 따른 노드 | 참조된 값의 타입에 따른 본문 |
-| 표시 미지원 타입 | 타입 이름과 `표시 미지원` 상태 | `arrow-cast`의 표시 formatter가 만든 텍스트. formatter도 지원하지 않으면 타입 이름과 `표시 미지원` 상태 |
+| Null | Dedicated `null` style | Dedicated `null` style, distinct from the empty string |
+| Boolean, integer, float, Decimal, Date, Time, Timestamp | Same text as the cell display contract | Same text as the cell display contract |
+| String | One-line preview and character count | Full original text |
+| Binary | Hexadecimal preview of the beginning and the byte length | Hex dump of all bytes: offset, 16 bytes in hexadecimal and ASCII per line |
+| Struct | Child node per field name | Field count summary |
+| List | Child node per element position | Element count summary |
+| Map | Child node per entry, with key and value nodes under each entry | Entry count summary |
+| Dictionary | Node by the type of the referenced values | Body by the type of the referenced values |
+| Types without display support | Type name and a `display unsupported` state | Text from `arrow-cast`'s display formatter; if the formatter does not support it either, the type name and a `display unsupported` state |
 
-- 스칼라 셀은 값 트리 없이 본문만 표시한다.
-- 자식이 1,000개를 넘는 노드는 자식을 1,000개 단위의 구간 노드로 묶는다. 구간 노드를 펼칠 때 그 구간의 자식만 만든다.
+- Scalar cells show only the body, without a value tree.
+- Nodes with more than 1,000 children group them into range nodes of 1,000. Expanding a range node builds only the children in that range.
 
-### 본문 표시
+### Body display
 
-- 본문은 고정폭 글꼴을 사용한다. 문자열의 줄바꿈(`\n`, `\r\n`, `\r`)은 줄을 나누고, 탭과 그 밖의 제어 문자는 표시 기호로 보여준다. 패널 폭을 넘는 줄은 패널 폭에서 자동 줄바꿈한다.
-- 표시 기호와 자동 줄바꿈은 화면 표시에만 적용한다. 원본 값과 복사 결과는 바꾸지 않는다.
-- UI는 본문의 표시 줄 시작 위치 인덱스를 GPUI background task로 만들고, 패널 폭이 바뀌면 다시 만든다. 인덱스를 만드는 동안 본문에 `Loading`을 표시한다.
-- 본문은 표시 줄 단위의 `uniform_list`로 보이는 줄만 렌더링한다. hex dump는 16 byte마다 한 줄이므로 인덱스 없이 줄 번호로 위치를 계산한다.
+- The body uses a monospace font. String newlines (`\n`, `\r\n`, `\r`) split lines, and tabs and other control characters are shown as display symbols. Lines wider than the panel wrap at the panel width.
+- Display symbols and wrapping apply only to the screen. The raw value and copy results are unchanged.
+- The UI builds an index of the body's display line starts in a GPUI background task and rebuilds it when the panel width changes. While building the index, the body shows `Loading`.
+- The body renders only visible lines with a `uniform_list` of display lines. A hex dump has one line per 16 bytes, so positions are computed from line numbers without an index.
 
-### 복사
+### Copy
 
-그리드에 포커스가 있으면 선택 셀의 값을, Value 패널에 포커스가 있으면 선택 노드의 값을 복사한다. worker가 선택 값에서 복사 텍스트를 만들고 UI가 클립보드에 쓴다. 미리보기 텍스트는 복사에 사용하지 않는다.
+With the grid focused, the selected cell's value is copied; with the Value panel focused, the selected node's value. The worker builds the copy text from the selected value and the UI writes it to the clipboard. Preview text is never used for copying.
 
-| 데이터 | 복사 텍스트 |
+| Data | Copy text |
 |---|---|
-| 문자열 | 원문 그대로 |
-| Binary | 공백 없는 소문자 16진수 |
+| String | The original text as is |
+| Binary | Lowercase hexadecimal without spaces |
 | Null | `null` |
-| 그 밖의 스칼라 | 본문 텍스트 |
-| Struct·List·Map | JSON. Struct는 객체, List는 배열, Map은 `{"key": …, "value": …}` 객체의 배열. 내부의 Binary는 16진수 문자열, NaN·Infinity와 시간 값은 문자열 |
+| Other scalars | The body text |
+| Struct, List, Map | JSON: Struct as an object, List as an array, Map as an array of `{"key": …, "value": …}` objects. Nested Binary as hexadecimal strings, and NaN, Infinity and time values as strings |
 
-큰 값의 복사는 값 크기만큼의 텍스트를 만든다. 텍스트 생성은 worker에서 실행하며 UI thread를 막지 않는다.
+Copying a large value builds text as large as the value. Text building runs on the worker and does not block the UI thread.
 
-## 8. 행 보기와 찾기
+## 8. Row views and find
 
-### 컬럼 순차 읽기
+### Sequential column scan
 
-`ColumnScan`은 Row Group 순서로 요청한 최상위 컬럼만 읽고, 한 번에 최대 8,192행 배치를 돌려준다. 오름차순 원본 행 목록이 있으면 Row Group마다 그 행만 담은 `RowSelection`으로 읽고, 목록의 행이 없는 Row Group은 열지 않는다. 배치마다 그 배치가 행 목록 또는 파일의 몇 번째 행부터인지 함께 돌려준다.
+`ColumnScan` reads only the requested top-level columns in Row Group order and returns batches of at most 8,192 rows. With an ascending source row list, each Row Group is read with a `RowSelection` holding only those rows, and Row Groups without listed rows are not opened. Each batch is returned with the position in the row list, or in the file, of its first row.
 
-순차 읽기는 캐시를 쓰지 않고, 돌려준 배치를 보유하지 않는다. Row Group을 시작할 때마다 파일 크기와 수정 시각을 확인한다.
+Scans bypass the cache and do not keep the batches they return. The file size and modification time are checked at the start of each Row Group.
 
-### 행 목록
+### Row lists
 
-행 보기는 원본 행 번호의 배열인 행 목록으로 표현한다. 전체 행 수가 `u32` 범위 안이면 행마다 4 byte, 그보다 크면 8 byte를 쓴다. 필터와 정렬이 없으면 행 목록을 만들지 않는다.
+A row view is represented by row lists, arrays of source row numbers. When the total row count fits in `u32`, each row uses 4 bytes; otherwise 8 bytes. Without filter or sort, no row list is built.
 
-- 필터 행 목록: 필터를 통과한 원본 행을 오름차순으로 담는다. 필터가 있을 때만 만든다.
-- 표시 순서 목록: 정렬한 순서의 원본 행을 담는다. 정렬이 있을 때만 만들고, 정렬만 있으면 전체 행을, 필터도 있으면 필터 행 목록의 행을 담는다.
+- Filtered rows: source rows that passed the filter, in ascending order. Built only with a filter.
+- Display order: source rows in sorted order. Built only with a sort; it holds all rows with a sort alone, or the filtered rows when there is also a filter.
 
-행 보기의 i번째 행은 표시 순서 목록이 있으면 그 i번째, 없으면 필터 행 목록의 i번째, 둘 다 없으면 원본 i번째 행이다.
+Row i of the row view is the i-th entry of the display order if it exists, otherwise the i-th filtered row, otherwise the i-th source row.
 
-### 필터 계산
+### Filter computation
 
-1. 조건마다 값을 컬럼 타입으로 해석한다. 문자열 컬럼은 입력 그대로, Binary는 16진수로, 그 밖의 타입은 `arrow-cast`의 문자열 변환으로 해석한다. Dictionary 컬럼은 참조하는 값의 타입으로 해석한다.
-2. 조건이 있는 컬럼만 순차 읽기로 읽는다.
-3. 배치마다 조건별 Boolean 결과를 만들고, Null 결과를 거짓으로 바꾼 뒤 모두 AND한다. 비교는 `arrow-ord`의 비교 kernel을, `포함`은 문자열 검색을 쓴다.
-4. 참인 행의 원본 번호를 필터 행 목록에 추가한다.
+1. Parse each condition's value as the column type: string columns use the input as is, Binary as hexadecimal, and other types through `arrow-cast` string conversion. Dictionary columns are parsed as the type of their values.
+2. Read only the columns with conditions using a sequential scan.
+3. For each batch, build a Boolean result per condition, turn Null results into false, and AND them all. Comparisons use `arrow-ord` comparison kernels, and `contains` uses string search.
+4. Append the source numbers of true rows to the filtered rows.
 
-### 정렬 계산
+### Sort computation
 
-1. 필터 행 목록이 있으면 그 행만, 없으면 전체 행의 정렬 컬럼을 순차 읽기로 읽는다. Dictionary는 참조하는 값의 배열로 바꿔 모은다.
-2. 모은 값을 배열 하나로 합치고, `(정렬 값, 행 보기 안의 위치)`를 키로 `lexsort_to_indices`를 실행한다. 정렬 값은 지정한 방향에 Null을 마지막으로 두고, 위치는 오름차순이다. 따라서 값이 같은 행은 원본 순서를 유지한다.
-3. 결과 위치를 원본 행 번호로 바꿔 표시 순서 목록을 만든다. 정렬 값 배열은 계산이 끝나면 해제한다.
+1. Read the sort column with a sequential scan, over the filtered rows if present, otherwise over all rows. Dictionary values are collected as arrays of their referenced values.
+2. Concatenate the collected values into one array and run `lexsort_to_indices` keyed by `(sort value, position within the row view)`. The sort value uses the requested direction with Null last, and the position is ascending, so rows with equal values keep source order.
+3. Map the resulting positions to source row numbers to build the display order. The sort value array is released when the computation ends.
 
-정렬하는 행 수는 `u32` 범위 안이어야 한다. 넘으면 정렬하지 않고 안내를 표시한다.
+The number of rows to sort must fit in `u32`. Otherwise the sort is not performed and a notice is shown.
 
-### 행 보기의 화면 읽기
+### Reading the screen of a row view
 
-원본 순서의 행 보기는 블록 읽기로 화면 범위를 읽는다. 행 목록이 있으면 worker가 화면 범위의 원본 행 번호를 꺼내 `read_rows`로 읽고, 셀 미리보기와 함께 원본 행 번호를 UI에 보낸다. `read_rows`도 블록 캐시를 쓴다. 정렬한 행 보기는 화면의 행이 여러 블록에 흩어지므로, 화면 하나에 읽는 블록 수가 최대 화면의 행 수까지 늘어난다.
+A row view in source order reads the visible range with block reads. With a row list, the worker takes the source row numbers of the visible range, reads them with `read_rows`, and sends the source row numbers to the UI along with the cell previews. `read_rows` also uses the block cache. In a sorted row view, the visible rows are scattered across blocks, so the blocks read for one screen can grow up to the number of visible rows.
 
-값 요청은 행 보기 위치로 보내고 worker가 원본 행으로 바꿔 `read_value`를 호출한다.
+Value requests are sent as row view positions, and the worker maps them to source rows before calling `read_value`.
 
-### 찾기 계산
+### Find computation
 
-1. 입력을 컬럼별 비교 값으로 해석한다. 문자열 컬럼은 입력 그대로, Binary 컬럼은 16진수로 해석한다. 그 밖의 스칼라 컬럼은 입력을 컬럼 타입으로 해석한 뒤 셀 표시 텍스트로 다시 바꾸고, 그 텍스트가 입력과 같을 때만 비교 대상으로 삼는다. 표시 텍스트는 값마다 하나로 정해지므로 값 비교가 표시 텍스트 비교와 같다. 비교 대상이 없는 컬럼은 읽지 않는다.
-2. 행 보기의 행(필터 행 목록이 있으면 그 행)만 비교 대상 컬럼을 순차 읽기로 읽는다. 일치하는 셀이 있는 원본 행을 bitmap에 표시하고 일치 셀 수를 센다. bitmap은 원본 행마다 1 bit다.
-3. 다음·이전 일치는 시작 셀의 같은 행에서 다음 컬럼을 먼저 보고, 행 보기 순서로 bitmap을 검사해 일치 행을 찾는다. 찾은 행은 `read_rows`로 비교 대상 컬럼을 읽어 일치하는 첫 컬럼(이전 일치는 마지막 컬럼)을 정한다.
+1. Parse the input into a comparison value per column. String columns use the input as is, and Binary columns parse it as hexadecimal. Other scalar columns parse the input as the column type, convert it back to the cell display text, and become comparison targets only when that text equals the input. Each value has exactly one display text, so comparing values equals comparing display texts. Columns without a comparison target are not read.
+2. Read the target columns of the row view's rows (the filtered rows if present) with a sequential scan. Mark source rows with matching cells in a bitmap and count the matching cells. The bitmap has 1 bit per source row.
+3. For the next or previous match, look first at the following columns in the start cell's row, then scan the bitmap in row view order for a matching row. The found row's target columns are read with `read_rows` to pick the first matching column (the last one for a previous match).
 
-찾기 결과는 세션, 행 보기, 입력이 모두 같을 때 다시 쓴다. worker는 가장 최근의 결과 하나만 보관한다. 그리드의 일치 셀 강조는 화면 범위 요청에 찾기 입력을 함께 보내, worker가 미리보기를 만들 때 같은 비교로 표시한다.
+Find results are reused when the session, row view and input are all the same. The worker keeps only the most recent result. To highlight matching cells in the grid, the visible range request carries the find input, and the worker marks matches with the same comparison while building previews.
 
-### 계산 작업의 실행
+### Running computation tasks
 
-행 보기와 찾기의 계산은 데이터 worker thread에서 배치 단위로 나눠 실행한다. 배치 하나를 처리할 때마다 mailbox를 확인해 열기·닫기·화면 범위·값 요청을 먼저 처리한다. 따라서 계산 중에도 스크롤, 셀 선택, 탭 전환이 동작하고, 동시에 디코딩하는 작업은 1개로 유지된다.
+Row view and find computations run on the data worker thread, split into batches. After each batch, the worker checks the mailbox and handles open, close, visible range and value requests first. Scrolling, cell selection and tab switching therefore keep working during computation, and only one decoding job runs at a time.
 
-- 세션마다 행 보기 요청은 최신 하나만 둔다. 같은 세션의 새 요청, 취소, 탭 닫기는 진행 중인 계산을 버린다. 다른 세션의 계산은 순서대로 실행한다.
-- 찾기 요청은 활성 탭의 최신 하나만 둔다. 같은 세션의 행 보기 계산이 남아 있으면 그 뒤에 실행한다.
-- 진행률은 최대 100ms마다 한 번 UI로 보낸다.
+- Each session keeps only its latest row view request. A new request, cancel or tab close on the same session drops the in-flight computation. Computations of different sessions run in order.
+- Only the active tab's latest find request is kept. If a row view computation remains on the same session, find runs after it.
+- Progress is sent to the UI at most once per 100ms.
 
-## 9. 요청 수명과 캐시
+## 9. Request lifetimes and cache
 
-### 파일 세대와 viewport 세대
+### File and viewport generations
 
-- 탭으로 파일을 열 때마다 새 `SessionId`를 발급한다.
-- viewport 요청과 값 요청은 활성 탭에서만 발생한다. viewport 요청이 바뀔 때마다 `RequestId`를 증가시킨다.
-- 값 요청도 같은 발급기에서 `RequestId`를 받는다. controller는 viewport와 값의 최신 `RequestId`를 따로 보관하고, 결과는 같은 종류의 최신 요청과 일치할 때만 반영한다.
-- 대기 중인 viewport 요청과 값 요청은 각각 최신 요청 하나로 교체한다. 탭을 전환하면 이전 탭의 대기 요청이 새 활성 탭의 요청으로 교체된다. 선택이 바뀌면 이전 값의 노드 펼치기·복사 요청과 결과를 폐기한다.
-- 열기·닫기 명령은 요청 순서대로 모두 처리한다. 아직 처리하지 않은 열기 명령의 탭을 닫으면 그 열기 명령을 취소한다. 닫힌 탭의 세션 응답은 폐기한다.
-- worker는 블록 읽기 전, 배치 디코딩 후, 결과 송신 전에 세대를 확인한다.
-- 취소된 요청의 결과는 UI로 전달하지 않는다. 이미 진행 중인 동기 I/O는 반환된 뒤 세대를 검사한다.
-- 같은 세션에서 완료된 블록은 캐시에 재사용할 수 있다. UI는 현재 `SessionId`와 `RequestId`에 일치하는 결과만 반영한다.
-- 행 보기 요청도 같은 발급기에서 `RequestId`를 받고, 완성된 행 보기는 그 번호로 구분한다. 탭은 그리드에 표시 중인 행 보기의 번호를 가진다. viewport·값·찾기 요청은 이 번호를 함께 보내고, worker는 세션의 현재 행 보기와 번호가 다른 요청을 버린다. UI는 새 행 보기의 완성 결과를 받은 뒤에 그 번호로 요청한다.
-- 행 보기 계산은 세션 단위로 실행하므로 탭을 전환해도 멈추지 않는다. 결과는 그 탭의 최신 행 보기 요청과 번호가 같을 때만 반영한다.
+- Every file opened in a tab gets a new `SessionId`.
+- Viewport and value requests come only from the active tab. `RequestId` increments whenever the viewport request changes.
+- Value requests take `RequestId`s from the same issuer. The controller keeps the latest `RequestId` for viewports and values separately, and applies a result only when it matches the latest request of the same kind.
+- Pending viewport and value requests are each replaced by the latest one. Switching tabs replaces the previous tab's pending requests with those of the new active tab. When the selection changes, node expansion and copy requests and results for the previous value are dropped.
+- Open and close commands are all processed in request order. Closing a tab whose open command has not been processed cancels that command. Responses for closed tabs' sessions are dropped.
+- The worker checks generations before reading a block, after decoding a batch, and before sending results.
+- Results of cancelled requests are not delivered to the UI. Synchronous I/O already in progress is checked once it returns.
+- Blocks completed in the same session can be reused from the cache. The UI applies only results matching the current `SessionId` and `RequestId`.
+- Row view requests also take `RequestId`s from the same issuer, and a completed row view is identified by that number. Each tab holds the number of the row view shown in its grid. Viewport, value and find requests carry this number, and the worker drops requests whose number differs from the session's current row view. The UI uses the new number only after receiving the completed row view.
+- Row view computation runs per session, so it does not stop on tab switches. Its result is applied only when its number matches the tab's latest row view request.
 
-요청 mailbox는 열기·닫기 명령의 순서 목록, 최신 viewport, 최신 값 요청과 그 값의 노드 펼치기·복사 요청, 세션별 최신 행 보기 요청, 최신 찾기 요청, 최신 파일 구조 요청을 보관하고, worker를 깨우는 신호는 용량 1로 합친다. worker는 닫기, 열기, viewport, 값 요청, 노드 펼치기·복사, 파일 구조, 찾기 이동 순서로 처리하고, 처리할 요청이 없을 때 행 보기·찾기 계산을 배치 하나만큼 진행한다. mailbox 잠금 구간에서는 I/O를 실행하지 않는다. 결과 channel 용량은 2로 제한하며, UI의 GPUI task가 비동기로 수신한다. UI thread에서 worker 완료를 기다리지 않는다.
+The request mailbox holds the ordered list of open and close commands, the latest viewport, the latest value request with its node expansion and copy requests, the latest row view request per session, the latest find request and the latest file structure request; wake signals coalesce into a capacity of 1. The worker handles close, open, viewport, value request, node expansion and copy, file structure and find moves in that order, and advances row view or find computation by one batch when there is nothing else to handle. No I/O runs while the mailbox is locked. The result channel holds at most 2 messages and is received asynchronously by a GPUI task in the UI. The UI thread never waits for the worker to finish.
 
-### 캐시와 메모리 수명
+### Cache and memory lifetimes
 
-캐시 키는 `(SessionId, RowGroupId, block_start, 정렬된 ColumnId 목록)`이다. 캐시 값은 해당 projection의 Arrow `RecordBatch`와 전역 행 위치다.
+The cache key is `(SessionId, RowGroupId, block_start, sorted ColumnId list)`. The cache value is the Arrow `RecordBatch` of that projection and its global row position.
 
-캐시는 엔진 하나에 하나만 두고 모든 탭이 같은 예산을 공유한다. LRU는 탭과 관계없이 최근 사용 순서로 제거하므로, 오래 보지 않은 탭의 블록이 먼저 밀려난다. 탭을 닫으면 그 세션의 캐시 항목을 즉시 제거한다.
+There is one cache per engine, and all tabs share the same budget. The LRU evicts by recency regardless of tab, so blocks of tabs not viewed for a while go first. Closing a tab removes that session's cache entries immediately.
 
-| 항목 | 초기 구현값 |
+| Item | Initial value |
 |---|---|
-| 데이터 worker 동시 디코딩 | 1개 |
-| 행 블록·출력 배치 크기 | 최대 512행 |
-| 유지하는 Arrow 캐시 예산 | 모든 탭 합계 128 MiB |
-| 결과 channel | 최대 2개 메시지 |
-| 세로 overscan | 위·아래 각 8행 |
-| 가로 overscan | 좌·우 각 1컬럼 |
-| 보유하는 선택 값 | 1개 |
-| 값 트리 구간 노드 크기 | 자식 1,000개 |
-| 순차 읽기 배치 크기 | 최대 8,192행 |
-| 행 목록 | 행당 4 byte. 전체 행 수가 `u32` 범위를 넘으면 8 byte |
-| 찾기 일치 bitmap | 원본 행당 1 bit. 최근 결과 1개 |
-| 계산 진행률 전송 간격 | 최소 100ms |
+| Concurrent decoding on the data worker | 1 |
+| Row block and output batch size | At most 512 rows |
+| Arrow cache budget | 128 MiB total across all tabs |
+| Result channel | At most 2 messages |
+| Vertical overscan | 8 rows above and below |
+| Horizontal overscan | 1 column left and right |
+| Selected values held | 1 |
+| Value tree range node size | 1,000 children |
+| Sequential scan batch size | At most 8,192 rows |
+| Row lists | 4 bytes per row; 8 bytes when the total row count exceeds `u32` |
+| Find match bitmap | 1 bit per source row; 1 most recent result |
+| Progress update interval | At least 100ms |
 
-위 값은 구현 기본값이며 처리 성능의 측정 결과가 아니다.
+These values are implementation defaults, not measured performance results.
 
-캐시는 배열이 유지하는 실제 buffer 용량을 기준으로 보수적으로 계산한다. 작은 slice가 큰 원본 buffer를 유지하면 원본 buffer의 유지 비용도 포함한다. 삽입 전 LRU 항목을 제거해 예산을 맞춘다. 단일 블록이 예산을 넘으면 캐시에 넣지 않고 필요한 미리보기만 만든 뒤 해제한다.
+The cache conservatively counts the actual buffer capacity held by arrays. When a small slice pins a large source buffer, the cost of keeping the source buffer is included. LRU entries are evicted before insertion to fit the budget. A single block larger than the budget is not cached; only the needed previews are built before it is released.
 
-128 MiB는 유지하는 Arrow 캐시의 예산이다. decoder의 압축·해제 buffer, 메타데이터, UI 텍스트는 별도로 메모리를 사용한다. 특히 배치 행 수 설정은 decoder 내부 allocation 크기를 제한하지 않으므로, 동시에 실행하는 decoder를 1개로 제한한다. [Reader의 batch size 계약](https://docs.rs/parquet/latest/parquet/arrow/arrow_reader/struct.ArrowReaderBuilder.html#method.with_batch_size)
+128 MiB is the budget of the retained Arrow cache. The decoder's compression buffers, metadata and UI text use memory separately. In particular, the batch row count does not bound the decoder's internal allocation size, so only one decoder runs at a time. [Reader batch size contract](https://docs.rs/parquet/latest/parquet/arrow/arrow_reader/struct.ArrowReaderBuilder.html#method.with_batch_size)
 
-그리드 결과에는 제한된 셀 미리보기를 전달하고, UI는 Arrow 배치를 보유하지 않는다. 원본 값은 활성 탭의 선택 값 1개에 한해 유지한다. worker는 선택 값의 `ValueSlice`를, UI는 선택 노드 본문의 텍스트 또는 byte 1벌을 가진다. 이 메모리는 Arrow 캐시 예산과 별도이며 선택 값의 크기에 비례한다. overscan 밖의 추가 prefetch는 실행하지 않는다.
+Grid results carry bounded cell previews, and the UI holds no Arrow batches. Raw values are kept only for the active tab's single selected value: the worker holds the selected value's `ValueSlice`, and the UI holds one copy of the selected node body's text or bytes. This memory is separate from the Arrow cache budget and proportional to the selected value's size. No prefetch runs beyond overscan.
 
-행 목록과 찾기 bitmap은 Arrow 캐시 예산과 별도로 행 수에 비례하는 메모리를 쓴다. 필터와 정렬이 모두 있으면 필터 행 목록과 표시 순서 목록을 함께 유지한다. 정렬 계산 중에는 행 보기 행 수만큼의 정렬 값과 위치·결과 배열을 함께 보유하고, 계산이 끝나면 정렬 값을 해제한다. 행 목록은 탭이 닫히거나 행 보기가 바뀔 때 해제한다.
+Row lists and the find bitmap use memory proportional to the row count, separate from the Arrow cache budget. With both a filter and a sort, the filtered rows and the display order are both kept. During sort computation, sort values, positions and result arrays for the row view's rows are held together, and the sort values are released when the computation ends. Row lists are released when the tab closes or the row view changes.
 
-비활성 탭은 파일 핸들, 메타데이터, Row Group 인덱스, 행 목록, 스크롤 위치, 선택 셀, 스키마 펼침 상태만 유지한다. 셀 미리보기는 활성 탭만 가진다. 따라서 탭이 늘 때 함께 늘어나는 메모리는 탭별 메타데이터와 인덱스다. 탭을 전환하면 이전 탭의 셀 미리보기와 선택 값을 해제하고, 탭을 닫으면 그 세션의 파일 핸들·메타데이터·인덱스·캐시 항목까지 해제한다.
+Inactive tabs keep only the file handle, metadata, Row Group index, row lists, scroll position, selected cell and schema expansion. Only the active tab has cell previews, so the memory that grows with the number of tabs is per-tab metadata and indexes. Switching tabs releases the previous tab's cell previews and selected value; closing a tab also releases that session's file handle, metadata, index and cache entries.
 
-## 10. 상태 전이와 오류
+## 10. State transitions and errors
 
-탭이 없으면 앱은 빈 상태다. 파일 상태는 탭마다 `Opening → Ready` 또는 `Opening → OpenError`로 전이한다. `Ready` 내부의 그리드 범위와 값 상세 보기는 각각 `Loading`, `Loaded`, `ReadError`를 가진다. 한 탭의 오류는 다른 탭의 상태를 바꾸지 않는다.
+Without tabs, the app is in the empty state. Each tab's file state transitions `Opening → Ready` or `Opening → OpenError`. Within `Ready`, the grid range and value detail each have `Loading`, `Loaded` and `ReadError`. An error in one tab does not change the state of other tabs.
 
-| 조건 | 처리와 사용자 동작 |
+| Condition | Handling and user action |
 |---|---|
-| 파일 선택 취소 | 현재 상태 유지 |
-| 경로 없음·권한 오류·잘못된 Parquet Footer | 해당 탭의 `OpenError`에 경로와 원인을 표시. 다른 탭과 파일 열기 가능 |
-| 빈 파일 데이터 | `Ready`, 스키마·헤더와 0행 상태 표시 |
-| 특정 범위 디코딩 실패·미지원 codec | 스키마 유지, 해당 범위에 `ReadError`와 재시도 표시 |
-| 선택 값 조회 실패 | 그리드 유지, Value 패널에 `ReadError`와 재시도 표시 |
-| 필터 값을 컬럼 타입으로 해석할 수 없음 | 적용하지 않고 필터 창에 원인 표시 |
-| 행 보기 계산 중 읽기 실패 | 이전 행 보기 유지, 필터·정렬 막대에 원인과 `다시 시도` 표시 |
-| 찾기 계산 중 읽기 실패 | 찾기 막대에 원인 표시. 다음 `Enter`에서 다시 계산 |
-| 닫힌 탭의 세션 또는 이전 요청의 응답 | 폐기 |
-| 탭 닫기 | 해당 세션의 대기 작업 취소, 파일 핸들·메타데이터·인덱스·캐시 항목 해제 |
-| 읽기 전후 파일 크기·수정 시각 변경 감지 | 해당 탭의 캐시와 그리드를 무효화하고 다시 열기 표시 |
-| 앱 종료 | 요청 수신 종료, 실행 중 작업에 취소 신호, 모든 파일과 캐시 해제 |
+| File dialog cancelled | Current state kept |
+| Missing path, permission error, invalid Parquet footer | The tab's `OpenError` shows the path and reason. Other tabs and opening files keep working |
+| File with no data | `Ready`, showing the schema, headers and a zero-row state |
+| Decoding failure or unsupported codec in a range | Schema kept; `ReadError` and retry shown for that range |
+| Selected value lookup failure | Grid kept; `ReadError` and retry shown in the Value panel |
+| Filter value cannot be parsed as the column type | Not applied; reason shown in the filter popover |
+| Read failure during row view computation | Previous row view kept; reason and `Retry` shown in the filter and sort bar |
+| Read failure during find computation | Reason shown in the find bar; recomputed on the next `Enter` |
+| Responses for closed tabs' sessions or earlier requests | Dropped |
+| Tab closed | That session's pending work cancelled; file handle, metadata, index and cache entries released |
+| File size or modification time changed between reads | The tab's cache and grid are invalidated and reopen is offered |
+| App exit | Request intake stops, running work is signalled to cancel, all files and caches are released |
 
-파일 크기·수정 시각은 열린 핸들에서 확인한다. 파일을 열어 사용하는 동안 원본을 변경하지 않는 사용 흐름을 기본으로 한다. 오류는 `viewer-core`의 오류 타입으로 구분하고, 사용자 문구는 `viewer-app`에서 구성한다.
+File size and modification time are checked on the open handle. The expected usage is that the source is not modified while it is open. Errors are distinguished by `viewer-core`'s error type, and user messages are built in `viewer-app`.
 
-## 11. 구현 순서와 완료 기준
+## 11. Implementation order and completion criteria
 
-각 단계는 앞 단계의 결과를 사용한다. 첫 파일이 열리고 첫 행이 보이는 경로를 먼저 완성한 뒤 탐색기·가상화·탭·값 상세 보기·캐시를 연결한다.
+Each stage uses the results of the previous ones. The path from opening the first file to seeing its first row is completed first; the explorer, virtualization, tabs, value detail and cache are connected after.
 
-| 단계 | 구현 내용 | 완료 기준 |
+| Stage | Scope | Completion criteria |
 |---|---|---|
-| 1. 실행 기반 | workspace와 두 crate, GPUI fork 커밋·toolchain 고정, 앱 창과 Open 동작 | Windows에서 창과 파일 선택창이 열리고 선택 경로가 앱 상태로 전달됨 |
-| 2. 엔진과 메타데이터 | 읽기 전용 open/close, `DatasetInfo`, Row Group 누적 인덱스, worker 연결 | 정상 파일·0행 파일의 행 수와 스키마 표시. 열기 실패가 UI 오류로 전달됨 |
-| 3. 첫 데이터 표시 | projection, RowSelection, 블록 읽기, 셀 미리보기, 첫 viewport 그리드 | 선택한 행·열의 값이 기준 데이터와 같고 Null·문자열·중첩 타입이 표시 계약을 따름 |
-| 4. 탐색기와 스키마 | 폴더 선택, 지연 디렉터리 조회, 파일 활성화, 스키마 트리 | 탐색기와 Open이 같은 열기 경로를 사용하고, 중첩 스키마를 펼칠 수 있음 |
-| 5. 양방향 가상화 | 논리 스크롤 좌표, 행·열 범위 계산, 고정 헤더, 스크롤바·키 입력, 셀 선택, overscan | 첫 행·중간·마지막 행과 Row Group 경계를 탐색할 수 있고 렌더 대상이 viewport 범위로 제한됨 |
-| 6. 탭 | 엔진의 다중 세션 open·close, 열기·닫기 명령 순서 처리, 탭 목록과 활성 탭, 드래그로 탭 순서 변경, 탭별 스크롤·선택 셀·스키마 펼침 상태 보존, 탭 막대와 단축키 | 여러 파일을 탭으로 열고 전환할 때 각 탭의 스크롤 위치·선택 셀이 유지되고, 탭을 닫으면 그 세션의 파일 핸들·메타데이터가 해제됨 |
-| 7. 값 상세 보기 | `read_value`, 선택 값 보유, 값 트리와 구간 노드, 본문 표시 줄 가상화, 원본 값 복사 | 긴 문자열·줄바꿈이 있는 문자열·큰 Binary·중첩 값을 잘림 없이 끝까지 볼 수 있고, 복사 결과가 기준 데이터와 같음 |
-| 8. 요청·메모리 제어 | latest request 처리, 세대 검사, bounded 결과 전달, 모든 탭이 공유하는 LRU, 탭 전환·닫기 시 해제 | 빠른 스크롤·셀 이동·탭 전환에서 이전 결과가 섞이지 않고, 여러 탭을 열어도 유지 캐시가 공유 예산 안에 있음 |
-| 9. 찾기 | `TextInput`, 찾기 막대, 컬럼 순차 읽기, 배치 단위 계산 작업, 찾기 비교 값 해석, 일치 bitmap과 이동, 일치 셀 강조 | 문자열·수치·시간 값을 표시 텍스트와 정확히 같은 입력으로 찾고 다음·이전·되돌아가기가 동작함. 계산 중에도 스크롤과 탭 전환이 동작함 |
-| 10. 필터 | 조건 해석, 필터 행 목록, 행 보기 번호, `read_rows`, 원본 행 번호 표시, 필터 창과 필터·정렬 막대 | 조건별 결과 행이 기준 데이터와 같고, 필터한 행 보기에서 스크롤·선택·값 상세·찾기가 행 보기 순서를 따름 |
-| 11. 정렬 | 헤더 정렬 입력, 정렬 계산, 표시 순서 목록, 필터와의 결합 | 오름차순·내림차순·Null 위치·같은 값의 원본 순서가 기준 데이터와 같고, 필터와 정렬을 함께 쓸 수 있음 |
-| 12. 파일 구조 | `file_structure`·`row_group_columns`, 통계의 Arrow 타입 변환, 데이터·파일 구조 전환, 파일 요약·컬럼·Row Group 표 | 컬럼별 크기·압축·null 수·최솟값·최댓값과 Row Group별 크기가 기준 메타데이터와 같고, Row Group을 고르면 그 Row Group의 정보로 바뀜 |
-| 13. 공용 UI crate와 차트 | `viewer-ui` 분리, 표·버튼·입력 단축키 공용화, 선·띠·기준선 차트, 히트맵, 자동 눈금, 예제 | 예제가 실제 확률예측 데이터의 예측구간·실적·편향·신뢰도·히트맵을 원본 값과 같은 위치에 그리고, 마우스 위치의 값이 원본과 같음 |
+| 1. Foundation | Workspace and two crates, pinned GPUI fork commit and toolchain, app window and Open action | On Windows, the window and file dialog open and the selected path reaches app state |
+| 2. Engine and metadata | Read-only open/close, `DatasetInfo`, cumulative Row Group index, worker connection | Row counts and schemas of normal and zero-row files are shown; open failures reach the UI as errors |
+| 3. First data | Projection, RowSelection, block reads, cell previews, first viewport grid | Values of the selected rows and columns equal the reference data, and Null, string and nested types follow the display contract |
+| 4. Explorer and schema | Folder selection, lazy directory listing, file activation, schema tree | The explorer and Open share the same open path, and nested schemas can be expanded |
+| 5. Two-axis virtualization | Logical scroll coordinates, row and column range computation, fixed headers, scrollbars and key input, cell selection, overscan | The first, middle and last rows and Row Group boundaries can be explored, and rendering is limited to the viewport range |
+| 6. Tabs | Multi-session open/close in the engine, ordered open and close commands, tab list and active tab, drag reordering, per-tab scroll, selection and schema expansion, tab bar and shortcuts | Opening and switching between several files keeps each tab's scroll position and selected cell, and closing a tab releases its session's file handle and metadata |
+| 7. Value detail | `read_value`, holding the selected value, value tree and range nodes, virtualized body lines, raw value copy | Long strings, strings with newlines, large Binary and nested values can be viewed to the end without truncation, and copies equal the reference data |
+| 8. Request and memory control | Latest-request handling, generation checks, bounded result delivery, LRU shared by all tabs, release on tab switch and close | Fast scrolling, cell movement and tab switching never mix in earlier results, and with many tabs open the retained cache stays within the shared budget |
+| 9. Find | `TextInput`, find bar, sequential column scans, batch-by-batch computation tasks, find value parsing, match bitmap and navigation, match highlighting | String, numeric and time values are found with input exactly equal to their display text, and next, previous and wrap-around work. Scrolling and tab switching keep working during computation |
+| 10. Filter | Condition parsing, filtered rows, row view numbers, `read_rows`, source row number display, filter popover and filter and sort bar | Result rows per condition equal the reference data, and in a filtered row view scrolling, selection, value detail and find follow the row view order |
+| 11. Sort | Header sort input, sort computation, display order, combination with filters | Ascending, descending, Null placement and source order of equal values match the reference data, and filter and sort work together |
+| 12. File structure | `file_structure` and `row_group_columns`, conversion of statistics to Arrow types, switching between data and file structure, file summary, column and Row Group tables | Per-column size, compression, null count, min and max and per-Row-Group sizes equal the reference metadata, and selecting a Row Group switches to its information |
+| 13. Shared UI crate and charts | `viewer-ui` split, shared table, buttons and input bindings, line/band/rule charts, heatmap, automatic ticks, example | The example draws prediction intervals, actuals, bias, reliability and heatmaps of real probabilistic forecast data at the same positions as the source values, and hovered values equal the source |
+| 14. Themes | Light and dark color sets, following the OS app color setting, toolbar switch | Both themes render every view legibly, and the switch applies immediately |
+| 15. Route map | `GeoMap` with areas, routes, markers and labels, prepared area geometry kept across frames, example | The example draws every route map of real analysis runs over the area background in both themes, and frames reuse the prepared geometry |
 
-### MVP 판정에 필요한 검증
+### Verification required for the MVP
 
-- 엔진 계약: 여러 Row Group과 projection을 가진 작은 Parquet fixture를 Rust `ArrowWriter`로 생성해 첫·마지막 행, 그룹 경계, 0행, Null, 중첩 필드의 결과를 기준 배열과 비교한다. writer는 테스트 fixture 생성에 사용한다.
-- 값 상세: 수 MB 문자열, 줄바꿈·탭·제어 문자를 포함한 문자열, 큰 Binary, 깊은 중첩과 원소가 1,000개를 넘는 List를 fixture로 만들어 `read_value` 결과, 본문 표시, 복사 텍스트를 원본 값과 비교한다.
-- 가상화: 대량 행 수와 넓은 스키마의 논리 모델에서 viewport 계산과 끝 위치를 확인한다. 실제 화면은 여러 Row Group과 여러 화면 폭의 컬럼을 가진 파일로 스크롤한다.
-- 요청 수명: 지연시킨 읽기 도중 다른 탭으로 전환하거나 탭을 닫고, 이전 응답이 활성 탭의 그리드에 반영되지 않는지 확인한다. 선택 셀을 빠르게 옮길 때 이전 셀의 값이 Value 패널에 반영되지 않는지 확인한다.
-- 탭: 여러 파일을 탭으로 열고 전환·닫기를 반복해 탭별 스크롤·선택 상태가 유지되는지, 같은 경로가 두 탭에 열리지 않는지 확인한다.
-- 메모리: 캐시 유지 byte 수, UI 미리보기 수, 대기 결과 수, 보유한 선택 값 수를 구현값과 대조한다. 여러 탭을 연 상태에서 캐시 합계가 공유 예산 안에 있는지, 탭을 닫은 뒤 그 세션의 참조가 해제되는지 확인한다.
-- 읽기 전용: 파일을 열어 탐색한 전후의 fixture hash가 동일한지 확인한다.
-- 사용자 흐름: `Open Folder → 파일 열기 → 스키마 펼치기 → 세로·가로 스크롤 → 셀 선택과 값 상세 확인 → 다른 파일을 새 탭으로 열기 → 탭 전환 → 탭 닫기`를 Windows 앱에서 완료한다. 읽기 중에도 창 이동과 입력을 처리해야 한다.
+- Engine contracts: Generate small Parquet fixtures with several Row Groups and projections using Rust's `ArrowWriter`, and compare first and last rows, group boundaries, zero rows, Null and nested fields against reference arrays. The writer is used only to generate test fixtures.
+- Value detail: Build fixtures with multi-megabyte strings, strings with newlines, tabs and control characters, large Binary, deep nesting and Lists of more than 1,000 elements, and compare `read_value` results, body display and copy text with the source values.
+- Virtualization: Check viewport computation and end positions on a logical model with a huge row count and a wide schema. On screen, scroll a file with several Row Groups and columns spanning several screen widths.
+- Request lifetimes: Switch to another tab or close a tab during a delayed read and check that the earlier response does not reach the active tab's grid. When moving the selection quickly, check that earlier cells' values do not reach the Value panel.
+- Tabs: Open several files as tabs and repeatedly switch and close them, checking that per-tab scroll and selection state is kept and that the same path never opens in two tabs.
+- Memory: Compare the cache's retained bytes, UI preview count, pending result count and selected values held against the implementation values. With several tabs open, check that the cache total stays within the shared budget, and that closing a tab releases its session's references.
+- Read-only: Check that fixture hashes are identical before and after opening and exploring them.
+- User flow: Complete `Open Folder → open a file → expand the schema → scroll vertically and horizontally → select a cell and inspect value detail → open another file in a new tab → switch tabs → close a tab` in the Windows app. Window movement and input must keep working during reads.
 
-### 찾기·필터·정렬·파일 구조 검증
+### Verifying find, filter, sort and file structure
 
-- 엔진 계약: 여러 Row Group과 Null·Dictionary 컬럼을 가진 fixture에서 순차 읽기의 배치 위치, 행 목록 읽기, `read_rows`의 순서를 기준 배열과 비교한다.
-- 찾기·필터·정렬 결과: 실제 Parquet 파일에서 같은 조건을 pyarrow로 계산한 결과와 앱의 일치 셀 수, 필터 행 수, 정렬 순서를 비교한다.
-- 실행: 큰 파일에서 행 보기·찾기 계산 중에 스크롤, 셀 선택, 탭 전환, 취소가 동작하는지 확인한다.
-- 파일 구조: 실제 Parquet 파일의 메타데이터를 pyarrow로 읽은 값과 앱의 컬럼별·Row Group별 표시를 비교한다.
+- Engine contracts: On fixtures with several Row Groups and Null and Dictionary columns, compare scan batch positions, row list reads and `read_rows` order against reference arrays.
+- Find, filter and sort results: On real Parquet files, compare the app's matching cell counts, filtered row counts and sort order with the same conditions computed by pyarrow.
+- Execution: On large files, check that scrolling, cell selection, tab switching and cancel work during row view and find computation.
+- File structure: Compare the app's per-column and per-Row-Group display with the metadata of real Parquet files read by pyarrow.
 
-MVP 완료는 위 여섯 가지 제품 기능과 단계별 완료 기준으로 판정한다. 성능 확인에서는 metadata open, 첫 viewport 준비, 캐시 적중 시 viewport 갱신, 값 상세 준비 시간을 각각 기록해 파일 읽기 비용과 UI 처리 비용을 구분한다.
+The MVP is complete when the six product features above and each stage's completion criteria are met. Performance checks record metadata open, first viewport preparation, viewport update on cache hits and value detail preparation separately, to tell file reading cost apart from UI processing cost.

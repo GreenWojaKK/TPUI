@@ -1,7 +1,7 @@
-//! 데이터 그리드. 화면에 보이는 행·열만 계산하고 그린다.
+//! Data grid. Computes and draws only the visible rows and columns.
 //!
-//! 전체 행 수에 행 높이를 곱한 element를 만들지 않는다. 스크롤 위치는 첫 행·첫 컬럼과 그 안의
-//! pixel offset으로 저장하고, 화면 안의 상대 좌표로 셀을 배치한다.
+//! No element spans the total row count times the row height. The scroll position is stored as the first row and column
+//! plus a pixel offset within them, and cells are placed in coordinates relative to the viewport.
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -35,9 +35,9 @@ actions!(
     ]
 );
 
-/// 화면 범위의 위·아래에 더 요청하는 행 수.
+/// Extra rows requested above and below the visible range.
 const OVERSCAN_ROWS: u64 = 8;
-/// 화면 범위의 좌·우에 더 요청하는 컬럼 수.
+/// Extra columns requested left and right of the visible range.
 const OVERSCAN_COLUMNS: usize = 1;
 
 fn row_height() -> f64 {
@@ -52,14 +52,14 @@ fn to_f64(pixels: Pixels) -> f64 {
     f64::from(pixels / px(1.))
 }
 
-/// 그리드의 행·열 범위. 행은 행 보기 위치로 0부터, 열은 원본 스키마 위치다.
+/// Row and column range of the grid. Rows are zero-based row view positions; columns are source schema positions.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Viewport {
     pub rows: Range<u64>,
     pub columns: Range<usize>,
 }
 
-/// 데이터 크기와 데이터 영역(헤더·행 번호·스크롤바를 뺀 영역)의 pixel 크기.
+/// Data size and the pixel size of the data area (excluding header, row numbers and scrollbars).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Extent {
     total_rows: u64,
@@ -85,13 +85,13 @@ impl Extent {
         (self.content_width() - self.width).max(0.)
     }
 
-    /// 데이터 영역에 온전히 들어가는 행 수. Page Up/Down의 이동 단위다.
+    /// Rows that fit entirely in the data area. The step of Page Up/Down.
     fn full_rows(&self) -> u64 {
         ((self.height / row_height()).floor() as u64).max(1)
     }
 }
 
-/// 논리 스크롤 위치. 세로는 첫 행과 그 행 안의 offset, 가로는 첫 컬럼과 그 컬럼 안의 offset이다.
+/// Logical scroll position: the first row and the offset within it vertically, the first column and the offset within it horizontally.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ScrollPosition {
     first_row: u64,
@@ -109,7 +109,7 @@ impl ScrollPosition {
         self.first_column as f64 * column_width() + self.column_offset
     }
 
-    /// pixel 위치를 스크롤 범위 안으로 맞춰 첫 행·컬럼과 offset으로 나눈다.
+    /// Clamps a pixel position to the scroll range and splits it into the first row/column and an offset.
     fn at(x: f64, y: f64, extent: &Extent) -> Self {
         let y = y.clamp(0., extent.max_y());
         let x = x.clamp(0., extent.max_x());
@@ -139,7 +139,7 @@ impl ScrollPosition {
                 .min(extent.total_columns)
     }
 
-    /// 셀이 데이터 영역 안에 온전히 보이도록 가장 적게 움직인 위치.
+    /// Position moved the least so the cell is fully visible in the data area.
     fn revealing(&self, row: u64, column: usize, extent: &Extent) -> Self {
         let reveal = |current: f64, start: f64, len: f64, view: f64| {
             if start < current {
@@ -166,7 +166,7 @@ impl ScrollPosition {
     }
 }
 
-/// 화면 범위에 overscan을 더한 요청 범위.
+/// Requested range: the visible range plus overscan.
 fn request_range(visible: &Viewport, extent: &Extent) -> Viewport {
     if visible.rows.is_empty() || visible.columns.is_empty() {
         return Viewport::default();
@@ -183,7 +183,7 @@ fn request_range(visible: &Viewport, extent: &Extent) -> Viewport {
     }
 }
 
-/// 스크롤바 thumb의 시작 위치와 길이. 위치 비율은 f64로 계산한다.
+/// Start and length of the scrollbar thumb. The position ratio is computed in f64.
 fn thumb_span(track: f64, content: f64, view: f64, scroll: f64) -> (f64, f64) {
     let min_thumb = to_f64(theme::GRID_SCROLLBAR_MIN_THUMB).min(track);
     let len = (track * view / content.max(1.)).clamp(min_thumb, track);
@@ -196,7 +196,7 @@ fn thumb_span(track: f64, content: f64, view: f64, scroll: f64) -> (f64, f64) {
     (start, len)
 }
 
-/// thumb 시작 위치를 스크롤 pixel 위치로 바꾼다.
+/// Converts a thumb start position into a scroll pixel position.
 fn scroll_from_thumb(track: f64, content: f64, view: f64, thumb_start: f64) -> f64 {
     let (_, len) = thumb_span(track, content, view, 0.);
     let travel = track - len;
@@ -206,7 +206,7 @@ fn scroll_from_thumb(track: f64, content: f64, view: f64, thumb_start: f64) -> f
     (thumb_start / travel).clamp(0., 1.) * (content - view).max(0.)
 }
 
-/// 탭이 기억하는 그리드 상태.
+/// Grid state remembered by a tab.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct GridPosition {
     scroll: ScrollPosition,
@@ -214,7 +214,7 @@ pub struct GridPosition {
 }
 
 impl GridPosition {
-    /// 가로 위치는 그대로 두고 첫 행으로 옮기며 선택을 해제한 위치. 행 보기가 바뀔 때 쓴다.
+    /// Position moved to the first row with the horizontal position kept and the selection cleared. Used when the row view changes.
     pub fn at_first_row(self) -> Self {
         Self {
             scroll: ScrollPosition {
@@ -228,22 +228,22 @@ impl GridPosition {
 }
 
 pub enum GridEvent {
-    /// 요청 범위가 바뀌어 새 데이터가 필요하다.
+    /// The requested range changed and new data is needed.
     ViewportChanged,
-    /// 컬럼 헤더를 눌러 정렬을 바꾼다.
+    /// A column header was clicked to change the sort.
     SortRequested(usize),
-    /// 컬럼 헤더의 필터 버튼을 눌렀다. `anchor`는 헤더 칸 왼쪽 아래의 창 좌표다.
+    /// A column header's filter button was clicked. `anchor` is the window coordinate of the header cell's bottom left.
     FilterRequested {
         column: usize,
         anchor: Point<Pixels>,
     },
-    /// 선택 셀이 바뀌었다.
+    /// The selected cell changed.
     SelectionChanged,
-    /// 선택 셀의 원본 값을 복사한다.
+    /// Copies the raw value of the selected cell.
     CopyRequested,
-    /// 읽기 오류가 난 범위를 다시 읽는다.
+    /// Rereads the range that had a read error.
     RetryRequested,
-    /// 파일이 바뀌어 다시 열어야 한다.
+    /// The file changed and must be reopened.
     ReopenRequested,
 }
 
@@ -257,29 +257,29 @@ pub enum GridLoadState {
 struct GridDataset {
     total_rows: u64,
     column_names: Vec<SharedString>,
-    /// 행 보기가 원본 순서이면 행 번호를 위치로 계산한다. 아니면 worker가 보낸 원본 행 번호를 쓴다.
+    /// In source order, row numbers are computed from positions; otherwise the source row numbers sent by the worker are used.
     identity_rows: bool,
-    /// 원본 파일의 행 수. 행 번호 영역의 너비를 정한다.
+    /// Row count of the source file. Sets the width of the row number area.
     file_rows: u64,
 }
 
-/// 그리드에 표시하는 행 보기의 행 수.
+/// Row counts of the row view shown in the grid.
 #[derive(Clone, Copy, Debug)]
 pub struct GridRows {
-    /// 행 보기의 행 수.
+    /// Rows in the row view.
     pub rows: u64,
-    /// 원본 파일의 행 수.
+    /// Rows in the source file.
     pub file_rows: u64,
-    /// 행 보기가 원본 순서인지.
+    /// Whether the row view is in source order.
     pub identity: bool,
 }
 
-/// 헤더에 표시하는 정렬·필터 상태.
+/// Sort and filter state shown in the header.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct HeaderMarks {
-    /// 정렬 컬럼과 내림차순 여부.
+    /// Sort column and whether it is descending.
     pub sort: Option<(usize, bool)>,
-    /// 필터가 있는 컬럼.
+    /// Columns with a filter.
     pub filtered: Vec<usize>,
 }
 
@@ -294,14 +294,14 @@ enum Axis {
     Horizontal,
 }
 
-/// 스크롤바 track의 위치와 길이. 한 축의 좌표만 담는다.
+/// Position and length of a scrollbar track, along one axis only.
 #[derive(Clone, Copy, Debug)]
 struct Track {
     start: f64,
     len: f64,
 }
 
-/// thumb를 끄는 중인 스크롤바. `grab`은 thumb 시작에서 잡은 지점까지의 거리다.
+/// Scrollbar whose thumb is being dragged. `grab` is the distance from the thumb start to the grab point.
 #[derive(Clone, Copy, Debug)]
 struct ScrollbarDrag {
     axis: Axis,
@@ -314,14 +314,14 @@ pub struct GridView {
     dataset: Option<GridDataset>,
     scroll: ScrollPosition,
     selected: Option<(u64, usize)>,
-    /// 마지막 layout의 데이터 크기와 데이터 영역 크기.
+    /// Data size and data area size from the last layout.
     extent: Extent,
-    /// 화면에 보이는 범위.
+    /// Visible range.
     visible: Viewport,
-    /// 화면 범위에 overscan을 더해 요청한 범위.
+    /// Requested range: the visible range plus overscan.
     requested: Viewport,
     cells: HashMap<(u64, ColumnId), CellPreview>,
-    /// 행 보기 위치별 원본 행 번호.
+    /// Source row number for each row view position.
     row_numbers: HashMap<u64, u64>,
     marks: HeaderMarks,
     failed_rows: Vec<Range<u64>>,
@@ -350,8 +350,8 @@ impl GridView {
         }
     }
 
-    /// 행 보기의 행 수와 컬럼을 설정하고 기억해 둔 스크롤 위치·선택 셀을 되돌린다.
-    /// 화면 범위는 다음 layout에서 다시 계산한다.
+    /// Sets the row view's row counts and columns, and restores the remembered scroll position and selected cell.
+    /// The visible range is recomputed in the next layout.
     pub fn set_dataset(
         &mut self,
         rows: GridRows,
@@ -378,19 +378,19 @@ impl GridView {
         cx.notify();
     }
 
-    /// 화면의 셀 미리보기를 버리고 다음 layout에서 다시 요청한다. 찾기 강조가 바뀔 때 쓴다.
+    /// Drops the visible cell previews and requests them again in the next layout. Used when the find highlight changes.
     pub fn reload_cells(&mut self, cx: &mut Context<Self>) {
         self.cells.clear();
         self.requested = Viewport::default();
         cx.notify();
     }
 
-    /// 그리드에 키보드 포커스를 옮긴다.
+    /// Moves keyboard focus to the grid.
     pub fn focus(&self, window: &mut Window, cx: &mut App) {
         window.focus(&self.focus_handle, cx);
     }
 
-    /// 셀을 선택하고 화면에 보이게 스크롤한다.
+    /// Selects a cell and scrolls it into view.
     pub fn select_cell(&mut self, row: u64, column: usize, cx: &mut Context<Self>) {
         self.select(row, column, cx);
     }
@@ -414,7 +414,7 @@ impl GridView {
         self.selected
     }
 
-    /// 화면 범위에 overscan을 더한, 데이터를 요청할 범위.
+    /// Range to request data for: the visible range plus overscan.
     pub fn request_range(&self) -> &Viewport {
         &self.requested
     }
@@ -448,7 +448,7 @@ impl GridView {
         cx.notify();
     }
 
-    /// 화면 범위의 읽기 상태. 화면에 비어 있는 셀이 남아 있으면 `Loading`이다.
+    /// Read state of the visible range. `Loading` while visible cells are still empty.
     pub fn load_state(&self) -> GridLoadState {
         if self.error.is_some() {
             return GridLoadState::ReadError;
@@ -477,8 +477,8 @@ impl GridView {
         self.drag = None;
     }
 
-    /// layout에서 정한 크기로 스크롤 위치를 맞추고 화면·요청 범위를 다시 계산한다.
-    /// 요청 범위가 바뀌면 겹치는 셀만 남기고 새 데이터를 요청한다.
+    /// Fits the scroll position to the size decided in layout and recomputes the visible and requested ranges.
+    /// If the requested range changed, keeps only overlapping cells and requests new data.
     fn apply_layout(&mut self, extent: Extent, cx: &mut Context<Self>) {
         self.extent = extent;
         self.scroll = ScrollPosition::at(self.scroll.x(), self.scroll.y(), &extent);
@@ -529,7 +529,7 @@ impl GridView {
         cx.notify();
     }
 
-    /// 선택 셀을 행·열 단위로 옮긴다. 선택 셀이 없으면 화면의 첫 셀에서 시작한다.
+    /// Moves the selected cell by rows and columns. Without a selection, starts from the first visible cell.
     fn move_selection(&mut self, rows: i64, columns: i64, cx: &mut Context<Self>) {
         let Some(dataset) = &self.dataset else {
             return;
@@ -610,7 +610,7 @@ impl GridView {
         }
     }
 
-    /// thumb를 누르면 그 자리에서 끌기 시작하고, track을 누르면 thumb 가운데를 그 자리로 옮긴다.
+    /// Pressing the thumb starts a drag from there; pressing the track moves the thumb's center to that point.
     fn press_scrollbar(
         &mut self,
         axis: Axis,
@@ -659,17 +659,17 @@ impl GridView {
     }
 
     fn render_error_bar(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
-        let (message, action_label, event): (SharedString, &str, fn() -> GridEvent) =
-            match self.error.as_ref()? {
-                GridError::Read(message) => (message.clone(), "다시 시도", || {
-                    GridEvent::RetryRequested
-                }),
-                GridError::FileChanged => (
-                    "파일이 열린 뒤 변경되었습니다.".into(),
-                    "다시 열기",
-                    || GridEvent::ReopenRequested,
-                ),
-            };
+        let (message, action_label, event): (SharedString, &str, fn() -> GridEvent) = match self
+            .error
+            .as_ref()?
+        {
+            GridError::Read(message) => (message.clone(), "Retry", || GridEvent::RetryRequested),
+            GridError::FileChanged => (
+                "The file changed after it was opened.".into(),
+                "Reopen",
+                || GridEvent::ReopenRequested,
+            ),
+        };
         Some(
             div()
                 .absolute()
@@ -745,11 +745,11 @@ impl Render for GridView {
     }
 }
 
-/// 스크롤바 하나의 track·thumb 위치.
+/// Track and thumb position of one scrollbar.
 #[derive(Clone, Copy, Debug)]
 struct ScrollbarGeometry {
     track: Bounds<Pixels>,
-    /// track 시작에서 thumb 시작까지의 거리와 thumb 길이.
+    /// Distance from the track start to the thumb start, and the thumb length.
     thumb: (f64, f64),
 }
 
@@ -786,28 +786,28 @@ impl ScrollbarGeometry {
     }
 }
 
-/// 마우스 입력을 나누는 영역.
+/// Areas that split mouse input.
 #[derive(Clone, Copy, Debug)]
 struct HitAreas {
-    /// 데이터 컬럼 위의 헤더 영역.
+    /// Header area above the data columns.
     header: Bounds<Pixels>,
     data: Bounds<Pixels>,
     vertical: Option<ScrollbarGeometry>,
     horizontal: Option<ScrollbarGeometry>,
 }
 
-/// 그리드의 layout·hitbox·paint를 직접 수행하는 element.
+/// Element that performs the grid's layout, hitboxes and paint directly.
 struct GridElement {
     view: Entity<GridView>,
 }
 
-/// prepaint에서 계산해 paint에 넘기는 배치 정보와 화면 범위의 셀.
+/// Layout computed in prepaint and passed to paint, with the cells of the visible range.
 struct GridLayout {
     hitbox: Hitbox,
     areas: HitAreas,
     row_number_width: Pixels,
     total_rows: u64,
-    /// 첫 행·첫 컬럼이 데이터 영역 위·왼쪽으로 가려진 길이.
+    /// Lengths of the first row and column hidden above and left of the data area.
     row_offset: Pixels,
     column_offset: Pixels,
     headers: Vec<HeaderCell>,
@@ -816,7 +816,7 @@ struct GridLayout {
 
 struct HeaderCell {
     name: SharedString,
-    /// 정렬 컬럼이면 내림차순 여부.
+    /// For the sort column, whether it is descending.
     sort: Option<bool>,
     filtered: bool,
 }
@@ -825,7 +825,7 @@ struct GridRow {
     number: SharedString,
     selected_column: Option<usize>,
     failed: bool,
-    /// 화면 범위의 컬럼 순서. 아직 도착하지 않은 셀은 `None`이다.
+    /// Columns of the visible range. Cells not yet arrived are `None`.
     cells: Vec<Option<CellPreview>>,
 }
 
@@ -880,7 +880,7 @@ impl Element for GridElement {
             )
         };
 
-        // 행 번호 영역은 가장 큰 원본 행 번호가 들어갈 너비로 고정한다.
+        // The row number area is fixed to the width of the largest source row number.
         let text_style = window.text_style();
         let font_size = text_style.font_size.to_pixels(window.rem_size());
         let widest = SharedString::from(file_rows.max(1).to_string());
@@ -892,7 +892,7 @@ impl Element for GridElement {
         let row_number_width =
             (number_width + theme::GRID_CELL_PADDING * 2.).max(theme::GRID_MIN_ROW_NUMBER_WIDTH);
 
-        // 스크롤바가 필요한지 정한다. 한쪽 막대가 생기면 다른 쪽 데이터 영역이 줄어든다.
+        // Decide which scrollbars are needed. One bar appearing shrinks the data area on the other axis.
         let bar = to_f64(theme::GRID_SCROLLBAR_SIZE);
         let body_width = to_f64(bounds.size.width - row_number_width).max(0.);
         let body_height = to_f64(bounds.size.height - theme::GRID_HEADER_HEIGHT).max(0.);
@@ -1053,7 +1053,7 @@ impl GridElement {
         };
 
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
-            // 고정 헤더와 행 번호 영역의 배경.
+            // Background of the fixed header and row number area.
             window.paint_quad(fill(
                 Bounds::new(bounds.origin, size(bounds.size.width, header_height)),
                 theme::surface(),
@@ -1066,7 +1066,7 @@ impl GridElement {
                 theme::surface(),
             ));
 
-            // 헤더는 가로로만, 행 번호는 세로로만 데이터 영역과 함께 움직인다.
+            // The header moves with the data area only horizontally, row numbers only vertically.
             window.with_content_mask(
                 Some(ContentMask {
                     bounds: header_strip,
@@ -1080,7 +1080,7 @@ impl GridElement {
                         } else {
                             px(0.)
                         };
-                        // 이름은 정렬 표시와 필터 버튼 자리를 뺀 폭에 그린다.
+                        // The name is drawn in the width left after the sort marker and filter button.
                         let name = Bounds::new(
                             point(left, bounds.top()),
                             size(
@@ -1168,12 +1168,12 @@ impl GridElement {
                         let (text, font, color, align) = match preview {
                             Some(preview) => painter.style(preview),
                             None if row.failed => (
-                                "읽기 오류".into(),
+                                "Read error".into(),
                                 painter.font.clone(),
                                 theme::error().into(),
                                 TextAlign::Left,
                             ),
-                            // 읽는 중인 셀의 placeholder.
+                            // Placeholder for cells being read.
                             None => (
                                 "…".into(),
                                 painter.font.clone(),
@@ -1193,7 +1193,7 @@ impl GridElement {
                 }
             });
 
-            // 열 경계선과 헤더·행 번호 경계선.
+            // Column borders, and the header and row number borders.
             window.with_content_mask(
                 Some(ContentMask {
                     bounds: Bounds::from_corners(
@@ -1245,7 +1245,7 @@ impl GridElement {
                     window,
                     cx,
                     body,
-                    "행이 없습니다.".into(),
+                    "No rows.".into(),
                     painter.font.clone(),
                     theme::text_muted().into(),
                     TextAlign::Center,
@@ -1254,7 +1254,7 @@ impl GridElement {
         });
     }
 
-    /// 휠·Shift+휠 스크롤, 셀 클릭, 스크롤바 클릭·끌기를 처리한다.
+    /// Handles wheel and Shift+wheel scrolling, cell clicks, and scrollbar clicks and drags.
     fn register_mouse_listeners(&self, layout: &GridLayout, window: &mut Window) {
         let areas = layout.areas;
 
@@ -1320,7 +1320,7 @@ struct CellPainter {
 }
 
 impl CellPainter {
-    /// 미리보기 종류에 따른 글꼴·색·정렬.
+    /// Font, color and alignment by preview kind.
     fn style(&self, preview: &CellPreview) -> (SharedString, Font, Hsla, TextAlign) {
         let text = preview.text.clone();
         match preview.kind {
@@ -1357,7 +1357,7 @@ impl CellPainter {
         }
     }
 
-    /// 칸 가운데에 기호 하나를 그린다.
+    /// Draws one symbol at the center of a cell.
     fn paint_glyph(
         &self,
         window: &mut Window,
@@ -1377,7 +1377,7 @@ impl CellPainter {
         let _ = line.paint(origin, self.line_height, TextAlign::Left, None, window, cx);
     }
 
-    /// 셀 안쪽 여백 안에 한 줄 텍스트를 그린다. 셀 밖으로 나가는 부분은 잘린다.
+    /// Draws one line of text within the cell padding. Anything beyond the cell is clipped.
     #[allow(clippy::too_many_arguments)]
     fn paint(
         &self,
@@ -1404,7 +1404,7 @@ impl CellPainter {
         let line = window
             .text_system()
             .shape_line(text, self.font_size, &[run], None);
-        // 칸보다 긴 값은 정렬과 관계없이 앞부분이 보이도록 왼쪽에 맞춘다.
+        // Values longer than the cell are left-aligned regardless of alignment so their start stays visible.
         let align = if line.width() > inner.size.width {
             TextAlign::Left
         } else {
@@ -1438,7 +1438,7 @@ fn text_run(len: usize, font: Font, color: Hsla) -> TextRun {
     }
 }
 
-/// 헤더처럼 한 줄로 그리는 텍스트의 줄바꿈을 표시 기호로 바꾼다.
+/// Replaces newlines with display symbols for text drawn on one line, such as headers.
 fn single_line(text: &str) -> String {
     text.replace("\r\n", "↵").replace(['\r', '\n'], "↵")
 }
@@ -1458,7 +1458,7 @@ mod tests {
 
     #[test]
     fn clamps_scroll_to_the_last_full_screen() {
-        // 행 높이 24px, 컬럼 너비 160px.
+        // Row height 24px, column width 160px.
         let extent = extent(1_000, 10, 240., 480.);
         let end = ScrollPosition::at(f64::MAX, f64::MAX, &extent);
         assert_eq!(end.y(), 1_000. * 24. - 240.);
@@ -1477,7 +1477,7 @@ mod tests {
         let scroll = ScrollPosition::at(170., 50., &extent);
         assert_eq!((scroll.first_row, scroll.row_offset), (2, 2.));
         assert_eq!((scroll.first_column, scroll.column_offset), (1, 10.));
-        // 일부만 보이는 위·아래 행을 함께 그린다.
+        // Partially visible top and bottom rows are drawn too.
         assert_eq!(scroll.visible_rows(&extent), 2..13);
         assert_eq!(scroll.visible_columns(&extent), 1..5);
     }

@@ -1,7 +1,7 @@
-//! 선택한 셀의 원본 값을 값 트리, 본문, 복사 텍스트로 바꾼다. worker thread에서 실행한다.
+//! Turns the raw value of the selected cell into a value tree, a body and copy text. Runs on the worker thread.
 //!
-//! 노드는 값의 루트부터의 자식 위치 목록으로 가리킨다. Struct는 필드 순서, List는 원소 위치,
-//! Map은 entry 위치이고 entry 아래 0은 key, 1은 value다. Dictionary는 참조된 값으로 바꿔 다룬다.
+//! A node is addressed by its child positions from the value root: field order for Struct, element position for List,
+//! entry position for Map, with 0 as key and 1 as value under an entry. Dictionary is handled as its referenced values.
 
 use std::fmt::Write;
 use std::ops::Range;
@@ -13,20 +13,21 @@ use arrow_cast::display::{ArrayFormatter, FormatOptions};
 use arrow_schema::DataType;
 use gpui::SharedString;
 use viewer_core::ValueSlice;
+use viewer_ui::format::format_quantity;
 
 use crate::cell_preview::{CellPreview, is_number, preview_column};
 
-/// 패널 상단에 표시하는 셀 정보.
+/// Cell information shown at the top of the panel.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ValueHeader {
-    /// 파일 기준 0부터 시작하는 행.
+    /// Zero-based row within the file.
     pub row: u64,
     pub column: SharedString,
     pub data_type: SharedString,
     pub size: Option<SharedString>,
 }
 
-/// 값 트리의 노드 하나. 자식은 따로 요청한다.
+/// One node of the value tree. Children are requested separately.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ValueNode {
     pub label: SharedString,
@@ -35,18 +36,18 @@ pub struct ValueNode {
     pub child_count: usize,
 }
 
-/// 선택한 노드의 원본 값 전체.
+/// Full raw value of the selected node.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ValueBody {
     Null,
     Text(SharedString),
     Bytes(Arc<[u8]>),
-    /// Struct·List·Map의 개수 요약.
+    /// Count summary of Struct, List or Map.
     Summary(SharedString),
     Unsupported(SharedString),
 }
 
-/// 셀을 처음 선택했을 때 보내는 루트 정보.
+/// Root information sent when a cell is first selected.
 #[derive(Clone, Debug)]
 pub struct ValueDetail {
     pub header: ValueHeader,
@@ -68,7 +69,7 @@ pub fn detail(slice: &ValueSlice) -> ValueDetail {
     }
 }
 
-/// 경로가 가리키는 노드의 배열과 행. 경로가 값의 구조를 벗어나면 `None`이다.
+/// Array and row of the node a path points to. `None` if the path leaves the value's structure.
 pub fn node_at(root: &ArrayRef, path: &[usize]) -> Option<(ArrayRef, usize)> {
     let (mut array, mut row) = resolve(root, 0);
     for &step in path {
@@ -78,7 +79,7 @@ pub fn node_at(root: &ArrayRef, path: &[usize]) -> Option<(ArrayRef, usize)> {
     Some((array, row))
 }
 
-/// 노드의 `range` 위치 자식들을 만든다. 범위는 자식 수 안으로 자른다.
+/// Builds the children of a node at positions `range`. The range is clipped to the child count.
 pub fn children(array: &ArrayRef, row: usize, range: Range<usize>) -> Vec<ValueNode> {
     let end = range.end.min(child_count(array, row));
     (range.start..end)
@@ -105,15 +106,15 @@ pub fn body(array: &ArrayRef, row: usize) -> ValueBody {
             Some(bytes) => ValueBody::Bytes(bytes.into()),
             None => match format_value(array, row) {
                 Some(text) => ValueBody::Text(text.into()),
-                None => {
-                    ValueBody::Unsupported(format!("{} · 표시 미지원", array.data_type()).into())
-                }
+                None => ValueBody::Unsupported(
+                    format!("{} · display unsupported", array.data_type()).into(),
+                ),
             },
         },
     }
 }
 
-/// 복사할 텍스트. 문자열은 원문, Binary는 공백 없는 소문자 16진수, 중첩 값은 JSON이다.
+/// Copy text: strings as is, Binary as lowercase hexadecimal without spaces, nested values as JSON.
 pub fn copy_text(array: &ArrayRef, row: usize) -> String {
     if array.is_null(row) {
         return "null".into();
@@ -134,7 +135,7 @@ pub fn copy_text(array: &ArrayRef, row: usize) -> String {
     }
 }
 
-/// Dictionary는 참조된 값으로 바꾼다. Null key는 Dictionary 자체의 Null로 둔다.
+/// Replaces Dictionary with its referenced values. A Null key stays a Null of the Dictionary itself.
 fn resolve(array: &ArrayRef, row: usize) -> (ArrayRef, usize) {
     if !matches!(array.data_type(), DataType::Dictionary(_, _)) || array.is_null(row) {
         return (array.clone(), row);
@@ -178,7 +179,7 @@ fn child_count(array: &ArrayRef, row: usize) -> usize {
     }
 }
 
-/// `ix`번째 자식의 배열·행·이름.
+/// Array, row and name of child `ix`.
 fn child(array: &ArrayRef, row: usize, ix: usize) -> Option<(ArrayRef, usize, SharedString)> {
     if ix >= child_count(array, row) {
         return None;
@@ -251,15 +252,23 @@ fn value_size(array: &ArrayRef, row: usize) -> Option<SharedString> {
     if array.is_null(row) {
         return None;
     }
-    let text = |value: &str| format!("{} byte · {}자", value.len(), value.chars().count());
+    let text = |value: &str| {
+        format!(
+            "{} · {}",
+            format_quantity(value.len() as u64, "byte", "bytes"),
+            format_quantity(value.chars().count() as u64, "char", "chars")
+        )
+    };
     let size = match array.data_type() {
         DataType::Utf8 => text(array.as_string::<i32>().value(row)),
         DataType::LargeUtf8 => text(array.as_string::<i64>().value(row)),
         DataType::Utf8View => text(array.as_string_view().value(row)),
-        DataType::Struct(fields) => format!("필드 {}개", fields.len()),
-        DataType::Map(_, _) => format!("entry {}개", child_count(array, row)),
-        data_type if is_container(data_type) => format!("원소 {}개", child_count(array, row)),
-        _ => format!("{} byte", bytes(array, row)?.len()),
+        DataType::Struct(fields) => format_quantity(fields.len() as u64, "field", "fields"),
+        DataType::Map(_, _) => format_quantity(child_count(array, row) as u64, "entry", "entries"),
+        data_type if is_container(data_type) => {
+            format_quantity(child_count(array, row) as u64, "element", "elements")
+        }
+        _ => format_quantity(bytes(array, row)?.len() as u64, "byte", "bytes"),
     };
     Some(size.into())
 }
@@ -274,7 +283,7 @@ fn bytes(array: &ArrayRef, row: usize) -> Option<&[u8]> {
     }
 }
 
-/// arrow-cast의 표시 규칙으로 값 하나를 텍스트로 바꾼다. Decimal scale과 시간 정밀도를 유지한다.
+/// Turns one value into text with arrow-cast's display rules. Decimal scale and time precision are kept.
 fn format_value(array: &ArrayRef, row: usize) -> Option<String> {
     let options = FormatOptions::new().with_display_error(false);
     let formatter = ArrayFormatter::try_new(array.as_ref(), &options).ok()?;
@@ -289,8 +298,8 @@ fn hex(bytes: &[u8]) -> String {
     text
 }
 
-/// Struct는 객체, List는 배열, Map은 key·value 객체의 배열로 쓴다. Binary는 16진수 문자열,
-/// NaN·Infinity와 시간 값처럼 JSON 숫자로 쓸 수 없는 값은 문자열로 쓴다.
+/// Struct is written as an object, List as an array, and Map as an array of key/value objects. Binary is a hexadecimal string,
+/// and values JSON numbers cannot hold, such as NaN, Infinity and time values, are strings.
 fn write_json(out: &mut String, array: &ArrayRef, row: usize) {
     let (array, row) = resolve(array, row);
     if array.is_null(row) {
@@ -322,7 +331,7 @@ fn write_json(out: &mut String, array: &ArrayRef, row: usize) {
                 if ix > 0 {
                     out.push(',');
                 }
-                let (entries, entry_row, _) = child(&array, row, ix).expect("entry 위치");
+                let (entries, entry_row, _) = child(&array, row, ix).expect("entry position");
                 let entry = entries.as_struct();
                 out.push_str("{\"key\":");
                 write_json(out, entry.column(0), entry_row);
@@ -338,7 +347,7 @@ fn write_json(out: &mut String, array: &ArrayRef, row: usize) {
                 if ix > 0 {
                     out.push(',');
                 }
-                let (values, value_row, _) = child(&array, row, ix).expect("원소 위치");
+                let (values, value_row, _) = child(&array, row, ix).expect("element position");
                 write_json(out, &values, value_row);
             }
             out.push(']');
@@ -491,7 +500,7 @@ mod tests {
         assert_eq!(body(&array, row), ValueBody::Text("a".into()));
 
         let strings: ArrayRef = Arc::new(StringArray::from(vec!["가나a"]));
-        assert_eq!(value_size(&strings, 0), Some("7 byte · 3자".into()));
-        assert_eq!(value_size(&attrs(), 0), Some("entry 2개".into()));
+        assert_eq!(value_size(&strings, 0), Some("7 bytes · 3 chars".into()));
+        assert_eq!(value_size(&attrs(), 0), Some("2 entries".into()));
     }
 }

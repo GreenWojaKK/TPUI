@@ -1,5 +1,5 @@
-//! 필터 조건의 해석과 평가. 사용자가 입력한 값을 컬럼 타입의 값으로 바꾸고, 배치마다 조건을
-//! 만족하는 행을 Boolean으로 계산한다. 찾기의 값 해석도 같은 규칙을 쓴다.
+//! Parsing and evaluation of filter conditions. Converts user input into values of the column type
+//! and computes, per batch, a Boolean of the rows that satisfy the conditions. Find parses values with the same rules.
 
 use std::sync::Arc;
 
@@ -16,20 +16,20 @@ use arrow_schema::{DataType, Schema};
 
 use crate::{ColumnId, FilterCondition, FilterOp, ViewerError};
 
-/// 조건과 찾기에서 값을 다루는 방식으로 나눈 컬럼 타입.
+/// Column types grouped by how conditions and find handle their values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ValueClass {
-    /// 문자열. 입력을 그대로 값으로 쓴다.
+    /// Strings. The input is used as the value as is.
     Text,
-    /// Boolean·수치·Decimal·날짜·시간. 입력을 컬럼 타입으로 해석해 값끼리 비교한다.
+    /// Boolean, numeric, Decimal, date and time. The input is parsed as the column type and compared by value.
     Scalar,
-    /// Binary. 입력을 16진수로 해석한다.
+    /// Binary. The input is parsed as hexadecimal.
     Binary,
-    /// 값 비교를 하지 않는 타입. 중첩 타입과 그 밖의 타입이다.
+    /// Types without value comparison: nested types and everything else.
     Other,
 }
 
-/// Dictionary는 참조하는 값의 타입, 그 밖에는 타입 그대로.
+/// For Dictionary, the type of the referenced values; otherwise the type itself.
 pub fn value_type(data_type: &DataType) -> &DataType {
     match data_type {
         DataType::Dictionary(_, values) => value_type(values),
@@ -67,7 +67,7 @@ pub fn value_class(data_type: &DataType) -> ValueClass {
     }
 }
 
-/// 컬럼 타입에 쓸 수 있는 필터 연산자.
+/// Filter operators available for a column type.
 pub fn filter_ops(data_type: &DataType) -> &'static [FilterOp] {
     use FilterOp::*;
     match value_class(data_type) {
@@ -78,7 +78,7 @@ pub fn filter_ops(data_type: &DataType) -> &'static [FilterOp] {
     }
 }
 
-/// 정렬할 수 있는 컬럼 타입인지. 중첩 타입과 표시를 지원하지 않는 타입은 정렬하지 않는다.
+/// Whether the column type can be sorted. Nested types and types without display support are not sorted.
 pub fn is_sortable(data_type: &DataType) -> bool {
     match value_class(data_type) {
         ValueClass::Text | ValueClass::Scalar | ValueClass::Binary => true,
@@ -89,8 +89,8 @@ pub fn is_sortable(data_type: &DataType) -> bool {
     }
 }
 
-/// 입력을 `data_type`의 값 하나를 담은 배열로 해석한다. Dictionary는 참조하는 값의 타입으로
-/// 해석한다. 실패하면 사용자에게 보여줄 원인을 돌려준다.
+/// Parses the input into an array holding one value of `data_type`. Dictionary is parsed as the type
+/// of its values. On failure, returns a reason to show the user.
 pub fn parse_value(text: &str, data_type: &DataType) -> Result<ArrayRef, String> {
     let target = value_type(data_type);
     let array: ArrayRef = match target {
@@ -99,7 +99,7 @@ pub fn parse_value(text: &str, data_type: &DataType) -> Result<ArrayRef, String>
         DataType::Utf8View => Arc::new(StringViewArray::from(vec![text])),
         DataType::Binary | DataType::LargeBinary | DataType::BinaryView => {
             let bytes = parse_hex(text)
-                .ok_or_else(|| format!("'{text}'은(는) 16진수가 아닙니다. 예: 0aff"))?;
+                .ok_or_else(|| format!("'{text}' is not hexadecimal. Example: 0aff"))?;
             match target {
                 DataType::Binary => Arc::new(BinaryArray::from(vec![bytes.as_slice()])),
                 DataType::LargeBinary => Arc::new(LargeBinaryArray::from(vec![bytes.as_slice()])),
@@ -108,9 +108,9 @@ pub fn parse_value(text: &str, data_type: &DataType) -> Result<ArrayRef, String>
         }
         DataType::FixedSizeBinary(len) => {
             let bytes = parse_hex(text)
-                .ok_or_else(|| format!("'{text}'은(는) 16진수가 아닙니다. 예: 0aff"))?;
+                .ok_or_else(|| format!("'{text}' is not hexadecimal. Example: 0aff"))?;
             if bytes.len() != *len as usize {
-                return Err(format!("{len} byte 값을 입력해야 합니다."));
+                return Err(format!("Enter a {len}-byte value."));
             }
             Arc::new(
                 FixedSizeBinaryArray::try_from_iter(std::iter::once(bytes))
@@ -123,18 +123,18 @@ pub fn parse_value(text: &str, data_type: &DataType) -> Result<ArrayRef, String>
                 format_options: FormatOptions::default(),
             };
             let parsed = cast_with_options(&StringArray::from(vec![text.trim()]), other, &options)
-                .map_err(|_| format!("'{text}'을(를) {other} 값으로 읽을 수 없습니다."))?;
+                .map_err(|_| format!("Cannot read '{text}' as a {other} value."))?;
             if parsed.is_null(0) {
-                return Err(format!("'{text}'을(를) {other} 값으로 읽을 수 없습니다."));
+                return Err(format!("Cannot read '{text}' as a {other} value."));
             }
             parsed
         }
-        other => return Err(format!("{other} 컬럼은 값으로 비교할 수 없습니다.")),
+        other => return Err(format!("{other} columns cannot be compared by value.")),
     };
     Ok(array)
 }
 
-/// 공백 없는 16진수를 byte로 바꾼다. 대소문자를 구분하지 않는다.
+/// Converts hexadecimal without spaces into bytes. Case-insensitive.
 pub(crate) fn parse_hex(text: &str) -> Option<Vec<u8>> {
     let text = text.as_bytes();
     if !text.len().is_multiple_of(2) {
@@ -149,7 +149,7 @@ pub(crate) fn parse_hex(text: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
-/// Dictionary 배열을 참조하는 값의 배열로 바꾼다. 그 밖의 배열은 그대로 둔다.
+/// Converts a Dictionary array into an array of the referenced values. Other arrays are returned as is.
 pub(crate) fn unpack_dictionary(array: &ArrayRef) -> Result<ArrayRef, ViewerError> {
     match array.data_type() {
         DataType::Dictionary(_, values) => {
@@ -160,7 +160,7 @@ pub(crate) fn unpack_dictionary(array: &ArrayRef) -> Result<ArrayRef, ViewerErro
     }
 }
 
-/// Boolean 결과에서 Null을 거짓으로 바꾼다.
+/// Turns Null into false in a Boolean result.
 pub(crate) fn true_bits(result: &BooleanArray) -> BooleanBuffer {
     match result.nulls() {
         Some(nulls) => result.values() & nulls.inner(),
@@ -168,7 +168,7 @@ pub(crate) fn true_bits(result: &BooleanArray) -> BooleanBuffer {
     }
 }
 
-/// 문자열 배열에서 `needle`을 포함하는 값. Null은 거짓이다.
+/// Values of a string array that contain `needle`. Null is false.
 fn contains(array: &dyn Array, needle: &str) -> Result<BooleanBuffer, ViewerError> {
     let len = array.len();
     let check = |is_null: &dyn Fn(usize) -> bool, value: &dyn Fn(usize) -> bool| {
@@ -195,13 +195,13 @@ fn contains(array: &dyn Array, needle: &str) -> Result<BooleanBuffer, ViewerErro
         }
         _ => {
             return Err(ViewerError::InvalidCondition(
-                "포함 조건은 문자열 컬럼에만 쓸 수 있습니다.".into(),
+                "Contains can only be used on string columns.".into(),
             ));
         }
     })
 }
 
-/// 값 하나와 같은 셀. Null은 거짓이다. `value`는 [`parse_value`]가 만든 배열이다.
+/// Cells equal to one value. Null is false. `value` is an array made by [`parse_value`].
 pub(crate) fn equals(array: &ArrayRef, value: &ArrayRef) -> Result<BooleanBuffer, ViewerError> {
     compare(array, FilterOp::Eq, value)
 }
@@ -216,15 +216,15 @@ fn compare(array: &ArrayRef, op: FilterOp, value: &ArrayRef) -> Result<BooleanBu
         FilterOp::LtEq => cmp::lt_eq(&array, &scalar),
         FilterOp::Gt => cmp::gt(&array, &scalar),
         FilterOp::GtEq => cmp::gt_eq(&array, &scalar),
-        _ => unreachable!("비교 연산자만 온다"),
+        _ => unreachable!("only comparison operators reach here"),
     }
     .map_err(|err| ViewerError::Decode(err.into()))?;
     Ok(true_bits(&result))
 }
 
-/// 컬럼 타입으로 해석한 조건 하나.
+/// One condition parsed for the column type.
 struct CompiledCondition {
-    /// 배치 안의 컬럼 위치.
+    /// Column position within the batch.
     position: usize,
     op: FilterOp,
     text: String,
@@ -247,13 +247,15 @@ impl CompiledCondition {
             op => compare(
                 array,
                 op,
-                self.value.as_ref().expect("비교 연산자는 값을 해석해 둔다"),
+                self.value
+                    .as_ref()
+                    .expect("comparison operators have a parsed value"),
             ),
         }
     }
 }
 
-/// 필터 조건 전체. 조건이 있는 컬럼만 읽고, 모든 조건을 만족하는 행을 계산한다.
+/// The full set of filter conditions. Reads only the columns with conditions and computes the rows that satisfy all of them.
 pub struct CompiledFilter {
     columns: Vec<ColumnId>,
     conditions: Vec<CompiledCondition>,
@@ -278,7 +280,7 @@ impl CompiledFilter {
                 Ok(CompiledCondition {
                     position: columns
                         .binary_search(&condition.column)
-                        .expect("조건 컬럼은 목록에 있다"),
+                        .expect("condition columns are in the list"),
                     op: condition.op,
                     text: condition.value.clone(),
                     value,
@@ -291,12 +293,12 @@ impl CompiledFilter {
         })
     }
 
-    /// 읽어야 하는 컬럼. 원본 스키마 순서다.
+    /// Columns to read, in source schema order.
     pub fn columns(&self) -> &[ColumnId] {
         &self.columns
     }
 
-    /// 배치에서 모든 조건을 만족하는 행. 배치의 컬럼은 [`Self::columns`] 순서다.
+    /// Rows of the batch that satisfy all conditions. Batch columns follow [`Self::columns`].
     pub fn evaluate(&self, batch: &RecordBatch) -> Result<BooleanBuffer, ViewerError> {
         let mut result = BooleanBuffer::new_set(batch.num_rows());
         for condition in &self.conditions {
@@ -307,15 +309,15 @@ impl CompiledFilter {
     }
 }
 
-/// 조건이 컬럼 타입에 맞는지와 값을 해석할 수 있는지 확인한다. 실패하면 사용자에게 보여줄
-/// 원인을 돌려준다.
+/// Checks that the condition fits the column type and that its value can be parsed. On failure,
+/// returns a reason to show the user.
 pub fn check_condition(schema: &Schema, condition: &FilterCondition) -> Result<(), String> {
     let Some(field) = schema.fields().get(condition.column.0) else {
-        return Err("스키마 범위를 벗어난 컬럼입니다.".into());
+        return Err("Column is outside the schema.".into());
     };
     if !filter_ops(field.data_type()).contains(&condition.op) {
         return Err(format!(
-            "{} 컬럼에는 이 연산자를 쓸 수 없습니다.",
+            "This operator cannot be used on {} columns.",
             field.data_type()
         ));
     }

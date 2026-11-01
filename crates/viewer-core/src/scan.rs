@@ -1,7 +1,7 @@
-//! 컬럼 순차 읽기. 행 보기와 찾기 계산이 파일 전체 또는 행 목록의 행을 배치 단위로 읽는다.
+//! Sequential column scans. Row view and find read all rows of a file, or the rows of a row list, batch by batch.
 //!
-//! 캐시를 쓰지 않고, 돌려준 배치를 보유하지 않는다. 호출하는 쪽이 배치 하나마다 다른 요청을
-//! 처리할 수 있도록 한 번에 배치 하나만 읽는다.
+//! Scans bypass the cache and do not keep the batches they return. They read one batch at a time so
+//! the caller can handle other requests between batches.
 
 use std::fs::File;
 use std::ops::Range;
@@ -17,29 +17,29 @@ use parquet::arrow::arrow_reader::{
 
 use crate::{ColumnId, RowIds, ViewerError};
 
-/// 순차 읽기 배치 하나의 최대 행 수.
+/// Maximum rows per scan batch.
 pub const SCAN_BATCH_ROWS: usize = 8192;
 
-/// 순차 읽기가 돌려주는 배치. `batch`의 i번째 컬럼은 읽기를 만들 때 지정한 i번째 컬럼이다.
+/// Batch returned by a scan. Column i of `batch` is the i-th column given when the scan was created.
 pub struct ScanBatch {
-    /// 배치 첫 행의 순번. 행 목록을 지정했으면 행 목록 안의 위치, 아니면 원본 행 번호다.
+    /// Sequence number of the batch's first row: the position within the row list if one was given, otherwise the source row number.
     pub start: u64,
     pub batch: RecordBatch,
 }
 
-/// Row Group 순서로 지정한 최상위 컬럼만 읽는 순차 읽기.
+/// Sequential scan reading only the given top-level columns, in Row Group order.
 pub struct ColumnScan {
     file: File,
     file_len: u64,
     modified: Option<SystemTime>,
     metadata: ArrowReaderMetadata,
     projection: ProjectionMask,
-    /// Row Group별 파일 기준 행 범위.
+    /// File-level row range per Row Group.
     groups: Vec<Range<u64>>,
-    /// 읽을 행의 오름차순 목록. 없으면 모든 행을 읽는다.
+    /// Ascending list of rows to read. Reads all rows if absent.
     selection: Option<Arc<RowIds>>,
     next_group: usize,
-    /// 아직 Row Group에 배정하지 않은 행 목록의 첫 위치.
+    /// First position of the row list not yet assigned to a Row Group.
     selection_pos: usize,
     reader: Option<ParquetRecordBatchReader>,
     emitted: u64,
@@ -81,17 +81,17 @@ impl ColumnScan {
         }
     }
 
-    /// 읽을 전체 행 수.
+    /// Total rows to read.
     pub fn total(&self) -> u64 {
         self.total
     }
 
-    /// 지금까지 돌려준 행 수.
+    /// Rows returned so far.
     pub fn emitted(&self) -> u64 {
         self.emitted
     }
 
-    /// 다음 배치를 읽는다. 모두 읽었으면 `None`이다.
+    /// Reads the next batch. `None` once everything has been read.
     pub fn next_batch(&mut self) -> Result<Option<ScanBatch>, ViewerError> {
         loop {
             if let Some(reader) = &mut self.reader {
@@ -115,7 +115,7 @@ impl ColumnScan {
         }
     }
 
-    /// Row Group 하나의 reader를 만든다. 행 목록에 이 그룹의 행이 없으면 reader를 만들지 않는다.
+    /// Creates a reader for one Row Group. No reader is created if the row list has no rows in this group.
     fn open_group(&mut self, group: usize) -> Result<(), ViewerError> {
         let range = self.groups[group].clone();
         if range.is_empty() {
@@ -160,8 +160,8 @@ impl ColumnScan {
     }
 }
 
-/// 행 목록의 `from` 위치부터 `group` 범위에 드는 행을 그룹 기준 skip/select로 바꾼다.
-/// 돌려준 개수만큼 행 목록을 소비한다.
+/// Converts the rows of the list from position `from` that fall in `group` into group-relative skip/select runs.
+/// Consumes as many rows from the list as it returns.
 fn group_selection(rows: &RowIds, from: usize, group: &Range<u64>) -> (Vec<RowSelector>, usize) {
     let mut selectors = Vec::new();
     let mut cursor = group.start;
@@ -173,7 +173,7 @@ fn group_selection(rows: &RowIds, from: usize, group: &Range<u64>) -> (Vec<RowSe
         if row > cursor {
             selectors.push(RowSelector::skip((row - cursor) as usize));
         }
-        // 연속한 행은 select 하나로 묶는다.
+        // Consecutive rows are merged into one select.
         let mut run_end = row + 1;
         ix += 1;
         while rows.get(ix) == Some(run_end) && run_end < group.end {

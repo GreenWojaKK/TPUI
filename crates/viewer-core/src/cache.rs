@@ -1,4 +1,4 @@
-//! 디코딩한 블록의 byte 예산 기반 LRU 캐시. 엔진 하나에 하나만 두고 모든 세션이 공유한다.
+//! Byte-budgeted LRU cache of decoded blocks. One per engine, shared by all sessions.
 
 use std::collections::HashMap;
 
@@ -6,7 +6,7 @@ use arrow_array::RecordBatch;
 
 use crate::{ColumnId, SessionId};
 
-/// 유지하는 Arrow 캐시의 기본 예산.
+/// Default budget of the Arrow cache.
 pub const DEFAULT_CACHE_BUDGET: usize = 128 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -14,7 +14,7 @@ pub(crate) struct BlockKey {
     pub session: SessionId,
     pub row_group: usize,
     pub block_start: u64,
-    /// 원본 스키마 순서로 정렬한 컬럼.
+    /// Columns sorted in source schema order.
     pub columns: Vec<ColumnId>,
 }
 
@@ -31,7 +31,7 @@ pub(crate) struct BlockCache {
     entries: HashMap<BlockKey, Entry>,
 }
 
-/// 배치가 유지하는 buffer 용량. slice가 큰 원본 buffer를 붙잡고 있으면 원본 용량까지 센다.
+/// Buffer capacity held by a batch. A slice that pins a large source buffer counts the whole source capacity.
 fn retained_bytes(batch: &RecordBatch) -> usize {
     batch.get_array_memory_size()
 }
@@ -57,7 +57,7 @@ impl BlockCache {
         Some(entry.batch.clone())
     }
 
-    /// 같은 블록을 담고 `column`을 포함한 항목에서 그 컬럼의 위치와 배치를 찾는다.
+    /// Finds an entry holding the same block and `column`, returning that column's position and the batch.
     pub fn find_column(
         &mut self,
         session: SessionId,
@@ -83,8 +83,8 @@ impl BlockCache {
         })
     }
 
-    /// 예산을 넘지 않도록 오래 쓰지 않은 항목부터 제거한 뒤 넣는다. 블록 하나가 예산을 넘으면
-    /// 넣지 않는다.
+    /// Evicts least recently used entries until the budget fits, then inserts. A single block larger
+    /// than the budget is not inserted.
     pub fn insert(&mut self, key: BlockKey, batch: RecordBatch) {
         let bytes = retained_bytes(&batch);
         if bytes > self.budget {
@@ -102,7 +102,7 @@ impl BlockCache {
             else {
                 break;
             };
-            let removed = self.entries.remove(&oldest).expect("방금 찾은 항목");
+            let removed = self.entries.remove(&oldest).expect("entry just found");
             self.used -= removed.bytes;
         }
         self.clock += 1;
@@ -117,7 +117,7 @@ impl BlockCache {
         );
     }
 
-    /// 세션의 항목을 모두 제거한다. 파일을 닫거나 파일이 바뀌었을 때 쓴다.
+    /// Removes all entries of a session. Used when a file is closed or has changed.
     pub fn remove_session(&mut self, session: SessionId) {
         let used = &mut self.used;
         self.entries.retain(|key, entry| {
@@ -160,7 +160,7 @@ mod tests {
             cache.insert(key(1, start), batch(512));
         }
         assert_eq!(cache.used_bytes(), size * 3);
-        // 0번을 다시 써서 1번이 가장 오래된 항목이 된다.
+        // Touching entry 0 again makes entry 1 the oldest.
         assert!(cache.get(&key(1, 0)).is_some());
         cache.insert(key(2, 0), batch(512));
 

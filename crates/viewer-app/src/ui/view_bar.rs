@@ -1,4 +1,4 @@
-//! 그리드 위의 필터·정렬 막대. 행 보기의 조건 목록, 계산 진행률과 취소, 오류와 안내를 표시한다.
+//! Filter and sort bar above the grid. Shows the row view conditions, computation progress and cancel, errors and notices.
 
 use std::rc::Rc;
 
@@ -13,9 +13,9 @@ pub enum ViewBarAction {
     RemoveFilter(ColumnId),
     RemoveSort,
     ClearAll,
-    /// 계산 중인 행 보기를 버리고 이전 조건으로 돌아간다.
+    /// Drops the row view being computed and returns to the previous conditions.
     Cancel,
-    /// 실패한 조건을 다시 계산한다.
+    /// Recomputes the failed conditions.
     Retry,
 }
 
@@ -23,10 +23,10 @@ pub type ActionHandler = Rc<dyn Fn(ViewBarAction, &mut Window, &mut App)>;
 
 #[derive(IntoElement)]
 pub struct ViewBar {
-    /// 필터 조건의 컬럼과 표시.
+    /// Column and label of a filter condition.
     pub filters: Vec<(ColumnId, SharedString)>,
     pub sort: Option<SharedString>,
-    /// 계산 중이면 진행률.
+    /// Progress while computing.
     pub pending: Option<f32>,
     pub failed: Option<SharedString>,
     pub notice: Option<SharedString>,
@@ -34,7 +34,7 @@ pub struct ViewBar {
 }
 
 impl ViewBar {
-    /// 표시할 내용이 있는지.
+    /// Whether there is anything to show.
     pub fn is_visible(&self) -> bool {
         !self.filters.is_empty()
             || self.sort.is_some()
@@ -86,7 +86,7 @@ impl RenderOnce for ViewBar {
         let (status, status_color) = match (&self.pending, &self.failed, &self.notice) {
             (Some(progress), _, _) => (
                 Some(SharedString::from(format!(
-                    "적용 중 {:.0}%",
+                    "Applying {:.0}%",
                     progress * 100.
                 ))),
                 theme::text_muted(),
@@ -112,7 +112,7 @@ impl RenderOnce for ViewBar {
                     div()
                         .flex_none()
                         .text_color(theme::text_muted())
-                        .child("필터"),
+                        .child("Filter"),
                 )
             })
             .children(self.filters.into_iter().map(|(column, label)| {
@@ -128,7 +128,7 @@ impl RenderOnce for ViewBar {
                     div()
                         .flex_none()
                         .text_color(theme::text_muted())
-                        .child("정렬"),
+                        .child("Sort"),
                 )
                 .child(chip(
                     "view-sort".into(),
@@ -146,13 +146,13 @@ impl RenderOnce for ViewBar {
                     .child(status)
             }))
             .when(self.pending.is_some(), |bar| {
-                bar.child(button("view-cancel", "취소", ViewBarAction::Cancel))
+                bar.child(button("view-cancel", "Cancel", ViewBarAction::Cancel))
             })
             .when(self.pending.is_none() && self.failed.is_some(), |bar| {
-                bar.child(button("view-retry", "다시 시도", ViewBarAction::Retry))
+                bar.child(button("view-retry", "Retry", ViewBarAction::Retry))
             })
             .when(has_conditions, |bar| {
-                bar.child(button("view-clear", "모두 해제", ViewBarAction::ClearAll))
+                bar.child(button("view-clear", "Clear All", ViewBarAction::ClearAll))
             })
     }
 }

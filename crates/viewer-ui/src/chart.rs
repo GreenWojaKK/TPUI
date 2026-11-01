@@ -1,8 +1,8 @@
-//! 선·띠·기준선을 겹쳐 그리는 차트. GPUI의 `paint_quad`와 `PathBuilder`로 직접 그린다.
+//! Charts that layer lines, bands and rules. Drawn directly with GPUI's `paint_quad` and `PathBuilder`.
 //!
-//! 축의 값 범위와 눈금, 그릴 층(띠·선·기준선)을 받아 그린다. 사각형으로 끝나는 틀·눈금선·점은
-//! `paint_quad`로, 띠는 `PathBuilder::fill`로, 선은 `PathBuilder::stroke`로 그린다. 값이 없는
-//! 점에서는 띠와 선을 끊는다. 마우스를 올리면 가장 가까운 점의 위치를 호출한 쪽에 알린다.
+//! Takes axis ranges and ticks plus the layers to draw (bands, lines, rules). Rectangular frames, grid lines and dots
+//! use `paint_quad`, bands use `PathBuilder::fill`, and lines use `PathBuilder::stroke`. Bands and lines break at
+//! missing points. On hover, the index of the nearest point is reported to the caller.
 
 use std::ops::Range;
 use std::rc::Rc;
@@ -16,10 +16,10 @@ use gpui::{
 
 use crate::theme;
 
-/// 눈금 하나와 그 표시.
+/// A tick and its label.
 pub type Tick = (f64, SharedString);
 
-/// 축 하나의 값 범위, 눈금, 이름.
+/// Value range, ticks and title of one axis.
 #[derive(Clone, Debug)]
 pub struct Axis {
     min: f64,
@@ -29,7 +29,7 @@ pub struct Axis {
 }
 
 impl Axis {
-    /// `[min, max]` 범위의 축. 범위가 비면 1만큼 넓힌다.
+    /// Axis over `[min, max]`. An empty range is widened by 1.
     pub fn new(min: f64, max: f64) -> Self {
         let (min, max) = if max > min {
             (min, max)
@@ -49,14 +49,14 @@ impl Axis {
         self
     }
 
-    /// 범위 안에 1·2·2.5·5×10ⁿ 간격의 눈금을 `count`개 안팎으로 둔다. 표시는 간격을 나타낼 수
-    /// 있는 가장 적은 소수 자릿수로 한다. 예를 들어 간격이 0.25면 소수 둘째 자리까지 쓴다.
+    /// Places about `count` ticks within the range at 1·2·2.5·5×10ⁿ steps. Labels use the fewest decimals
+    /// that can express the step; for example, a step of 0.25 uses two decimals.
     pub fn nice_ticks(self, count: usize) -> Self {
         self.nice_ticks_with(count, |value, decimals| format!("{value:.decimals$}"))
     }
 
-    /// [`Self::nice_ticks`]와 같은 눈금을 `format(값, 소수 자릿수)`로 표시한다. 단위나 부호를
-    /// 붙일 때 쓴다.
+    /// Same ticks as [`Self::nice_ticks`], labeled with `format(value, decimals)`. Used to add units or
+    /// signs.
     pub fn nice_ticks_with(mut self, count: usize, format: impl Fn(f64, usize) -> String) -> Self {
         let ticks = nice_ticks(self.min, self.max, count);
         let decimals = match ticks.as_slice() {
@@ -66,7 +66,7 @@ impl Axis {
         };
         self.ticks = ticks
             .into_iter()
-            // -0.0이 "-0"으로 보이지 않도록 0을 더한다.
+            // Add 0 so that -0.0 does not show as "-0".
             .map(|value| (value, format(value + 0., decimals).into()))
             .collect();
         self
@@ -77,14 +77,14 @@ impl Axis {
         self
     }
 
-    /// 값을 `[start, start + len]` 구간의 위치로 바꾼다. 범위 밖의 값도 같은 비율로 바꾼다.
+    /// Maps a value to a position in `[start, start + len]`. Values outside the range map with the same ratio.
     fn position(&self, value: f64, start: Pixels, len: Pixels) -> Pixels {
         let ratio = (value - self.min) / (self.max - self.min);
         start + len * ratio as f32
     }
 }
 
-/// 아래·위 경계 사이를 채운 띠. 예측구간 같은 범위를 그린다.
+/// Band filled between lower and upper bounds. Draws ranges such as prediction intervals.
 #[derive(Clone, Debug)]
 pub struct Band {
     pub x: Vec<f64>,
@@ -104,16 +104,16 @@ impl Band {
     }
 }
 
-/// 점을 이은 선. 점선과 점 표시를 고를 수 있다.
+/// Line through points. Can be dashed and show point markers.
 #[derive(Clone, Debug)]
 pub struct Line {
     pub x: Vec<f64>,
     pub y: Vec<Option<f64>>,
     pub color: Hsla,
     pub width: Pixels,
-    /// 점선의 그린 길이와 빈 길이.
+    /// Drawn and gap lengths of the dash pattern.
     pub dash: Option<(Pixels, Pixels)>,
-    /// 점마다 원을 그린다.
+    /// Draws a circle at each point.
     pub markers: bool,
 }
 
@@ -145,7 +145,7 @@ impl Line {
     }
 }
 
-/// 값 좌표의 두 점을 잇는 기준선. 명목값이나 대각선 같은 비교선을 그린다.
+/// Rule between two points in value coordinates. Draws reference lines such as a nominal value or a diagonal.
 #[derive(Clone, Debug)]
 pub struct Rule {
     pub from: (f64, f64),
@@ -170,7 +170,7 @@ impl Rule {
     }
 }
 
-/// 차트에 겹쳐 그리는 층. 넣은 순서대로 그린다.
+/// Layer drawn on the chart, in insertion order.
 #[derive(Clone, Debug)]
 pub enum Layer {
     Band(Band),
@@ -196,18 +196,18 @@ impl From<Rule> for Layer {
     }
 }
 
-/// 마우스 위치를 가장 가까운 점의 순번으로 알린다. 그래프 밖이면 `None`이다.
+/// Reports the mouse position as the index of the nearest point. `None` outside the plot.
 pub type HoverHandler = Rc<dyn Fn(Option<usize>, &mut Window, &mut App)>;
 
 struct Hover {
-    /// 마우스를 맞출 x 값.
+    /// x values the mouse snaps to.
     positions: Vec<f64>,
-    /// 세로 안내선을 그릴 순번.
+    /// Index at which to draw the vertical guide.
     hovered: Option<usize>,
     handler: HoverHandler,
 }
 
-/// 선·띠·기준선 차트. 부모가 정한 크기를 모두 쓴다.
+/// Line, band and rule chart. Fills the size given by its parent.
 pub struct LineChart {
     x: Axis,
     y: Axis,
@@ -230,8 +230,8 @@ impl LineChart {
         self
     }
 
-    /// 마우스를 `positions` 중 가장 가까운 x 값에 맞춰 알린다. `hovered`가 있으면 그 위치에
-    /// 세로 안내선을 그린다.
+    /// Reports the mouse snapped to the nearest x among `positions`. If `hovered` is set, draws a vertical
+    /// guide at that position.
     pub fn on_hover(
         mut self,
         positions: Vec<f64>,
@@ -247,7 +247,7 @@ impl LineChart {
     }
 }
 
-/// prepaint에서 정한 배치. 눈금 글자는 미리 모양을 잡아 둔다.
+/// Layout decided in prepaint. Tick labels are shaped ahead of time.
 pub struct ChartLayout {
     plot: Bounds<Pixels>,
     labels: Vec<(ShapedLine, Point<Pixels>)>,
@@ -378,7 +378,7 @@ impl Element for LineChart {
         cx: &mut App,
     ) {
         let plot = layout.plot;
-        // 가로 눈금선은 층보다 먼저 그린다.
+        // Horizontal grid lines go below the layers.
         for (value, _) in &self.y.ticks {
             let y = self.y_position(*value, &plot);
             window.paint_quad(fill(
@@ -442,7 +442,7 @@ impl LineChart {
     }
 
     fn y_position(&self, value: f64, plot: &Bounds<Pixels>) -> Pixels {
-        // 화면의 y는 아래로 커지므로 위에서부터 뒤집는다.
+        // Screen y grows downward, so flip from the top.
         plot.bottom() - (self.y.position(value, plot.top(), plot.size.height) - plot.top())
     }
 
@@ -490,7 +490,7 @@ impl LineChart {
         if has_segment && let Ok(path) = path.build() {
             window.paint_path(path, line.color);
         }
-        // 이웃이 없어 선이 되지 않는 점과 점 표시는 원으로 그린다.
+        // Points without neighbours, which form no line, and point markers are drawn as circles.
         let radius = (line.width * 1.6).max(px(2.5));
         for run in &runs {
             if !line.markers && run.len() > 1 {
@@ -537,7 +537,7 @@ fn full_size() -> Style {
     style
 }
 
-/// 창의 글자 모양으로 한 줄 텍스트를 만든다.
+/// Shapes one line of text with the window's text style.
 pub(crate) struct TextShaper {
     font: gpui::Font,
     font_size: Pixels,
@@ -572,7 +572,7 @@ impl TextShaper {
     }
 }
 
-/// 조건을 만족하는 연속 구간들.
+/// Consecutive runs that satisfy the predicate.
 pub(crate) fn runs(len: usize, valid: impl Fn(usize) -> bool) -> Vec<Range<usize>> {
     let mut runs = Vec::new();
     let mut start = None;
@@ -592,7 +592,7 @@ pub(crate) fn runs(len: usize, valid: impl Fn(usize) -> bool) -> Vec<Range<usize
     runs
 }
 
-/// `value`에 가장 가까운 위치의 순번.
+/// Index of the position nearest to `value`.
 pub(crate) fn nearest(positions: &[f64], value: f64) -> Option<usize> {
     positions
         .iter()
@@ -602,7 +602,7 @@ pub(crate) fn nearest(positions: &[f64], value: f64) -> Option<usize> {
         .map(|(ix, _)| ix)
 }
 
-/// 간격 `step`의 배수를 빠짐없이 나타내는 가장 적은 소수 자릿수.
+/// Fewest decimals that represent every multiple of `step` exactly.
 pub fn step_decimals(step: f64) -> usize {
     if !step.is_finite() || step == 0. {
         return 0;
@@ -615,7 +615,7 @@ pub fn step_decimals(step: f64) -> usize {
         .unwrap_or(12)
 }
 
-/// `[min, max]` 안에서 1·2·2.5·5×10ⁿ 간격으로 `count`개 안팎의 눈금 값.
+/// About `count` tick values within `[min, max]` at 1·2·2.5·5×10ⁿ steps.
 pub fn nice_ticks(min: f64, max: f64, count: usize) -> Vec<f64> {
     if !(min.is_finite() && max.is_finite()) || max <= min || count == 0 {
         return Vec::new();
@@ -631,7 +631,7 @@ pub fn nice_ticks(min: f64, max: f64, count: usize) -> Vec<f64> {
     let last = (max / step + 1e-9).floor();
     (first as i64..=last as i64)
         .map(|ix| {
-            // 부동소수 오차로 0.30000000000000004 같은 값이 나오지 않도록 자릿수를 맞춘다.
+            // Round to the decimals so floating-point error does not produce values like 0.30000000000000004.
             let value = ix as f64 * step;
             (value / step).round() * step
         })

@@ -1,2 +1,2 @@
-// 실행 파일 아이콘. GPUI가 창과 작업 표시줄 아이콘을 resource ID 1에서 읽는다.
+// Executable icon. GPUI reads the window and taskbar icon from resource ID 1.
 1 ICON "assets/app.ico"

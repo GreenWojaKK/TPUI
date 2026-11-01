@@ -1,4 +1,4 @@
-# GPUI revision(Zed v1.26.2)이 사용하는 toolchain과 맞춘다.
+# Match the toolchain used by the GPUI revision (Zed v1.26.2).
 [toolchain]
 channel = "1.98.1"
 profile = "minimal"

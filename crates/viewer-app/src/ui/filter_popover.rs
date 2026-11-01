@@ -1,4 +1,4 @@
-//! 컬럼 헤더의 필터 버튼으로 여는 필터 창. 연산자와 값을 고르고 적용하거나 해제한다.
+//! Filter popover opened from a column header's filter button. Picks an operator and value, then applies or removes the filter.
 
 use arrow_schema::SchemaRef;
 use gpui::{
@@ -19,18 +19,18 @@ pub enum FilterPopoverEvent {
     Close,
 }
 
-/// 연산자의 화면 표시.
+/// Display label of an operator.
 pub fn op_label(op: FilterOp) -> &'static str {
     match op {
         FilterOp::Eq => "=",
         FilterOp::NotEq => "≠",
-        FilterOp::Contains => "포함",
+        FilterOp::Contains => "contains",
         FilterOp::Lt => "<",
         FilterOp::LtEq => "≤",
         FilterOp::Gt => ">",
         FilterOp::GtEq => "≥",
         FilterOp::IsNull => "null",
-        FilterOp::IsNotNull => "null 아님",
+        FilterOp::IsNotNull => "not null",
     }
 }
 
@@ -42,7 +42,7 @@ pub struct FilterPopover {
     op: FilterOp,
     input: Entity<TextInput>,
     error: Option<SharedString>,
-    /// 이 컬럼에 이미 필터가 있다.
+    /// The column already has a filter.
     has_condition: bool,
     _subscription: Subscription,
 }
@@ -67,9 +67,9 @@ impl FilterPopover {
             .as_ref()
             .map_or(default_op, |condition| condition.op);
         let placeholder = match value_class(&data_type) {
-            ValueClass::Binary => "16진수 값",
-            ValueClass::Scalar => "값",
-            _ => "텍스트",
+            ValueClass::Binary => "Hex value",
+            ValueClass::Scalar => "Value",
+            _ => "Text",
         };
         let input = cx.new(|cx| {
             let mut input = TextInput::new(placeholder, cx);
@@ -101,7 +101,7 @@ impl FilterPopover {
         }
     }
 
-    /// 값 입력이 필요한 연산자면 입력에, 아니면 창에 포커스를 둔다.
+    /// Focuses the input for operators that take a value, or the popover otherwise.
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
         if self.op.takes_value() {
             self.input
@@ -118,7 +118,7 @@ impl FilterPopover {
         cx.notify();
     }
 
-    /// 조건을 확인해 적용한다. 값을 해석할 수 없으면 원인을 표시한다.
+    /// Validates and applies the condition. Shows the reason if the value cannot be parsed.
     fn apply(&mut self, cx: &mut Context<Self>) {
         let condition = FilterCondition {
             column: self.column,
@@ -139,8 +139,8 @@ impl FilterPopover {
     }
 
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        // 값 입력이 없는 연산자에서 창 자체에 포커스가 있을 때의 Enter·Esc. 입력에 포커스가
-        // 있으면 입력이 처리한다.
+        // Enter and Esc when the popover itself is focused, for operators without a value input. When the input
+        // has focus, the input handles them.
         if !self.focus_handle.is_focused(window) {
             return;
         }
@@ -229,17 +229,15 @@ impl Render for FilterPopover {
                     .items_center()
                     .gap_2()
                     .when(self.has_condition, |row| {
-                        row.child(
-                            small_button("filter-remove", "필터 해제").on_click(cx.listener(
-                                |this, _: &ClickEvent, _, cx| {
-                                    cx.emit(FilterPopoverEvent::Remove(this.column))
-                                },
-                            )),
-                        )
+                        row.child(small_button("filter-remove", "Remove Filter").on_click(
+                            cx.listener(|this, _: &ClickEvent, _, cx| {
+                                cx.emit(FilterPopoverEvent::Remove(this.column))
+                            }),
+                        ))
                     })
                     .child(div().flex_1())
                     .child(
-                        small_button("filter-apply", "적용")
+                        small_button("filter-apply", "Apply")
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.apply(cx))),
                     ),
             )

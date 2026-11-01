@@ -1,6 +1,6 @@
-//! 상태 표시줄, 찾기 막대, 파일 구조가 함께 쓰는 수와 크기의 표시 형식.
+//! Number and size formats shared by the status bar, find bar and file structure view.
 
-/// 세 자리마다 쉼표를 넣는다.
+/// Inserts a comma every three digits.
 pub fn format_count(value: u64) -> String {
     let digits = value.to_string();
     let mut formatted = String::with_capacity(digits.len() + digits.len() / 3);
@@ -13,7 +13,13 @@ pub fn format_count(value: u64) -> String {
     formatted
 }
 
-/// 1024 단위로 줄여 소수 첫째 자리까지 표시한다.
+/// Count with comma grouping and the singular or plural noun, e.g. `1 row`, `3,224 rows`.
+pub fn format_quantity(count: u64, singular: &str, plural: &str) -> String {
+    let noun = if count == 1 { singular } else { plural };
+    format!("{} {noun}", format_count(count))
+}
+
+/// Scales by 1024 and shows one decimal.
 pub fn format_bytes(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
     if bytes < 1024 {
@@ -28,12 +34,12 @@ pub fn format_bytes(bytes: u64) -> String {
     format!("{value:.1} {}", UNITS[unit])
 }
 
-/// 압축 전 크기가 압축 후 크기의 몇 배인지. 압축 후 크기가 0이면 `-`다.
+/// How many times larger the uncompressed size is than the compressed size. `-` if the compressed size is 0.
 pub fn format_ratio(uncompressed: u64, compressed: u64) -> String {
     if compressed == 0 {
         return "-".into();
     }
-    format!("{:.1}배", uncompressed as f64 / compressed as f64)
+    format!("{:.1}×", uncompressed as f64 / compressed as f64)
 }
 
 #[cfg(test)]
@@ -60,7 +66,9 @@ mod tests {
 
     #[test]
     fn formats_compression_ratio() {
-        assert_eq!(format_ratio(300, 100), "3.0배");
+        assert_eq!(format_ratio(300, 100), "3.0×");
+        assert_eq!(format_quantity(1, "row", "rows"), "1 row");
+        assert_eq!(format_quantity(3224, "row", "rows"), "3,224 rows");
         assert_eq!(format_ratio(10, 0), "-");
     }
 }

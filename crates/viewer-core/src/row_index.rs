@@ -2,10 +2,10 @@ use std::ops::Range;
 
 use crate::ViewerError;
 
-/// Row Group별 행 수의 누적 offset.
+/// Cumulative row offsets of the Row Groups.
 ///
-/// Row Group이 `G`개이면 길이 `G + 1`이고, `offsets[i]..offsets[i + 1]`이 i번째 Row Group의
-/// 전역 행 범위다. 마지막 값이 전체 행 수다.
+/// With `G` Row Groups the length is `G + 1`, and `offsets[i]..offsets[i + 1]` is the global row range
+/// of Row Group i. The last value is the total row count.
 #[derive(Clone, Debug)]
 pub struct RowGroupIndex {
     offsets: Vec<u64>,
@@ -33,15 +33,15 @@ impl RowGroupIndex {
         self.offsets.len() - 1
     }
 
-    /// i번째 Row Group의 전역 행 범위. `row_group`이 범위를 벗어나면 panic한다.
+    /// Global row range of Row Group i. Panics if `row_group` is out of range.
     pub fn row_group_range(&self, row_group: usize) -> Range<u64> {
         self.offsets[row_group]..self.offsets[row_group + 1]
     }
 
-    /// 전역 행이 속한 Row Group과 그 그룹 안의 행 위치를 찾는다.
+    /// Finds the Row Group holding a global row and the row's position within that group.
     ///
-    /// `offsets[i] <= row < offsets[i + 1]`인 `i`를 upper-bound 이진 탐색으로 찾으므로,
-    /// 행 수가 0인 Row Group은 자연히 건너뛴다. 전체 행 수 이상의 행은 `None`이다.
+    /// Finds `i` with `offsets[i] <= row < offsets[i + 1]` by upper-bound binary search, so
+    /// Row Groups with zero rows are skipped naturally. Rows at or beyond the total are `None`.
     pub fn locate(&self, row: u64) -> Option<(usize, u64)> {
         if row >= self.total_rows() {
             return None;

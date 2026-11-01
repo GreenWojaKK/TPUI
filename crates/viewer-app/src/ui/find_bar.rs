@@ -1,29 +1,29 @@
-//! 그리드 위의 찾기 막대. 입력, 이전·다음 버튼, 찾기 상태를 표시한다.
+//! Find bar above the grid. Shows the input, previous and next buttons, and the find status.
 
 use gpui::{
     ClickEvent, Context, Entity, EventEmitter, SharedString, Subscription, Window, div, prelude::*,
 };
 
-use viewer_ui::format::format_count;
+use viewer_ui::format::format_quantity;
 use viewer_ui::text_input::{TextInput, TextInputEvent};
 use viewer_ui::theme;
 use viewer_ui::widgets::small_button;
 
 pub enum FindBarEvent {
-    /// 다음(backward = false) 또는 이전 일치를 찾는다.
+    /// Finds the next (backward = false) or previous match.
     Search {
         backward: bool,
     },
     Close,
 }
 
-/// 찾기 막대에 표시하는 상태.
+/// Status shown in the find bar.
 #[derive(Clone, Debug, PartialEq)]
 pub enum FindStatus {
     Idle,
-    /// 일치 위치를 계산하는 중. 진행률은 0부터 1까지다.
+    /// Computing match positions. Progress runs from 0 to 1.
     Searching(f32),
-    /// 행 보기 전체의 일치 셀 수.
+    /// Number of matching cells in the whole row view.
     Found(u64),
     NotFound,
     Failed(SharedString),
@@ -39,7 +39,7 @@ impl EventEmitter<FindBarEvent> for FindBar {}
 
 impl FindBar {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        let input = cx.new(|cx| TextInput::new("값 전체가 같은 셀 찾기", cx));
+        let input = cx.new(|cx| TextInput::new("Find cells whose whole value matches", cx));
         let subscription =
             cx.subscribe(&input, |this, _, event: &TextInputEvent, cx| match event {
                 TextInputEvent::Submit { backward } => cx.emit(FindBarEvent::Search {
@@ -64,7 +64,7 @@ impl FindBar {
         self.input.read(cx).text().to_string()
     }
 
-    /// 입력에 포커스를 옮기고 내용 전체를 선택한다.
+    /// Focuses the input and selects all of its content.
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
         self.input
             .update(cx, |input, cx| input.focus_and_select_all(window, cx));
@@ -81,15 +81,15 @@ impl FindBar {
 impl Render for FindBar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (status, is_error): (SharedString, bool) = match &self.status {
-            FindStatus::Idle => ("Enter: 다음 · Shift+Enter: 이전".into(), false),
+            FindStatus::Idle => ("Enter: next · Shift+Enter: previous".into(), false),
             FindStatus::Searching(progress) => {
-                (format!("찾는 중 {:.0}%", progress * 100.).into(), false)
+                (format!("Searching {:.0}%", progress * 100.).into(), false)
             }
             FindStatus::Found(cells) => (
-                format!("일치하는 셀 {}개", format_count(*cells)).into(),
+                format_quantity(*cells, "matching cell", "matching cells").into(),
                 false,
             ),
-            FindStatus::NotFound => ("일치하는 셀이 없습니다.".into(), true),
+            FindStatus::NotFound => ("No matching cells.".into(), true),
             FindStatus::Failed(message) => (message.clone(), true),
         };
         div()
@@ -107,7 +107,7 @@ impl Render for FindBar {
                 div()
                     .flex_none()
                     .text_color(theme::text_muted())
-                    .child("찾기"),
+                    .child("Find"),
             )
             .child(
                 div()
@@ -115,10 +115,12 @@ impl Render for FindBar {
                     .w(gpui::px(280.))
                     .child(self.input.clone()),
             )
-            .child(small_button("find-previous", "이전").on_click(cx.listener(
-                |_, _: &ClickEvent, _, cx| cx.emit(FindBarEvent::Search { backward: true }),
-            )))
-            .child(small_button("find-next", "다음").on_click(cx.listener(
+            .child(
+                small_button("find-previous", "Previous").on_click(cx.listener(
+                    |_, _: &ClickEvent, _, cx| cx.emit(FindBarEvent::Search { backward: true }),
+                )),
+            )
+            .child(small_button("find-next", "Next").on_click(cx.listener(
                 |_, _: &ClickEvent, _, cx| cx.emit(FindBarEvent::Search { backward: false }),
             )))
             .child(

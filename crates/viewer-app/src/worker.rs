@@ -1,10 +1,10 @@
-//! 데이터 엔진을 실행하는 전용 thread와 요청 mailbox.
+//! Dedicated thread running the data engine, and the request mailbox.
 //!
-//! UI는 mailbox에 최신 요청을 넣고 worker를 깨운다. worker는 mailbox 잠금 밖에서 엔진을
-//! 호출하고, 결과는 bounded channel로 보낸다. UI thread는 worker의 완료를 기다리지 않는다.
+//! The UI puts the latest requests in the mailbox and wakes the worker. The worker calls the engine outside
+//! the mailbox lock and sends results over a bounded channel. The UI thread never waits for the worker.
 //!
-//! 행 보기와 찾기의 계산은 순차 읽기 배치 하나씩 진행한다. 배치 사이마다 열기·닫기·화면 범위·
-//! 값 요청을 먼저 처리하므로, 계산 중에도 스크롤과 셀 선택이 동작한다.
+//! Row view and find computations advance one scan batch at a time. Open, close, visible range and
+//! value requests are handled between batches, so scrolling and cell selection keep working during computation.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ops::Range;
@@ -23,41 +23,41 @@ use viewer_core::{
 use crate::cell_preview::{CellPreview, preview_column};
 use crate::value_detail::{self, ValueBody, ValueDetail, ValueNode};
 
-/// 결과 channel에 쌓일 수 있는 최대 메시지 수.
+/// Maximum number of messages queued in the result channel.
 const RESULT_CHANNEL_CAPACITY: usize = 2;
-/// 계산 진행률을 UI로 보내는 최소 간격.
+/// Minimum interval between progress updates sent to the UI.
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 
-/// 행 보기 번호. 행 보기 요청의 `RequestId`이며, `None`은 파일을 연 뒤 행 보기를 바꾸지 않은
-/// 원본 순서다.
+/// Row view number: the `RequestId` of the row view request. `None` is the source order, before the
+/// row view changed after opening the file.
 pub type ViewId = Option<RequestId>;
 
-/// worker가 UI로 보내는 결과.
+/// Results the worker sends to the UI.
 pub enum WorkerEvent {
     Opened {
         session: SessionId,
         result: Result<DatasetInfo, ViewerError>,
     },
-    /// 화면 범위 중 일부 행의 셀 미리보기.
+    /// Cell previews of some rows of the visible range.
     Cells {
         session: SessionId,
         request: RequestId,
         cells: WindowCells,
     },
-    /// 화면 범위 중 읽지 못한 행 범위.
+    /// Rows of the visible range that could not be read.
     ReadFailed {
         session: SessionId,
         request: RequestId,
         rows: Range<u64>,
         error: ViewerError,
     },
-    /// 선택 셀의 루트 정보와 본문.
+    /// Root information and body of the selected cell.
     ValueLoaded {
         session: SessionId,
         request: RequestId,
         detail: ValueDetail,
     },
-    /// 값 트리 노드의 `start`부터 이어지는 자식.
+    /// Children of a value tree node, starting at `start`.
     ValueChildren {
         session: SessionId,
         request: RequestId,
@@ -81,13 +81,13 @@ pub enum WorkerEvent {
         request: RequestId,
         error: ViewerError,
     },
-    /// 행 보기 계산의 진행률. 0부터 1까지다.
+    /// Progress of the row view computation, from 0 to 1.
     ViewProgress {
         session: SessionId,
         request: RequestId,
         progress: f32,
     },
-    /// 행 보기가 완성되었다. 이후 요청은 이 번호로 보낸다.
+    /// The row view is complete. Later requests use this number.
     ViewReady {
         session: SessionId,
         request: RequestId,
@@ -103,7 +103,7 @@ pub enum WorkerEvent {
         request: RequestId,
         progress: f32,
     },
-    /// 행 보기 전체의 일치 셀 수와 찾은 셀(행 보기 위치, 컬럼).
+    /// Number of matching cells in the whole row view, and the found cell (row view position, column).
     FindResult {
         session: SessionId,
         request: RequestId,
@@ -115,13 +115,13 @@ pub enum WorkerEvent {
         request: RequestId,
         error: ViewerError,
     },
-    /// 파일 구조. 메타데이터만으로 만든다.
+    /// File structure, built from metadata alone.
     FileStructure {
         session: SessionId,
         request: RequestId,
         result: Result<FileStructure, ViewerError>,
     },
-    /// Row Group 하나의 컬럼별 저장 정보.
+    /// Per-column storage information of one Row Group.
     RowGroupColumns {
         session: SessionId,
         request: RequestId,
@@ -130,14 +130,14 @@ pub enum WorkerEvent {
     },
 }
 
-/// 파일 구조 요청. `row_group`이 있으면 그 Row Group의 컬럼별 정보를 요청한다.
+/// File structure request. With `row_group`, requests that Row Group's per-column information.
 pub struct StructureRequest {
     pub session: SessionId,
     pub request: RequestId,
     pub row_group: Option<usize>,
 }
 
-/// 선택 값에 대한 후속 작업. 값 요청이 바뀌면 폐기한다.
+/// Follow-up operation on the selected value. Dropped when the value request changes.
 pub struct ValueOp {
     pub request: RequestId,
     pub path: Vec<usize>,
@@ -150,8 +150,8 @@ pub enum ValueOpKind {
     Copy,
 }
 
-/// 화면 범위의 일부 행의 셀 미리보기. `previews[c][r]`는 `columns[c]` 컬럼의 행 보기 위치
-/// `rows.start + r` 행이고, 그 원본 행 번호는 `row_numbers[r]`다.
+/// Cell previews of some rows of the visible range. `previews[c][r]` is column `columns[c]` at row view position
+/// `rows.start + r`, whose source row number is `row_numbers[r]`.
 pub struct WindowCells {
     pub rows: Range<u64>,
     pub row_numbers: Vec<u64>,
@@ -159,7 +159,7 @@ pub struct WindowCells {
     pub previews: Vec<Vec<CellPreview>>,
 }
 
-/// 찾기 요청. `from`은 출발 셀의 행 보기 위치와 컬럼이다.
+/// Find request. `from` is the row view position and column of the starting cell.
 pub struct FindRequest {
     pub session: SessionId,
     pub request: RequestId,
@@ -169,46 +169,46 @@ pub struct FindRequest {
     pub backward: bool,
 }
 
-/// 탭 하나의 파일 세션을 열거나 닫는 명령. 요청 순서대로 모두 처리한다.
+/// Command opening or closing the file session of one tab. All are processed in request order.
 enum Command {
     Open { session: SessionId, path: PathBuf },
     Close { session: SessionId },
 }
 
-/// 화면 범위 요청. 행은 행 보기 위치다. `find`가 있으면 그 입력과 같은 셀을 표시한다.
+/// Visible range request. Rows are row view positions. With `find`, cells equal to that input are marked.
 struct WindowJob {
     view: ViewId,
     request: WindowRequest,
     find: Option<String>,
 }
 
-/// 값 요청. 행은 행 보기 위치다.
+/// Value request. The row is a row view position.
 struct ValueJob {
     view: ViewId,
     request: ValueRequest,
 }
 
-/// 처리 대기 중인 요청. 열기·닫기 명령은 순서대로 쌓고, 화면 범위·값·찾기 요청은 최신
-/// 하나만, 행 보기 요청은 세션마다 최신 하나만 둔다.
+/// Pending requests. Open and close commands queue in order; visible range, value and find requests keep only
+/// the latest; row view requests keep the latest per session.
 #[derive(Default)]
 struct Mailbox {
     commands: VecDeque<Command>,
     window: Option<WindowJob>,
     value: Option<ValueJob>,
     value_ops: VecDeque<ValueOp>,
-    /// 활성 탭의 최신 값 요청. 보관한 선택 값과 후속 작업이 아직 유효한지 판단한다.
+    /// Latest value request of the active tab. Decides whether the kept selected value and follow-ups are still valid.
     latest_value: Option<RequestId>,
-    /// 탭으로 열려 있는 세션. 닫힌 탭의 작업과 결과를 버리는 데 쓴다.
+    /// Sessions open as tabs. Used to drop work and results of closed tabs.
     live_sessions: HashSet<SessionId>,
-    /// 활성 탭의 최신 화면 범위 요청. 진행 중인 읽기가 아직 유효한지 판단한다.
+    /// Latest visible range request of the active tab. Decides whether an in-flight read is still valid.
     latest_request: Option<RequestId>,
-    /// 아직 계산을 시작하지 않은 행 보기 요청. 세션마다 최신 하나다.
+    /// Row view requests whose computation has not started. The latest per session.
     views: VecDeque<(SessionId, RequestId, ViewSpec)>,
-    /// 세션별 최신 행 보기 요청. 진행 중인 계산이 아직 유효한지 판단한다.
+    /// Latest row view request per session. Decides whether an in-flight computation is still valid.
     latest_view: HashMap<SessionId, RequestId>,
     find: Option<FindRequest>,
     latest_find: Option<RequestId>,
-    /// 최신 파일 구조 요청.
+    /// Latest file structure request.
     structure: Option<StructureRequest>,
     shutdown: bool,
 }
@@ -241,7 +241,7 @@ impl Mailbox {
         self.commands.push_back(Command::Open { session, path });
     }
 
-    /// 아직 처리하지 않은 열기 명령은 취소하고, 이미 열렸거나 여는 중인 세션은 닫기 명령을 쌓는다.
+    /// Cancels open commands not yet processed, and queues a close command for sessions already open or opening.
     fn push_close(&mut self, session: SessionId) {
         self.live_sessions.remove(&session);
         let pending_open = self.commands.iter().position(
@@ -296,12 +296,12 @@ impl Mailbox {
         self.views.retain(|(pending, _, _)| *pending != session);
     }
 
-    /// 세션에 계산을 기다리는 행 보기 요청이 있는지.
+    /// Whether the session has a row view request waiting to be computed.
     fn has_pending_view(&self, session: SessionId) -> bool {
         self.views.iter().any(|(pending, _, _)| *pending == session)
     }
 
-    /// 닫기, 열기(요청 순서), 화면 범위, 값 요청, 값 후속 작업, 파일 구조 순서로 꺼낸다.
+    /// Takes requests in order: close, open (request order), visible range, value, value follow-up, file structure.
     fn next_job(&mut self) -> Option<Job> {
         let close = self
             .commands
@@ -332,7 +332,7 @@ enum Job {
     Structure(StructureRequest),
 }
 
-/// UI가 소유하는 worker handle. drop되면 worker에 종료를 알린다.
+/// Worker handle owned by the UI. Dropping it tells the worker to stop.
 pub struct ViewerWorker {
     mailbox: Arc<Mutex<Mailbox>>,
     wake: mpsc::SyncSender<()>,
@@ -341,7 +341,7 @@ pub struct ViewerWorker {
 impl ViewerWorker {
     pub fn spawn() -> (Self, async_channel::Receiver<WorkerEvent>) {
         let mailbox = Arc::new(Mutex::new(Mailbox::default()));
-        // 깨우는 신호는 용량 1로 합친다. 이미 신호가 쌓여 있으면 새 신호를 버린다.
+        // Wake signals coalesce into a capacity of 1. If a signal is already queued, the new one is dropped.
         let (wake_tx, wake_rx) = mpsc::sync_channel(1);
         let (events_tx, events_rx) = async_channel::bounded(RESULT_CHANNEL_CAPACITY);
 
@@ -349,7 +349,7 @@ impl ViewerWorker {
         thread::Builder::new()
             .name("viewer-worker".into())
             .spawn(move || run(worker_mailbox, wake_rx, events_tx))
-            .expect("데이터 worker thread를 시작할 수 없습니다");
+            .expect("cannot start the data worker thread");
 
         (
             Self {
@@ -361,29 +361,29 @@ impl ViewerWorker {
     }
 
     fn with_mailbox(&self, update: impl FnOnce(&mut Mailbox)) {
-        update(&mut self.mailbox.lock().expect("mailbox 잠금 실패"));
+        update(&mut self.mailbox.lock().expect("mailbox lock poisoned"));
         self.wake();
     }
 
-    /// 새 탭의 파일 열기를 요청한다. 다른 세션은 그대로 둔다.
+    /// Requests opening a file for a new tab. Other sessions are left untouched.
     pub fn open(&self, session: SessionId, path: PathBuf) {
         self.with_mailbox(|mailbox| mailbox.push_open(session, path));
     }
 
-    /// 탭의 세션을 닫는다. 아직 처리하지 않은 열기 명령은 취소하고, 열린 세션은 엔진에서 닫는다.
+    /// Closes a tab's session. Cancels open commands not yet processed and closes open sessions in the engine.
     pub fn close(&self, session: SessionId) {
         self.with_mailbox(|mailbox| mailbox.push_close(session));
     }
 
-    /// 대기 중이거나 진행 중인 화면 범위 읽기를 멈춘다. 활성 탭이 바뀔 때 쓴다.
+    /// Stops pending or in-flight visible range reads. Used when the active tab changes.
     pub fn cancel_window(&self) {
-        let mut mailbox = self.mailbox.lock().expect("mailbox 잠금 실패");
+        let mut mailbox = self.mailbox.lock().expect("mailbox lock poisoned");
         mailbox.window = None;
         mailbox.latest_request = None;
     }
 
-    /// 화면 범위 읽기를 요청한다. 아직 처리되지 않은 이전 범위 요청은 이 요청으로 교체된다.
-    /// `view`가 세션의 현재 행 보기와 다르면 worker가 버린다.
+    /// Requests a visible range read. An earlier range request not yet processed is replaced by this one.
+    /// The worker drops it if `view` differs from the session's current row view.
     pub fn request_window(&self, view: ViewId, request: WindowRequest, find: Option<String>) {
         self.with_mailbox(|mailbox| {
             mailbox.latest_request = Some(request.request);
@@ -395,7 +395,7 @@ impl ViewerWorker {
         });
     }
 
-    /// 선택 셀의 값을 요청한다. 이전 값 요청과 그 후속 작업은 폐기된다.
+    /// Requests the selected cell's value. The previous value request and its follow-ups are dropped.
     pub fn request_value(&self, view: ViewId, request: ValueRequest) {
         self.with_mailbox(|mailbox| {
             mailbox.latest_value = Some(request.request);
@@ -404,9 +404,9 @@ impl ViewerWorker {
         });
     }
 
-    /// 선택 값을 해제한다. 활성 탭이 바뀌거나 선택 셀이 없어질 때 쓴다.
+    /// Releases the selected value. Used when the active tab changes or the selection disappears.
     pub fn cancel_value(&self) {
-        let mut mailbox = self.mailbox.lock().expect("mailbox 잠금 실패");
+        let mut mailbox = self.mailbox.lock().expect("mailbox lock poisoned");
         mailbox.value = None;
         mailbox.value_ops.clear();
         mailbox.latest_value = None;
@@ -420,17 +420,17 @@ impl ViewerWorker {
         });
     }
 
-    /// 세션의 행 보기를 바꾼다. 같은 세션의 이전 행 보기 요청과 진행 중인 계산은 버린다.
+    /// Changes the session's row view. Drops earlier row view requests and in-flight computation of the same session.
     pub fn set_view(&self, session: SessionId, request: RequestId, spec: ViewSpec) {
         self.with_mailbox(|mailbox| mailbox.push_view(session, request, spec));
     }
 
-    /// 세션의 행 보기 계산을 멈춘다. 이미 완성된 행 보기는 그대로 둔다.
+    /// Stops the session's row view computation. A completed row view is left as is.
     pub fn cancel_view(&self, session: SessionId) {
         self.with_mailbox(|mailbox| mailbox.cancel_view(session));
     }
 
-    /// 다음·이전 일치를 찾는다. 이전 찾기 요청은 이 요청으로 교체된다.
+    /// Finds the next or previous match. An earlier find request is replaced by this one.
     pub fn find(&self, request: FindRequest) {
         self.with_mailbox(|mailbox| {
             mailbox.latest_find = Some(request.request);
@@ -438,13 +438,13 @@ impl ViewerWorker {
         });
     }
 
-    /// 파일 구조를 요청한다. 이전 요청은 이 요청으로 교체된다.
+    /// Requests the file structure. An earlier request is replaced by this one.
     pub fn request_structure(&self, request: StructureRequest) {
         self.with_mailbox(|mailbox| mailbox.structure = Some(request));
     }
 
     pub fn cancel_find(&self) {
-        let mut mailbox = self.mailbox.lock().expect("mailbox 잠금 실패");
+        let mut mailbox = self.mailbox.lock().expect("mailbox lock poisoned");
         mailbox.find = None;
         mailbox.latest_find = None;
     }
@@ -463,7 +463,7 @@ impl Drop for ViewerWorker {
     }
 }
 
-/// 진행 중인 행 보기 계산.
+/// Row view computation in progress.
 struct RunningView {
     session: SessionId,
     request: RequestId,
@@ -471,35 +471,35 @@ struct RunningView {
     reported: Instant,
 }
 
-/// 진행 중인 찾기 계산과, 계산이 끝나면 처리할 찾기 요청.
+/// Find computation in progress, and the find request to handle once it finishes.
 struct RunningFind {
     request: FindRequest,
     task: FindTask,
     reported: Instant,
 }
 
-/// 찾기 계산 결과. 세션, 행 보기, 입력이 모두 같은 찾기 요청에 다시 쓴다.
+/// Find computation result. Reused for find requests with the same session, row view and input.
 struct StoredFind {
     session: SessionId,
     view: ViewId,
     index: FindIndex,
 }
 
-/// worker thread가 소유하는 상태.
+/// State owned by the worker thread.
 struct WorkerState {
     engine: ViewerEngine,
-    /// 세션별 현재 행 보기와 그 번호.
+    /// Current row view and its number, per session.
     views: HashMap<SessionId, (ViewId, RowView)>,
-    /// 선택 값은 하나만 보관한다.
+    /// Only one selected value is kept.
     selected: Option<(RequestId, ValueSlice)>,
     running_view: Option<RunningView>,
     running_find: Option<RunningFind>,
     stored_find: Option<StoredFind>,
-    /// 일치 셀 강조에 쓰는 찾기 입력의 해석 결과.
+    /// Parsed find input used to mark matching cells.
     highlight: Option<(SessionId, FindQuery)>,
 }
 
-/// 결과를 UI로 보낸다. UI가 수신을 끝냈으면 false다.
+/// Sends a result to the UI. False once the UI has stopped receiving.
 type Send<'a> = &'a dyn Fn(WorkerEvent) -> bool;
 
 fn run(
@@ -526,10 +526,10 @@ fn run(
         } else {
             let _ = wake.try_recv();
         }
-        // 열기·닫기·화면 범위·값 요청을 먼저 모두 처리한다.
+        // Handle all open, close, visible range and value requests first.
         loop {
             let job = {
-                let mut mailbox = mailbox.lock().expect("mailbox 잠금 실패");
+                let mut mailbox = mailbox.lock().expect("mailbox lock poisoned");
                 if mailbox.shutdown {
                     return;
                 }
@@ -547,7 +547,7 @@ fn run(
                 return;
             }
         }
-        // 처리할 요청이 없으면 계산을 배치 하나만큼 진행한다.
+        // With no requests to handle, advance a computation by one batch.
         match state.step_background(&mailbox, &send) {
             Some(true) => idle = false,
             Some(false) => return,
@@ -558,7 +558,7 @@ fn run(
 
 impl WorkerState {
     fn handle(&mut self, job: Job, mailbox: &Mutex<Mailbox>, send: Send) -> bool {
-        let lock = || mailbox.lock().expect("mailbox 잠금 실패");
+        let lock = || mailbox.lock().expect("mailbox lock poisoned");
         match job {
             Job::Command(Command::Open { session, path }) => {
                 let result = self.engine.open(session, &path);
@@ -569,7 +569,7 @@ impl WorkerState {
                     }
                     send(WorkerEvent::Opened { session, result })
                 } else {
-                    // 여는 동안 탭이 닫혔다.
+                    // The tab was closed while opening.
                     self.engine.close(session);
                     true
                 }
@@ -585,7 +585,7 @@ impl WorkerState {
                 let Some((view_id, view)) = self.views.get(&session) else {
                     return true;
                 };
-                // 이전 행 보기의 요청은 위치가 다른 행을 가리키므로 버린다.
+                // Requests for the previous row view point to rows at different positions, so drop them.
                 if *view_id != job.view {
                     return true;
                 }
@@ -717,12 +717,12 @@ impl WorkerState {
         }
     }
 
-    /// 찾기 요청, 찾기 계산, 행 보기 계산 순서로 하나를 배치 하나만큼 진행한다. 할 일이 없으면
-    /// `None`, UI가 수신을 끝냈으면 `Some(false)`다.
+    /// Advances one of the find request, the find computation or the row view computation, in that order, by one batch.
+    /// `None` if there is nothing to do, `Some(false)` once the UI has stopped receiving.
     fn step_background(&mut self, mailbox: &Mutex<Mailbox>, send: Send) -> Option<bool> {
-        let lock = || mailbox.lock().expect("mailbox 잠금 실패");
+        let lock = || mailbox.lock().expect("mailbox lock poisoned");
 
-        // 같은 세션의 행 보기 계산이 남아 있지 않은 찾기 요청을 꺼낸다.
+        // Take a find request whose session has no row view computation left.
         let find = {
             let mut mailbox = lock();
             let blocked = mailbox.find.as_ref().is_some_and(|find| {
@@ -759,7 +759,7 @@ impl WorkerState {
                     }
                 }
                 Ok(TaskStep::Done(index)) => {
-                    let running = self.running_find.take().expect("진행 중인 찾기");
+                    let running = self.running_find.take().expect("find in progress");
                     self.stored_find = Some(StoredFind {
                         session,
                         view: running.request.view,
@@ -845,12 +845,12 @@ impl WorkerState {
         })
     }
 
-    /// 보관한 찾기 결과가 요청과 맞으면 바로 이동하고, 아니면 찾기 계산을 시작한다.
+    /// Moves immediately if the kept find result matches the request; otherwise starts a find computation.
     fn start_find(&mut self, find: FindRequest, mailbox: &Mutex<Mailbox>, send: Send) -> bool {
         let Some((view_id, view)) = self.views.get(&find.session) else {
             return true;
         };
-        // 이전 행 보기 기준의 요청이다. UI가 새 행 보기로 다시 요청한다.
+        // A request based on the previous row view. The UI requests again with the new row view.
         if *view_id != find.view {
             return true;
         }
@@ -862,7 +862,7 @@ impl WorkerState {
         if reusable {
             return self.navigate(find, mailbox, send);
         }
-        // 같은 입력의 계산이 이미 진행 중이면 이어서 쓴다.
+        // If a computation for the same input is already running, continue with it.
         if let Some(running) = &mut self.running_find
             && running.request.session == find.session
             && running.request.view == find.view
@@ -894,7 +894,7 @@ impl WorkerState {
         }
     }
 
-    /// 보관한 찾기 결과로 다음·이전 일치를 찾아 보낸다.
+    /// Finds and sends the next or previous match from the kept find result.
     fn navigate(&mut self, find: FindRequest, mailbox: &Mutex<Mailbox>, send: Send) -> bool {
         let (Some(stored), Some((_, view))) =
             (self.stored_find.as_ref(), self.views.get(&find.session))
@@ -904,7 +904,7 @@ impl WorkerState {
         let current = || {
             mailbox
                 .lock()
-                .expect("mailbox 잠금 실패")
+                .expect("mailbox lock poisoned")
                 .is_find_current(find.session, find.request)
         };
         let result = stored.index.next(
@@ -935,7 +935,7 @@ impl WorkerState {
     }
 }
 
-/// 세션의 찾기 입력 해석 결과. 같은 세션의 같은 입력이면 다시 쓴다.
+/// Parsed find input of a session. Reused for the same input in the same session.
 fn highlight_query<'a>(
     cache: &'a mut Option<(SessionId, FindQuery)>,
     engine: &ViewerEngine,
@@ -952,9 +952,9 @@ fn highlight_query<'a>(
     cache.as_ref().map(|(_, query)| query)
 }
 
-/// 원본 순서의 화면 범위를 블록 순서대로 읽고, 블록마다 화면에 필요한 셀의 미리보기만 보낸다.
+/// Reads the visible range in source order, block by block, sending previews only for the cells needed on screen.
 ///
-/// 블록 읽기 전, 배치 디코딩 후, 결과 송신 전에 요청이 아직 최신인지 확인한다.
+/// Checks that the request is still the latest before reading a block, after decoding a batch, and before sending results.
 fn read_window(
     engine: &mut ViewerEngine,
     request: &WindowRequest,
@@ -990,7 +990,7 @@ fn read_window(
                 false,
             ),
             Err(ViewerError::Cancelled | ViewerError::StaleSession) => return true,
-            // 파일이 바뀌면 남은 블록도 같은 결과이므로 더 읽지 않는다.
+            // If the file changed, the remaining blocks give the same result, so stop reading.
             Err(error @ ViewerError::FileChanged) => (failed(rows, error), true),
             Err(error) => (failed(rows, error), false),
         };
@@ -1007,8 +1007,8 @@ fn read_window(
     true
 }
 
-/// 행 목록이 있는 행 보기의 화면 범위를 읽는다. 화면 범위의 원본 행을 그 순서대로 읽어
-/// 미리보기와 원본 행 번호를 함께 보낸다.
+/// Reads the visible range of a row view with a row list. Reads the source rows of the range in order and
+/// sends previews along with their source row numbers.
 fn read_view_window(
     engine: &mut ViewerEngine,
     view: &RowView,
@@ -1075,7 +1075,7 @@ fn window_cells(
     }
 }
 
-/// 배열의 `local` 위치 값의 미리보기. 찾기 입력이 있으면 일치하는 셀을 표시한다.
+/// Preview of the value at position `local` of the array. With a find input, marks matching cells.
 fn column_previews(
     column: ColumnId,
     array: &ArrayRef,
@@ -1094,7 +1094,7 @@ fn column_previews(
     previews
 }
 
-/// 선택 값에서 노드 자식·본문·복사 텍스트를 만든다. 경로가 값의 구조를 벗어나면 `None`이다.
+/// Builds node children, body or copy text from the selected value. `None` if the path leaves the value's structure.
 fn value_op_event(slice: &ValueSlice, op: ValueOp) -> Option<WorkerEvent> {
     let (array, row) = value_detail::node_at(&slice.value, &op.path)?;
     let (session, request) = (slice.session, op.request);

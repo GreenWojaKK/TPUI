@@ -1,7 +1,7 @@
-//! 파일 구조 화면. 파일 요약, leaf 컬럼별 저장 정보, Row Group 목록을 보여준다.
+//! File structure view. Shows the file summary, per-leaf-column storage information and the Row Group list.
 //!
-//! 모든 값은 Parquet 메타데이터에 적힌 정보다. Row Group을 고르면 컬럼 표가 그 Row Group의
-//! 정보로 바뀐다.
+//! All values come from the Parquet metadata. Selecting a Row Group switches the column table to that
+//! Row Group's information.
 
 use std::ops::Range;
 
@@ -11,12 +11,12 @@ use gpui::{
 };
 use viewer_core::{ColumnChunkInfo, FileStructure, StatValue};
 
-use viewer_ui::format::{format_bytes, format_count, format_ratio};
+use viewer_ui::format::{format_bytes, format_count, format_quantity, format_ratio};
 use viewer_ui::table::{self, Cell, ColumnSpec};
 use viewer_ui::theme;
 
 pub enum StructureEvent {
-    /// 컬럼 표에 보일 Row Group을 고른다. `None`은 전체다.
+    /// Selects the Row Group shown in the column table. `None` is all of them.
     SelectRowGroup(Option<usize>),
 }
 
@@ -29,35 +29,35 @@ enum StructureState {
 
 pub struct StructureView {
     state: StructureState,
-    /// 컬럼 표에 보이는 Row Group. `None`은 전체다.
+    /// Row Group shown in the column table. `None` is all of them.
     selected: Option<usize>,
-    /// 고른 Row Group의 컬럼 정보. 받기 전에는 `None`이다.
+    /// Column information of the selected Row Group. `None` until received.
     group_columns: Option<Vec<ColumnChunkInfo>>,
 }
 
 impl EventEmitter<StructureEvent> for StructureView {}
 
-/// 컬럼 표의 칸 이름과 너비 비율.
+/// Column names and width ratios of the column table.
 const COLUMN_TABLE: [ColumnSpec; 10] = [
-    ("컬럼", 3.0),
-    ("타입", 2.4),
-    ("압축", 1.4),
-    ("압축 후", 1.4),
-    ("압축 전", 1.4),
-    ("압축률", 1.1),
-    ("null", 1.3),
-    ("최솟값", 2.4),
-    ("최댓값", 2.4),
-    ("인덱스", 1.3),
+    ("Column", 2.6),
+    ("Type", 2.0),
+    ("Codec", 1.3),
+    ("Compressed", 2.0),
+    ("Uncompressed", 2.3),
+    ("Ratio", 1.0),
+    ("null", 1.0),
+    ("Min", 2.2),
+    ("Max", 2.2),
+    ("Index", 1.2),
 ];
 
-/// Row Group 표의 칸 이름과 너비 비율.
+/// Column names and width ratios of the Row Group table.
 const GROUP_TABLE: [ColumnSpec; 5] = [
     ("Row Group", 1.5),
-    ("행 수", 1.5),
-    ("압축 후", 1.5),
-    ("압축 전", 1.5),
-    ("압축률", 1.0),
+    ("Rows", 1.5),
+    ("Compressed", 1.5),
+    ("Uncompressed", 1.5),
+    ("Ratio", 1.0),
 ];
 
 impl StructureView {
@@ -88,7 +88,7 @@ impl StructureView {
         cx.notify();
     }
 
-    /// 고른 Row Group의 컬럼 정보를 받는다. 그 사이 다른 Row Group을 골랐으면 버린다.
+    /// Receives the selected Row Group's column information. Dropped if another Row Group was selected meanwhile.
     pub fn set_group_columns(
         &mut self,
         row_group: usize,
@@ -131,7 +131,7 @@ impl StructureView {
             .map(|group| group.uncompressed)
             .sum();
         let keys: SharedString = if structure.key_values.is_empty() {
-            "없음".into()
+            "none".into()
         } else {
             structure
                 .key_values
@@ -163,46 +163,48 @@ impl StructureView {
             .border_b_1()
             .border_color(theme::border())
             .child(line(
-                "Parquet 형식 버전",
+                "Parquet format version",
                 structure.format_version.to_string().into(),
             ))
             .child(line(
-                "만든 프로그램",
+                "Created by",
                 structure
                     .created_by
                     .clone()
-                    .unwrap_or_else(|| "기록 없음".into())
+                    .unwrap_or_else(|| "not recorded".into())
                     .into(),
             ))
             .child(line(
-                "데이터 크기",
+                "Data size",
                 format!(
-                    "압축 후 {} · 압축 전 {} · 압축률 {}",
+                    "{} compressed · {} uncompressed · ratio {}",
                     format_bytes(compressed),
                     format_bytes(uncompressed),
                     format_ratio(uncompressed, compressed)
                 )
                 .into(),
             ))
-            .child(line("key-value 메타데이터", keys))
+            .child(line("Key-value metadata", keys))
     }
 
     fn render_column_row(&self, ix: usize) -> Stateful<Div> {
-        let column = &self.columns().expect("컬럼 표를 그릴 때만 부른다")[ix];
+        let column = &self
+            .columns()
+            .expect("called only when drawing the column table")[ix];
         let type_label: SharedString = match &column.logical_type {
             Some(logical) => format!("{} · {logical}", column.physical_type).into(),
             None => column.physical_type.clone().into(),
         };
         let index = match (column.page_index, column.bloom_filter) {
-            (true, true) => "페이지 · Bloom",
-            (true, false) => "페이지",
+            (true, true) => "Page · Bloom",
+            (true, false) => "Page",
             (false, true) => "Bloom",
             (false, false) => "-",
         };
         let cells = vec![
             Cell::new(column.path.clone()).tooltip(column.path.clone()),
             Cell::new(type_label.clone()).tooltip(format!(
-                "{type_label}\n인코딩: {}",
+                "{type_label}\nEncodings: {}",
                 column.encodings.join(", ")
             )),
             Cell::new(column.codecs.join(", ")),
@@ -219,13 +221,13 @@ impl StructureView {
 
     fn render_group_row(&self, ix: usize, cx: &mut Context<Self>) -> Stateful<Div> {
         let StructureState::Ready(structure) = &self.state else {
-            unreachable!("Row Group 표는 구조가 있을 때만 그린다")
+            unreachable!("the Row Group table is drawn only with a structure")
         };
-        // 첫 행은 전체, 그다음부터 Row Group이다.
+        // The first row is the whole file; Row Groups follow.
         let row_group = ix.checked_sub(1);
         let (label, rows, compressed, uncompressed) = match row_group {
             None => (
-                SharedString::from("전체"),
+                SharedString::from("All"),
                 structure.row_groups.iter().map(|group| group.rows).sum(),
                 structure
                     .row_groups
@@ -264,13 +266,15 @@ impl StructureView {
     }
 }
 
-/// 통계 값 칸. 파일에 잘라 적힌 근삿값은 `≈`를 붙인다.
+/// Statistics value cell. Approximations truncated in the file get a `≈` prefix.
 fn stat_cell(value: Option<&StatValue>) -> Cell {
     match value {
         None => Cell::new("-"),
         Some(value) if value.exact => Cell::new(value.text.clone()).tooltip(value.text.clone()),
-        Some(value) => Cell::new(format!("≈ {}", value.text))
-            .tooltip(format!("{}\n파일에 잘라 적힌 근삿값입니다.", value.text)),
+        Some(value) => Cell::new(format!("≈ {}", value.text)).tooltip(format!(
+            "{}\nApproximation truncated in the file.",
+            value.text
+        )),
     }
 }
 
@@ -289,7 +293,7 @@ impl Render for StructureView {
         let structure = match &self.state {
             StructureState::Empty => return placeholder("", theme::text_muted()),
             StructureState::Loading => {
-                return placeholder("파일 구조를 읽는 중", theme::text_muted());
+                return placeholder("Reading file structure", theme::text_muted());
             }
             StructureState::Failed(message) => {
                 return placeholder(message.clone(), theme::error());
@@ -297,10 +301,16 @@ impl Render for StructureView {
             StructureState::Ready(structure) => structure,
         };
         let column_title: SharedString = match self.selected {
-            None => format!("컬럼 {}개 · 전체", structure.columns.len()).into(),
-            Some(group) => {
-                format!("컬럼 {}개 · Row Group #{group}", structure.columns.len()).into()
-            }
+            None => format!(
+                "{} · all",
+                format_quantity(structure.columns.len() as u64, "column", "columns")
+            )
+            .into(),
+            Some(group) => format!(
+                "{} · Row Group #{group}",
+                format_quantity(structure.columns.len() as u64, "column", "columns")
+            )
+            .into(),
         };
         let column_count = self.columns().map_or(0, <[ColumnChunkInfo]>::len);
         let group_count = structure.row_groups.len() + 1;
@@ -325,7 +335,7 @@ impl Render for StructureView {
             .flex_1()
             .into_any_element()
         } else {
-            placeholder("Row Group 정보를 읽는 중", theme::text_muted())
+            placeholder("Reading Row Group information", theme::text_muted())
                 .flex_1()
                 .into_any_element()
         };
@@ -356,7 +366,12 @@ impl Render for StructureView {
                     .border_t_1()
                     .border_color(theme::border())
                     .child(section(
-                        format!("Row Group {}개", structure.row_groups.len()).into(),
+                        format_quantity(
+                            structure.row_groups.len() as u64,
+                            "Row Group",
+                            "Row Groups",
+                        )
+                        .into(),
                     ))
                     .child(table::header_aligned(&GROUP_TABLE, |ix| ix > 0))
                     .child(

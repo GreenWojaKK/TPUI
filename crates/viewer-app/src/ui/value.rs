@@ -1,8 +1,8 @@
-//! 값 상세 보기. 선택 셀의 원본 값을 자르지 않고 보여준다.
+//! Value detail view. Shows the raw value of the selected cell without truncation.
 //!
-//! 중첩 값은 펼칠 수 있는 값 트리로, 선택한 노드의 값은 본문으로 표시한다. 본문은 표시 줄 단위로
-//! 보이는 줄만 그린다. 문자열은 패널 폭에서 자동 줄바꿈하고, Binary는 16 byte마다 한 줄인
-//! hex dump로 표시한다.
+//! Nested values appear as an expandable value tree, and the selected node's value as the body. The body draws
+//! only visible display lines. Strings wrap at the panel width; Binary is shown as a hex dump of 16 bytes
+//! per line.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
@@ -21,28 +21,28 @@ use viewer_ui::theme;
 
 actions!(value, [CopyValue]);
 
-/// 자식이 이보다 많은 노드는 자식을 이 개수 단위의 구간 노드로 묶는다.
+/// Nodes with more children than this group them into range nodes of this size.
 pub const GROUP_SIZE: usize = 1_000;
-/// hex dump 한 줄의 byte 수.
+/// Bytes per hex dump line.
 const HEX_ROW_BYTES: usize = 16;
 
 pub enum ValueEvent {
-    /// 노드의 `range` 위치 자식을 요청한다.
+    /// Requests the children of a node at positions `range`.
     Expand {
         path: Vec<usize>,
         range: Range<usize>,
     },
-    /// 노드의 원본 값 전체를 요청한다.
+    /// Requests the full raw value of a node.
     Select(Vec<usize>),
-    /// 노드의 원본 값을 복사한다.
+    /// Copies the raw value of a node.
     Copy(Vec<usize>),
     Retry,
 }
 
-/// 원본 텍스트를 패널 폭에 맞춘 표시 줄의 byte 범위로 나눈다.
+/// Splits raw text into byte ranges of display lines fitted to the panel width.
 ///
-/// 줄바꿈(`\n`, `\r\n`, `\r`)에서 줄을 나누고, 표시 폭이 `columns`를 넘으면 그 앞에서 자동
-/// 줄바꿈한다. 넓은 문자는 2칸, 제어 문자는 표시 기호 1칸으로 센다.
+/// Breaks lines at newlines (`\n`, `\r\n`, `\r`), and wraps before the display width exceeds `columns`.
+/// Wide characters count as 2 cells; control characters as one display symbol cell.
 pub fn wrap_lines(text: &str, columns: usize) -> Vec<Range<usize>> {
     let columns = columns.max(1);
     let mut lines = Vec::new();
@@ -84,7 +84,7 @@ pub fn wrap_lines(text: &str, columns: usize) -> Vec<Range<usize>> {
     lines
 }
 
-/// 표시 줄의 탭과 제어 문자를 표시 기호로 바꾼다. 원본 값은 바꾸지 않는다.
+/// Replaces tabs and control characters of a display line with display symbols. The raw value is unchanged.
 fn display_line(text: &str) -> String {
     text.chars()
         .map(|ch| match ch {
@@ -95,7 +95,7 @@ fn display_line(text: &str) -> String {
         .collect()
 }
 
-/// hex dump 한 줄. offset, 16 byte의 16진수, ASCII를 표시한다.
+/// One hex dump line: offset, 16 bytes in hexadecimal, and ASCII.
 fn hex_line(bytes: &[u8], line: usize) -> String {
     let start = line * HEX_ROW_BYTES;
     let chunk = &bytes[start..(start + HEX_ROW_BYTES).min(bytes.len())];
@@ -125,7 +125,7 @@ fn hex_line(bytes: &[u8], line: usize) -> String {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum TreeKey {
     Node(Vec<usize>),
-    /// 부모 노드 경로와 구간 시작 위치.
+    /// Parent node path and range start position.
     Group(Vec<usize>, usize),
 }
 
@@ -155,7 +155,7 @@ enum Body {
     Bytes(Arc<[u8]>),
     Text {
         text: SharedString,
-        /// 표시 줄 인덱스. 만드는 동안은 `None`이다.
+        /// Display line index. `None` while being built.
         lines: Option<Arc<Vec<Range<usize>>>>,
     },
 }
@@ -175,7 +175,7 @@ impl From<ValueBody> for Body {
 struct Loaded {
     header: ValueHeader,
     root: ValueNode,
-    /// `(부모 경로, 구간 시작)`별 자식. 요청 중이면 `None`이다.
+    /// Children per `(parent path, range start)`. `None` while requested.
     children: HashMap<(Vec<usize>, usize), Option<Vec<ValueNode>>>,
     expanded: HashSet<TreeKey>,
     selected: Vec<usize>,
@@ -244,9 +244,9 @@ enum ValueState {
 pub struct ValueView {
     focus_handle: FocusHandle,
     state: ValueState,
-    /// 본문 자동 줄바꿈의 표시 폭. 패널을 처음 그리기 전에는 0이다.
+    /// Display width for wrapping the body. 0 before the panel is first drawn.
     wrap_columns: usize,
-    /// 본문이나 줄바꿈 폭이 바뀔 때마다 증가한다. 이전 줄 인덱스 결과를 버리는 데 쓴다.
+    /// Incremented whenever the body or wrap width changes. Used to drop stale line index results.
     wrap_generation: u64,
 }
 
@@ -277,7 +277,7 @@ impl ValueView {
         cx.notify();
     }
 
-    /// 선택 셀의 루트 정보를 표시한다. 중첩 값이면 루트를 펼쳐 자식을 요청한다.
+    /// Shows the root information of the selected cell. For nested values, expands the root and requests its children.
     pub fn set_detail(&mut self, detail: ValueDetail, cx: &mut Context<Self>) {
         let mut loaded = Loaded {
             header: detail.header,
@@ -335,7 +335,7 @@ impl ValueView {
         }
     }
 
-    /// 문자열 본문의 표시 줄 인덱스를 background task에서 만든다.
+    /// Builds the display line index of a string body in a background task.
     fn start_wrap(&mut self, cx: &mut Context<Self>) {
         self.wrap_generation += 1;
         let ValueState::Loaded(loaded) = &mut self.state else {
@@ -526,7 +526,7 @@ impl ValueView {
                 .pl(indent(*depth))
                 .text_color(theme::text_muted())
                 .child(chevron(false, false))
-                .child("읽는 중…"),
+                .child("Reading…"),
         }
     }
 
@@ -534,7 +534,7 @@ impl ValueView {
         let ValueState::Loaded(loaded) = &self.state else {
             return div();
         };
-        // 본문 폭을 재서 자동 줄바꿈의 표시 폭을 정한다.
+        // Measure the body width to set the wrapping display width.
         let view = cx.entity();
         let measure = canvas(
             move |bounds, window, cx| {
@@ -583,7 +583,7 @@ impl ValueView {
             Body::Loading => div()
                 .p_2()
                 .text_color(theme::text_muted())
-                .child("읽는 중…")
+                .child("Reading…")
                 .into_any_element(),
             Body::Null => div()
                 .p_2()
@@ -645,7 +645,7 @@ impl ValueView {
             .child(
                 div()
                     .truncate()
-                    .child(format!("행 {} · {}", header.row + 1, header.column)),
+                    .child(format!("Row {} · {}", header.row + 1, header.column)),
             )
             .child(
                 div()
@@ -700,8 +700,8 @@ impl Render for ValueView {
                 .child(text)
         };
         match &self.state {
-            ValueState::Empty => container.child(message("선택한 셀이 없습니다.".into())),
-            ValueState::Loading => container.child(message("읽는 중…".into())),
+            ValueState::Empty => container.child(message("No cell selected.".into())),
+            ValueState::Loading => container.child(message("Reading…".into())),
             ValueState::Failed(error) => container.child(
                 message(error.clone())
                     .flex_col()
@@ -717,7 +717,7 @@ impl Render for ValueView {
                             .hover(|style| style.bg(theme::button_hover()))
                             .cursor_pointer()
                             .text_color(theme::text())
-                            .child("다시 시도")
+                            .child("Retry")
                             .on_click(
                                 cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(ValueEvent::Retry)),
                             ),
@@ -771,7 +771,7 @@ mod tests {
     #[test]
     fn wraps_by_display_width() {
         assert_eq!(lines_of("abcdefg", 3), vec!["abc", "def", "g"]);
-        // 한글은 2칸이다.
+        // Hangul is two cells wide.
         assert_eq!(lines_of("가나다라", 5), vec!["가나", "다라"]);
         assert_eq!(lines_of(r"C:\a\b", 3), vec![r"C:\", r"a\b"]);
     }

@@ -1,7 +1,7 @@
-//! 한 줄 텍스트 입력. 커서·선택·클립보드·IME 조합 입력을 처리한다.
+//! Single-line text input. Handles the cursor, selection, clipboard and IME composition.
 //!
-//! GPUI의 `EntityInputHandler`로 운영체제 입력기를 연결한다. `Enter`·`Shift+Enter`·`Esc`는
-//! 이벤트로 알리고, 무엇을 할지는 입력을 가진 view가 정한다.
+//! Connects the OS input method through GPUI's `EntityInputHandler`. `Enter`, `Shift+Enter` and `Esc`
+//! are reported as events; the view owning the input decides what to do.
 
 use std::ops::Range;
 
@@ -39,7 +39,7 @@ actions!(
     ]
 );
 
-/// 한 줄 입력의 단축키를 등록한다. 앱 시작 때 한 번 부른다.
+/// Registers the single-line input key bindings. Call once at app start.
 pub fn bind_keys(cx: &mut App) {
     let input = Some("TextInput");
     cx.bind_keys([
@@ -64,9 +64,9 @@ pub fn bind_keys(cx: &mut App) {
 }
 
 pub enum TextInputEvent {
-    /// 내용이 바뀌었다.
+    /// The content changed.
     Changed,
-    /// `Enter`(backward = false) 또는 `Shift+Enter`(backward = true).
+    /// `Enter` (backward = false) or `Shift+Enter` (backward = true).
     Submit { backward: bool },
     /// `Esc`.
     Cancel,
@@ -105,7 +105,7 @@ impl TextInput {
         &self.content
     }
 
-    /// 내용을 바꾸고 커서를 끝에 둔다.
+    /// Replaces the content and puts the cursor at the end.
     pub fn set_text(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
         self.content = text.into();
         self.selected_range = self.content.len()..self.content.len();
@@ -114,7 +114,7 @@ impl TextInput {
         cx.notify();
     }
 
-    /// 입력에 포커스를 옮기고 내용 전체를 선택한다.
+    /// Focuses the input and selects all of its content.
     pub fn focus_and_select_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.selected_range = 0..self.content.len();
         self.selection_reversed = false;
@@ -232,7 +232,7 @@ impl TextInput {
 
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-            // 한 줄 입력이므로 줄바꿈은 공백으로 바꾼다.
+            // Single-line input: newlines become spaces.
             let text = text.replace("\r\n", " ").replace(['\r', '\n'], " ");
             self.replace_text_in_range(None, &text, window, cx);
         }
@@ -497,7 +497,7 @@ impl EntityInputHandler for TextInput {
     }
 }
 
-/// 입력 내용을 한 줄로 그리고 운영체제 입력기를 연결하는 element.
+/// Element that draws the content on one line and connects the OS input method.
 struct TextElement {
     input: Entity<TextInput>,
 }
@@ -506,7 +506,7 @@ struct PrepaintState {
     line: Option<ShapedLine>,
     cursor: Option<PaintQuad>,
     selection: Option<PaintQuad>,
-    /// 커서가 보이도록 왼쪽으로 민 거리.
+    /// Distance shifted left to keep the cursor visible.
     scroll: Pixels,
 }
 
@@ -601,7 +601,7 @@ impl Element for TextElement {
             .text_system()
             .shape_line(display_text, font_size, &runs, None);
 
-        // 내용이 칸보다 길면 커서가 보이도록 왼쪽으로 민다.
+        // If the content is wider than the box, shift left so the cursor stays visible.
         let cursor_x = if input.content.is_empty() {
             px(0.)
         } else {
@@ -656,7 +656,7 @@ impl Element for TextElement {
             ElementInputHandler::new(bounds, self.input.clone()),
             cx,
         );
-        let line = prepaint.line.take().expect("prepaint에서 만든 줄");
+        let line = prepaint.line.take().expect("line shaped in prepaint");
         let origin = point(bounds.left() - prepaint.scroll, bounds.top());
         window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
             if let Some(selection) = prepaint.selection.take() {

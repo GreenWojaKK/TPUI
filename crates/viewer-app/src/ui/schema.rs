@@ -1,4 +1,4 @@
-//! 활성 파일의 스키마 트리. 중첩 타입의 자식을 펼칠 수 있고, 펼쳐진 노드만 행으로 그린다.
+//! Schema tree of the active file. Children of nested types can be expanded; only expanded nodes are drawn as rows.
 
 use std::collections::HashSet;
 use std::ops::Range;
@@ -10,7 +10,7 @@ use gpui::{
 
 use viewer_ui::theme;
 
-/// 스키마 필드 하나와 그 자식 필드.
+/// One schema field and its child fields.
 #[derive(Debug, PartialEq, Eq)]
 struct SchemaNode {
     name: SharedString,
@@ -20,7 +20,7 @@ struct SchemaNode {
 }
 
 impl SchemaNode {
-    /// Struct는 필드를, List류는 원소 필드를, Map은 key·value 필드를 자식으로 둔다.
+    /// Struct has its fields as children, list types their element field, and Map its key and value fields.
     fn from_field(field: &Field) -> Self {
         let item = |label: &str, item: &Field| (label.to_string(), vec![Self::from_field(item)]);
         let (type_label, children) = match field.data_type() {
@@ -53,7 +53,7 @@ impl SchemaNode {
     }
 }
 
-/// 펼쳐진 트리를 평평하게 펼친 행 하나. `path`는 최상위부터의 자식 위치다.
+/// One row of the flattened expanded tree. `path` is the child positions from the top level.
 #[derive(Debug, PartialEq, Eq)]
 struct SchemaRow {
     depth: usize,

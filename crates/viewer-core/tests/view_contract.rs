@@ -1,4 +1,4 @@
-//! 순차 읽기, 임의 행 읽기, 행 보기, 찾기의 계약. 여러 Row Group을 가진 fixture로 확인한다.
+//! Contracts of sequential scans, arbitrary row reads, row views and find, checked with a multi-Row-Group fixture.
 
 use std::fs::File;
 use std::path::Path;
@@ -25,7 +25,7 @@ fn schema() -> SchemaRef {
     ]))
 }
 
-/// id, id % 7(5의 배수 행은 Null), 이름(3의 배수 행은 Null)을 1,000행 Row Group으로 쓴다.
+/// Writes id, id % 7 (Null on multiples of 5) and name (Null on multiples of 3) in Row Groups of 1,000 rows.
 fn write_fixture(path: &Path) {
     let schema = schema();
     let ids: Int64Array = (0..ROWS).collect();
@@ -127,7 +127,7 @@ fn reads_rows_in_the_requested_order() {
     let batch = engine
         .read_rows(SessionId(1), &rows, &[ColumnId(2), ColumnId(0)], &|| false)
         .unwrap();
-    // 컬럼은 원본 스키마 순서로 정렬한다.
+    // Columns are sorted into source schema order.
     assert_eq!(batch.schema().field(0).name(), "id");
     assert_eq!(int64s(batch.column(0)), rows);
     let names = batch.column(1).as_string::<i32>();
@@ -167,7 +167,7 @@ fn sorts_filtered_rows_with_nulls_last_and_stable_ties() {
     };
     let view = build_view(&engine, &spec).unwrap();
     let mut expected: Vec<i64> = (0..40).collect();
-    // 내림차순, Null(5의 배수)은 마지막, 같은 값은 원본 순서.
+    // Descending; Null (multiples of 5) last; equal values in source order.
     expected.sort_by_key(|id| {
         let group = (id % 5 != 0).then_some(id % 7);
         (group.is_none(), std::cmp::Reverse(group))
@@ -203,7 +203,7 @@ fn finds_cells_in_view_order_and_wraps_around() {
         }),
     };
     let view = build_view(&engine, &spec).unwrap();
-    // "3"은 group 컬럼의 값 3과 id 3에 일치한다. id 3은 필터 밖이다.
+    // "3" matches the value 3 in the group column and id 3. id 3 is outside the filter.
     let query = FindQuery::new(&schema, "3");
     let mut task = FindTask::new(&engine, SessionId(1), query, &view).unwrap();
     let index = loop {
@@ -235,7 +235,7 @@ fn finds_cells_in_view_order_and_wraps_around() {
         .unwrap()
         .unwrap();
     assert_eq!(view.file_row(second.0), Some(expected[1]));
-    // 처음에서 이전으로 가면 마지막 일치로 돌아간다.
+    // Going back from the start wraps to the last match.
     let last = index
         .next(&mut engine, SessionId(1), &view, Some(first), true, &|| {
             false
