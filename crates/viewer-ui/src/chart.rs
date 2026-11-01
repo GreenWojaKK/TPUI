@@ -22,10 +22,10 @@ pub type Tick = (f64, SharedString);
 /// Value range, ticks and title of one axis.
 #[derive(Clone, Debug)]
 pub struct Axis {
-    min: f64,
-    max: f64,
-    ticks: Vec<Tick>,
-    title: Option<SharedString>,
+    pub(crate) min: f64,
+    pub(crate) max: f64,
+    pub(crate) ticks: Vec<Tick>,
+    pub(crate) title: Option<SharedString>,
 }
 
 impl Axis {
@@ -78,7 +78,7 @@ impl Axis {
     }
 
     /// Maps a value to a position in `[start, start + len]`. Values outside the range map with the same ratio.
-    fn position(&self, value: f64, start: Pixels, len: Pixels) -> Pixels {
+    pub(crate) fn position(&self, value: f64, start: Pixels, len: Pixels) -> Pixels {
         let ratio = (value - self.min) / (self.max - self.min);
         start + len * ratio as f32
     }
@@ -537,7 +537,9 @@ fn full_size() -> Style {
     style
 }
 
-/// Shapes one line of text with the window's text style.
+/// Shapes and measures single lines of text with the window's text style. Text is muted unless another
+/// color is set.
+#[derive(Clone)]
 pub(crate) struct TextShaper {
     font: gpui::Font,
     font_size: Pixels,
@@ -558,17 +560,36 @@ impl TextShaper {
         }
     }
 
-    pub(crate) fn shape(&self, text: SharedString) -> ShapedLine {
-        let run = TextRun {
-            len: text.len(),
+    pub(crate) fn color(mut self, color: impl Into<Hsla>) -> Self {
+        self.color = color.into();
+        self
+    }
+
+    fn run(&self, len: usize) -> TextRun {
+        TextRun {
+            len,
             font: self.font.clone(),
             color: self.color,
             background_color: None,
             underline: None,
             strikethrough: None,
-        };
+        }
+    }
+
+    pub(crate) fn shape(&self, text: SharedString) -> ShapedLine {
+        let run = self.run(text.len());
         self.text_system
             .shape_line(text, self.font_size, &[run], None)
+    }
+
+    /// Width of `text` laid out on one line.
+    pub(crate) fn width(&self, text: &str) -> Pixels {
+        if text.is_empty() {
+            return px(0.);
+        }
+        self.text_system
+            .layout_line(text, self.font_size, &[self.run(text.len())], None)
+            .width
     }
 }
 

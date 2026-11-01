@@ -144,6 +144,11 @@ pub fn grid_line() -> Rgba {
     pick(0x2f3135, 0xe5e7ea)
 }
 
+/// Background of bar and strip chart tracks.
+pub fn track() -> Rgba {
+    pick(0x3a3d43, 0xe5e7ea)
+}
+
 pub fn null_text() -> Rgba {
     pick(0x7f8ea3, 0x6b7a90)
 }

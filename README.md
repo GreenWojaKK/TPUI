@@ -19,7 +19,7 @@ Analysis and aggregation belong in other tools; this viewer focuses on showing r
 | Crate | Contents |
 |---|---|
 | `viewer-core` | Parquet and SQLite reading, filter/sort/find computation, file and table structure. No GPUI dependency |
-| `viewer-ui` | GPUI components: light and dark themes, single-line input, tab bar, table, buttons, line/band charts, heatmap, route map |
+| `viewer-ui` | GPUI components: light and dark themes, single-line input, tab bar, tables with fixed or wrapping rows, buttons, line/band charts, bar charts, strip charts, heatmap, route map |
 | `viewer-app` | The viewer app |
 
 ## Build
@@ -31,18 +31,6 @@ cargo build --release -p viewer-app
 ```
 
 The result is `target/release/viewer-app.exe`.
-
-The chart example draws probabilistic forecast explorer data (`explorer-data.json`).
-
-```
-cargo run -p viewer-ui --example forecast_charts -- <explorer-data.json> [YYYY-MM-DD]
-```
-
-The map example draws the route map blocks of analysis runs over a background of area polygons.
-
-```
-cargo run -p viewer-ui --example route_map -- <runs-directory> <map-context.json>
-```
 
 ## Using `viewer-ui` in another app
 

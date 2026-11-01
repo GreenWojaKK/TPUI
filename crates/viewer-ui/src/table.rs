@@ -1,14 +1,17 @@
-//! Header and rows of a simple table whose column widths are split by ratio. Used as `uniform_list` rows.
+//! Header and rows of a simple table whose column widths are split by ratio.
 //!
-//! Content truncated in narrow cells is shown in full as a tooltip.
+//! [`row`] has a fixed height for `uniform_list`, and content truncated in narrow cells is shown in full as a
+//! tooltip. [`wrapped_row`] wraps long text at spaces and grows to fit it, for short tables of sentences.
 
 use gpui::{
     AnyView, App, Context, Div, SharedString, Stateful, Window, div, prelude::*, px, relative,
 };
 
 use crate::theme;
+use crate::wrap::WrappedText;
 
-/// Column name and width ratio.
+/// Column name and width ratio. Functions here also take names known only at run time, as
+/// `(SharedString, f32)`.
 pub type ColumnSpec = (&'static str, f32);
 
 /// One table cell.
@@ -40,18 +43,21 @@ impl Cell {
     }
 }
 
-fn total_weight(columns: &[ColumnSpec]) -> f32 {
+fn total_weight<L>(columns: &[(L, f32)]) -> f32 {
     columns.iter().map(|(_, weight)| weight).sum()
 }
 
 /// Table header row with every column left-aligned.
-pub fn header(columns: &[ColumnSpec]) -> Div {
+pub fn header<L: Clone + Into<SharedString>>(columns: &[(L, f32)]) -> Div {
     header_aligned(columns, |_| false)
 }
 
 /// Table header row. Columns where `align_right(column index)` is true are right-aligned, so numeric
 /// column headers sit on the same side as their values.
-pub fn header_aligned(columns: &[ColumnSpec], align_right: impl Fn(usize) -> bool) -> Div {
+pub fn header_aligned<L: Clone + Into<SharedString>>(
+    columns: &[(L, f32)],
+    align_right: impl Fn(usize) -> bool,
+) -> Div {
     let total = total_weight(columns);
     div()
         .flex_none()
@@ -70,15 +76,15 @@ pub fn header_aligned(columns: &[ColumnSpec], align_right: impl Fn(usize) -> boo
                 .pr_2()
                 .truncate()
                 .when(align_right(ix), |cell| cell.flex().justify_end())
-                .child(*label)
+                .child(label.clone().into())
         }))
 }
 
 /// One table row. Element ids for the row and cells are built from `name` and `row`.
-pub fn row(
+pub fn row<L>(
     name: &'static str,
     row: usize,
-    columns: &[ColumnSpec],
+    columns: &[(L, f32)],
     cells: Vec<Cell>,
 ) -> Stateful<Div> {
     let total = total_weight(columns);
@@ -104,6 +110,41 @@ pub fn row(
                         element.tooltip(text_tooltip(tooltip))
                     })
                     .child(cell.text)
+            },
+        ))
+}
+
+/// One table row whose cells wrap at spaces, so the row is as tall as its longest cell. Rows differ in height,
+/// so they are laid out in an ordinary column rather than a `uniform_list`. Element ids are built as in [`row`].
+pub fn wrapped_row<L>(
+    name: &'static str,
+    row: usize,
+    columns: &[(L, f32)],
+    cells: Vec<Cell>,
+) -> Stateful<Div> {
+    let total = total_weight(columns);
+    div()
+        .id((name, row))
+        .w_full()
+        .min_h(theme::LIST_ROW_HEIGHT)
+        .px_2()
+        .py(px(3.))
+        .flex()
+        .items_start()
+        .border_b_1()
+        .border_color(theme::grid_line())
+        .children(cells.into_iter().zip(columns).enumerate().map(
+            |(column, (cell, (_, weight)))| {
+                let text = WrappedText::new(cell.text);
+                div()
+                    .id(SharedString::from(format!("{name}-{row}-{column}")))
+                    .w(relative(weight / total))
+                    .min_w_0()
+                    .pr_2()
+                    .child(if cell.align_right { text.right() } else { text })
+                    .when_some(cell.tooltip, |element, tooltip| {
+                        element.tooltip(text_tooltip(tooltip))
+                    })
             },
         ))
 }

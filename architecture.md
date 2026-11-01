@@ -173,7 +173,7 @@ The Cargo workspace consists of three crates.
 | Crate | Role | Depends on |
 |---|---|---|
 | `viewer-core` | Parquet and SQLite reading, row views, find, file and table structure. No GPUI dependency | arrow-rs, parquet, rusqlite |
-| `viewer-ui` | UI components shared by GPUI apps: light and dark themes, single-line input, tab bar, table, small buttons, charts, heatmap, route map, number and size formats. No dependency on the data engine | GPUI |
+| `viewer-ui` | UI components shared by GPUI apps: light and dark themes, single-line input, tab bar, tables with fixed or wrapping rows, small buttons, line, bar and strip charts, heatmap, route map, number and size formats. No dependency on the data engine | GPUI |
 | `viewer-app` | The Parquet viewer app. Combines the two crates and owns the worker and screen state | `viewer-core`, `viewer-ui`, GPUI |
 
 GPUI apps in other repositories use `viewer-ui` as a git dependency. Such an app depends on the same GPUI fork commit as `viewer-ui`; with a different commit, GPUI is built twice and the types do not match. When GPUI is upgraded, this repository moves first and the apps follow its commit.
@@ -235,11 +235,14 @@ Charts and maps in `viewer-ui` are drawn directly as GPUI custom `Element`s. No 
 
 - `LineChart` takes x and y axes and a list of layers. Layers are bands (`Band`), lines (`Line`) and rules (`Rule`), drawn in insertion order. Prediction intervals are stacked bands, medians and actuals are lines, and nominal values and diagonals are rules.
 - `Heatmap` colors row × column cells with a diverging color scale centered at 0, and draws a color scale bar with its bounds on the right.
-- Rectangular plot frames, grid lines, guides, point markers, heatmap cells and the color scale use `paint_quad`. Bands use `PathBuilder::fill`, joining the upper bound forward and the lower bound backward into a closed path; lines and rules use `PathBuilder::stroke`. Dashes use `dash_array`.
+- `BarChart` draws horizontal bars, one group per row and one bar per series. Bars start at 0 and the scale ends at the largest value unless the caller sets it. Values are written in a column at the right; a missing value leaves a hatched track and the series' missing label. `legend()` builds the series swatches for the caller to place.
+- `StripChart` places points on a shared horizontal axis, one row per category, such as the times buses pass a stop. Point labels alternate above and below the track, axis ticks are marked on every track and labeled under the last row, and markers are dashed vertical lines across all rows with an optional label above them. Points outside the axis range are not drawn, and a row without points can show an empty label.
+- Bar and strip charts put row labels in a left column at most a fixed share of the width wide, wrapped at spaces. Their height follows their rows: they request a measured layout and compute the row heights from the width they are given.
+- Rectangular plot frames, grid lines, guides, point markers, heatmap cells, the color scale, bars, tracks and strip points use `paint_quad`. Bands use `PathBuilder::fill`, joining the upper bound forward and the lower bound backward into a closed path; lines, rules, strip markers and the hatching of missing bars use `PathBuilder::stroke`. Dashes use `dash_array`.
 - Bands and lines break at missing points. Points without neighbours are drawn as circles.
 - Axis ticks are either given by the caller or placed automatically within the range at 1·2·2.5·5×10ⁿ steps. Automatic tick labels use the fewest decimals that can express the step.
 - Text is drawn with `shape_line`, and the plot area is clipped with a content mask so layers do not spill outside the frame.
-- On hover, a chart reports the index of the nearest point and a heatmap reports the cell's row and column to the caller. The caller updates its state and passes back the guide or highlight position.
+- On hover, a line chart reports the index of the nearest point, a heatmap the cell's row and column, a bar chart the bar's row and series, and a strip chart the row and index of the point within reach of the mouse. The caller updates its state and passes back the guide or highlight position.
 - Charts compute no values. The caller passes values that are already computed.
 
 `GeoMap` draws background areas, routes, markers and labels at `[latitude, longitude]` coordinates, without map tiles.
@@ -248,9 +251,13 @@ Charts and maps in `viewer-ui` are drawn directly as GPUI custom `Element`s. No 
 - Areas are filled with `PathBuilder::fill` using the even-odd rule, so holes need no particular winding, and outlined with `PathBuilder::stroke`. Routes are strokes with bevel joins and optional dashes; markers are circles drawn with `paint_quad`; labels are shaped lines with an optional halo drawn as offset copies under the text.
 - Area geometry is prepared once per view: areas whose bounds miss the element are skipped, rings are clipped to the element plus a margin (Sutherland–Hodgman), vertices are snapped to the device pixel grid and repeated points are removed. Every area snaps to the same grid, so the shared borders of neighbouring areas stay coincident. The snapping error is at most half a device pixel.
 - The tessellated area paths are kept in element state, keyed by the area set (`Arc` identity), the view, the device scale and the border width. Each frame only moves the cached paths to the element's position; colors are applied at paint time, so a theme change reuses the geometry.
-- On the analysis runs of the route map example (55 areas with 29,060 vertices, 8 maps at 1067 × 710 px and scale 1.5), preparation keeps on average 35 areas and 5,234 outline vertices and takes about 2 ms; tessellating every area on every frame takes about 6.9 ms, while reusing the prepared paths takes about 0.06 ms per frame.
+- On real analysis runs (55 areas with 29,060 vertices, 8 maps at 1067 × 710 px and scale 1.5), preparation keeps on average 35 areas and 5,234 outline vertices and takes about 2 ms; tessellating every area on every frame takes about 6.9 ms, while reusing the prepared paths takes about 0.06 ms per frame.
 
-`viewer-ui/examples/forecast_charts.rs` is an example that draws, from probabilistic forecast explorer data (`explorer-data.json`), the 24-hour prediction intervals of a date, seasonal bias, quantile reliability and a season × hour bias heatmap.
+### Wrapping text and tables
+
+GPUI's own text wrapping may break between any two Hangul syllables and split a word. `WrappedText` wraps only at whitespace and newlines, the way CSS `word-break: keep-all` sets Korean text; no-break spaces join their neighbours, and only a word wider than the whole line is broken between graphemes. It fills its parent's width and requests a measured layout, so its height follows its line count. Line widths are measured with `layout_line`, whose results GPUI caches across frames.
+
+`table::row` has a fixed height for `uniform_list`, and text that does not fit is truncated and shown in a tooltip. `table::wrapped_row` puts each cell in a `WrappedText`, so a row grows to fit its longest cell; it is for short tables of sentences laid out in an ordinary column. Table functions take column names as `&'static str` or as `SharedString` known only at run time.
 
 ### Directory layout
 
@@ -292,13 +299,13 @@ TPUI/
     │   │   ├── tab_bar.rs
     │   │   ├── table.rs
     │   │   ├── widgets.rs
+    │   │   ├── wrap.rs
     │   │   ├── chart.rs
+    │   │   ├── bars.rs
+    │   │   ├── strip.rs
     │   │   ├── heatmap.rs
     │   │   ├── map.rs
     │   │   └── format.rs
-    │   └── examples/
-    │       ├── forecast_charts.rs
-    │       └── route_map.rs
     └── viewer-core/
         ├── Cargo.toml
         ├── src/
@@ -681,10 +688,11 @@ Each stage uses the results of the previous ones. The path from opening the firs
 | 10. Filter | Condition parsing, filtered rows, row view numbers, `read_rows`, source row number display, filter popover and filter and sort bar | Result rows per condition equal the reference data, and in a filtered row view scrolling, selection, value detail and find follow the row view order |
 | 11. Sort | Header sort input, sort computation, display order, combination with filters | Ascending, descending, Null placement and source order of equal values match the reference data, and filter and sort work together |
 | 12. File structure | `file_structure` and `row_group_columns`, conversion of statistics to Arrow types, switching between data and file structure, file summary, column and Row Group tables | Per-column size, compression, null count, min and max and per-Row-Group sizes equal the reference metadata, and selecting a Row Group switches to its information |
-| 13. Shared UI crate and charts | `viewer-ui` split, shared table, buttons and input bindings, line/band/rule charts, heatmap, automatic ticks, example | The example draws prediction intervals, actuals, bias, reliability and heatmaps of real probabilistic forecast data at the same positions as the source values, and hovered values equal the source |
+| 13. Shared UI crate and charts | `viewer-ui` split, shared table, buttons and input bindings, line/band/rule charts, heatmap, automatic ticks | Prediction intervals, actuals, bias, reliability and heatmaps of real probabilistic forecast data are drawn at the same positions as the source values, and hovered values equal the source |
 | 14. Themes | Light and dark color sets, following the OS app color setting, toolbar switch | Both themes render every view legibly, and the switch applies immediately |
-| 15. Route map | `GeoMap` with areas, routes, markers and labels, prepared area geometry kept across frames, example | The example draws every route map of real analysis runs over the area background in both themes, and frames reuse the prepared geometry |
+| 15. Route map | `GeoMap` with areas, routes, markers and labels, prepared area geometry kept across frames | Every route map of real analysis runs is drawn over the area background in both themes, and frames reuse the prepared geometry |
 | 16. SQLite tables | `DataSource`, SQLite sessions in the engine (typing, row order, block keys, scans, change detection), table listing in the explorer, table tabs, table structure view | Tables, `WITHOUT ROWID` tables, views and virtual tables of real databases open with row counts, last rows, filter, sort and find results equal to the same queries in SQLite, and the database and WAL files are unchanged |
+| 17. BI charts and wrapping tables | `BarChart`, `StripChart`, `WrappedText` with space-only wrapping, `table::wrapped_row`, run-time column names | The table, bar and strip blocks of real analysis runs are drawn with the source values in both themes, Korean cells and row labels break only at spaces at narrow widths, and hovered bars and points match the source |
 
 ### Verification required for the MVP
 
