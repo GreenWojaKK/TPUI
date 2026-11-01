@@ -814,7 +814,7 @@ dependencies = [
 [[package]]
 name = "collections"
 version = "0.1.0"
-source = "git+https://github.com/GreenWojaKK/zed?rev=707d17a3ebb84de27df28429cb8cb5c351e9c4f7#707d17a3ebb84de27df28429cb8cb5c351e9c4f7"
+source = "git+https://github.com/GreenWojaKK/zed?rev=f941f6a1c26a295c051e2a3776d9897093b3db8c#f941f6a1c26a295c051e2a3776d9897093b3db8c"
 dependencies = [
  "gpui_util",
  "indexmap",
@@ -1113,7 +1113,7 @@ dependencies = [
 [[package]]
 name = "derive_refineable"
 version = "0.1.0"
-source = "git+https://github.com/GreenWojaKK/zed?rev=707d17a3ebb84de27df28429cb8cb5c351e9c4f7#707d17a3ebb84de27df28429cb8cb5c351e9c4f7"
+source = "git+https://github.com/GreenWojaKK/zed?rev=f941f6a1c26a295c051e2a3776d9897093b3db8c#f941f6a1c26a295c051e2a3776d9897093b3db8c"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1712,7 +1712,7 @@ dependencies = [
 [[package]]
 name = "gpui"
 version = "0.2.2"
-source = "git+https://github.com/GreenWojaKK/zed?rev=707d17a3ebb84de27df28429cb8cb5c351e9c4f7#707d17a3ebb84de27df28429cb8cb5c351e9c4f7"
+source = "git+https://github.com/GreenWojaKK/zed?rev=f941f6a1c26a295c051e2a3776d9897093b3db8c#f941f6a1c26a295c051e2a3776d9897093b3db8c"
 dependencies = [
  "accesskit",
  "anyhow",
@@ -1776,7 +1776,7 @@ dependencies = [
 [[package]]
 name = "gpui_apple"
 version = "0.1.0"
-source = "git+https://github.com/GreenWojaKK/zed?rev=707d17a3ebb84de27df28429cb8cb5c351e9c4f7#707d17a3ebb84de27df28429cb8cb5c351e9c4f7"
+source = "git+https://github.com/GreenWojaKK/zed?rev=f941f6a1c26a295c051e2a3776d9897093b3db8c#f941f6a1c26a295c051e2a3776d9897093b3db8c"
 dependencies = [
  "anyhow",
  "async-task",
@@ -1817,7 +1817,7 @@ dependencies = [
 [[package]]
 name = "gpui_ios"
 version = "0.1.0"
-source = "git+https://github.com/GreenWojaKK/zed?rev=707d17a3ebb84de27df28429cb8cb5c351e9c4f7#707d17a3ebb84de27df28429cb8cb5c351e9c4f7"
+source = "git+https://github.com/GreenWojaKK/zed?rev=f941f6a1c26a295c051e2a3776d9897093b3db8c#f941f6a1c26a295c051e2a3776d9897093b3db8c"
 dependencies = [
  "anyhow",
  "block2 0.6.2",
@@ -1838,7 +1838,7 @@ dependencies = [
 [[package]]
 name = "gpui_linux"
 version = "0.1.0"
-source = "git+https://github.com/GreenWojaKK/zed?rev=707d17a3ebb84de27df28429cb8cb5c351e9c4f7#707d17a3ebb84de27df28429cb8cb5c351e9c4f7"
+source = "git+https://github.com/GreenWojaKK/zed?rev=f941f6a1c26a295c051e2a3776d9897093b3db8c#f941f6a1c26a295c051e2a3776d9897093b3db8c"
 dependencies = [
  "accesskit",
  "anyhow",
@@ -1865,7 +1865,7 @@ dependencies = [
 [[package]]
 name = "gpui_macos"
 version = "0.1.0"
-source = "git+https://github.com/GreenWojaKK/zed?rev=707d17a3ebb84de27df28429cb8cb5c351e9c4f7#707d17a3ebb84de27df28429cb8cb5c351e9c4f7"
+source = "git+https://github.com/GreenWojaKK/zed?rev=f941f6a1c26a295c051e2a3776d9897093b3db8c#f941f6a1c26a295c051e2a3776d9897093b3db8c"
 dependencies = [
  "accesskit",
  "accesskit_macos",
@@ -1904,7 +1904,7 @@ dependencies = [
 [[package]]
 name = "gpui_macros"
 version = "0.1.0"
-source = "git+https://github.com/GreenWojaKK/zed?rev=707d17a3ebb84de27df28429cb8cb5c351e9c4f7#707d17a3ebb84de27df28429cb8cb5c351e9c4f7"
+source = "git+https://github.com/GreenWojaKK/zed?rev=f941f6a1c26a295c051e2a3776d9897093b3db8c#f941f6a1c26a295c051e2a3776d9897093b3db8c"
 dependencies = [
  "heck 0.5.0",
  "proc-macro2",
@@ -1915,7 +1915,7 @@ dependencies = [
 [[package]]
 name = "gpui_platform"
 version = "0.1.0"
-source = "git+https://github.com/GreenWojaKK/zed?rev=707d17a3ebb84de27df28429cb8cb5c351e9c4f7#707d17a3ebb84de27df28429cb8cb5c351e9c4f7"
+source = "git+https://github.com/GreenWojaKK/zed?rev=f941f6a1c26a295c051e2a3776d9897093b3db8c#f941f6a1c26a295c051e2a3776d9897093b3db8c"
 dependencies = [
  "anyhow",
  "console_error_panic_hook",
@@ -1930,7 +1930,7 @@ dependencies = [
 [[package]]
 name = "gpui_shared_string"
 version = "0.1.0"
-source = "git+https://github.com/GreenWojaKK/zed?rev=707d17a3ebb84de27df28429cb8cb5c351e9c4f7#707d17a3ebb84de27df28429cb8cb5c351e9c4f7"
+source = "git+https://github.com/GreenWojaKK/zed?rev=f941f6a1c26a295c051e2a3776d9897093b3db8c#f941f6a1c26a295c051e2a3776d9897093b3db8c"
 dependencies = [
  "schemars",
  "serde",
@@ -1940,7 +1940,7 @@ dependencies = [
 [[package]]
 name = "gpui_util"
 version = "0.1.0"
-source = "git+https://github.com/GreenWojaKK/zed?rev=707d17a3ebb84de27df28429cb8cb5c351e9c4f7#707d17a3ebb84de27df28429cb8cb5c351e9c4f7"
+source = "git+https://github.com/GreenWojaKK/zed?rev=f941f6a1c26a295c051e2a3776d9897093b3db8c#f941f6a1c26a295c051e2a3776d9897093b3db8c"
 dependencies = [
  "anyhow",
  "log",
@@ -1950,7 +1950,7 @@ dependencies = [
 [[package]]
 name = "gpui_web"
 version = "0.1.0"
-source = "git+https://github.com/GreenWojaKK/zed?rev=707d17a3ebb84de27df28429cb8cb5c351e9c4f7#707d17a3ebb84de27df28429cb8cb5c351e9c4f7"
+source = "git+https://github.com/GreenWojaKK/zed?rev=f941f6a1c26a295c051e2a3776d9897093b3db8c#f941f6a1c26a295c051e2a3776d9897093b3db8c"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -1979,7 +1979,7 @@ dependencies = [
 [[package]]
 name = "gpui_wgpu"
 version = "0.1.0"
-source = "git+https://github.com/GreenWojaKK/zed?rev=707d17a3ebb84de27df28429cb8cb5c351e9c4f7#707d17a3ebb84de27df28429cb8cb5c351e9c4f7"
+source = "git+https://github.com/GreenWojaKK/zed?rev=f941f6a1c26a295c051e2a3776d9897093b3db8c#f941f6a1c26a295c051e2a3776d9897093b3db8c"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -2004,7 +2004,7 @@ dependencies = [
 [[package]]
 name = "gpui_windows"
 version = "0.1.0"
-source = "git+https://github.com/GreenWojaKK/zed?rev=707d17a3ebb84de27df28429cb8cb5c351e9c4f7#707d17a3ebb84de27df28429cb8cb5c351e9c4f7"
+source = "git+https://github.com/GreenWojaKK/zed?rev=f941f6a1c26a295c051e2a3776d9897093b3db8c#f941f6a1c26a295c051e2a3776d9897093b3db8c"
 dependencies = [
  "accesskit",
  "accesskit_windows",
@@ -2159,7 +2159,7 @@ dependencies = [
 [[package]]
 name = "http_client"
 version = "0.1.0"
-source = "git+https://github.com/GreenWojaKK/zed?rev=707d17a3ebb84de27df28429cb8cb5c351e9c4f7#707d17a3ebb84de27df28429cb8cb5c351e9c4f7"
+source = "git+https://github.com/GreenWojaKK/zed?rev=f941f6a1c26a295c051e2a3776d9897093b3db8c#f941f6a1c26a295c051e2a3776d9897093b3db8c"
 dependencies = [
  "anyhow",
  "bytes",
@@ -3872,7 +3872,7 @@ dependencies = [
 [[package]]
 name = "refineable"
 version = "0.1.0"
-source = "git+https://github.com/GreenWojaKK/zed?rev=707d17a3ebb84de27df28429cb8cb5c351e9c4f7#707d17a3ebb84de27df28429cb8cb5c351e9c4f7"
+source = "git+https://github.com/GreenWojaKK/zed?rev=f941f6a1c26a295c051e2a3776d9897093b3db8c#f941f6a1c26a295c051e2a3776d9897093b3db8c"
 dependencies = [
  "derive_refineable",
 ]
@@ -4035,7 +4035,7 @@ dependencies = [
 [[package]]
 name = "scheduler"
 version = "0.1.0"
-source = "git+https://github.com/GreenWojaKK/zed?rev=707d17a3ebb84de27df28429cb8cb5c351e9c4f7#707d17a3ebb84de27df28429cb8cb5c351e9c4f7"
+source = "git+https://github.com/GreenWojaKK/zed?rev=f941f6a1c26a295c051e2a3776d9897093b3db8c#f941f6a1c26a295c051e2a3776d9897093b3db8c"
 dependencies = [
  "async-task",
  "backtrace",
@@ -4449,7 +4449,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 [[package]]
 name = "sum_tree"
 version = "0.1.0"
-source = "git+https://github.com/GreenWojaKK/zed?rev=707d17a3ebb84de27df28429cb8cb5c351e9c4f7#707d17a3ebb84de27df28429cb8cb5c351e9c4f7"
+source = "git+https://github.com/GreenWojaKK/zed?rev=f941f6a1c26a295c051e2a3776d9897093b3db8c#f941f6a1c26a295c051e2a3776d9897093b3db8c"
 dependencies = [
  "heapless",
  "rayon",
@@ -6154,7 +6154,7 @@ dependencies = [
 [[package]]
 name = "ztracing"
 version = "0.1.0"
-source = "git+https://github.com/GreenWojaKK/zed?rev=707d17a3ebb84de27df28429cb8cb5c351e9c4f7#707d17a3ebb84de27df28429cb8cb5c351e9c4f7"
+source = "git+https://github.com/GreenWojaKK/zed?rev=f941f6a1c26a295c051e2a3776d9897093b3db8c#f941f6a1c26a295c051e2a3776d9897093b3db8c"
 dependencies = [
  "tracing",
  "ztracing_macro",
@@ -6163,7 +6163,7 @@ dependencies = [
 [[package]]
 name = "ztracing_macro"
 version = "0.1.0"
-source = "git+https://github.com/GreenWojaKK/zed?rev=707d17a3ebb84de27df28429cb8cb5c351e9c4f7#707d17a3ebb84de27df28429cb8cb5c351e9c4f7"
+source = "git+https://github.com/GreenWojaKK/zed?rev=f941f6a1c26a295c051e2a3776d9897093b3db8c#f941f6a1c26a295c051e2a3776d9897093b3db8c"
 
 [[package]]
 name = "zune-core"

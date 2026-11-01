@@ -22,7 +22,7 @@ Parquet Viewer는 로컬 Parquet 파일을 읽기 전용으로 열어 파일 구
 
 GPUI Kit은 의존성에 포함하지 않는다. 찾기·필터·정렬은 엔진의 컬럼 순차 읽기와 Arrow 비교·정렬 kernel로 구현하며, SQL·집계용 분석 엔진은 추가하지 않는다. 원본 파일의 수정·저장 API도 제공하지 않는다.
 
-GPUI는 Zed 릴리스 revision 위에 `image` 코덱 축소 커밋 하나를 얹은 GitHub fork(`GreenWojaKK/zed`)의 정확한 커밋으로 고정한다. fork 커밋은 Zed 루트 `Cargo.toml`의 `image` 기능을 gpui가 직접 쓰거나 클립보드 변환에 쓰는 gif·jpeg·png·webp로 줄인다. GPUI를 올릴 때는 이 커밋을 새 릴리스 위에 다시 얹는다. 해당 revision의 Windows 예제를 기준으로 필요한 플랫폼 crate와 Rust toolchain을 함께 고정한다. `parquet`와 직접 사용하는 Arrow crate는 동일한 arrow-rs 릴리스 계열로 맞추고, 해석된 의존성을 `Cargo.lock`으로 고정한다.
+GPUI는 Zed 릴리스 revision 위에 `image` 코덱 축소와 그 변경 고지를 얹은 GitHub fork(`GreenWojaKK/zed`)의 정확한 커밋으로 고정한다. fork는 Zed 루트 `Cargo.toml`의 `image` 기능을 gpui가 직접 쓰거나 클립보드 변환에 쓰는 gif·jpeg·png·webp로 줄이고, 바꾼 줄 옆의 주석과 `FORK.md`에 원본과 달라진 내용을 적는다. GPUI 소스 코드는 바꾸지 않는다. GPUI를 올릴 때는 이 변경과 고지를 새 릴리스 위에 다시 얹는다. 해당 revision의 Windows 예제를 기준으로 필요한 플랫폼 crate와 Rust toolchain을 함께 고정한다. `parquet`와 직접 사용하는 Arrow crate는 동일한 arrow-rs 릴리스 계열로 맞추고, 해석된 의존성을 `Cargo.lock`으로 고정한다.
 
 ## 2. 사용자 흐름과 화면
 

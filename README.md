@@ -43,14 +43,14 @@ git 의존성으로 가져오고, GPUI는 이 저장소와 같은 fork 커밋을
 ```toml
 [dependencies]
 viewer-ui = { git = "https://github.com/GreenWojaKK/TPUI", rev = "<TPUI 커밋>" }
-gpui = { git = "https://github.com/GreenWojaKK/zed", rev = "707d17a3ebb84de27df28429cb8cb5c351e9c4f7" }
+gpui = { git = "https://github.com/GreenWojaKK/zed", rev = "f941f6a1c26a295c051e2a3776d9897093b3db8c" }
 ```
 
 ## GPUI fork
 
-GPUI는 Zed Industries의 [Zed](https://github.com/zed-industries/zed) 저장소에 있는 UI 프레임워크이며 Apache License 2.0을 따른다. 이 저장소는 GPUI를 원본 대신 fork [`GreenWojaKK/zed`](https://github.com/GreenWojaKK/zed)의 `tpui/v1.26.2-slim-image` 브랜치 커밋 `707d17a3`으로 가져온다.
+GPUI는 Zed Industries의 [Zed](https://github.com/zed-industries/zed) 저장소에 있는 UI 프레임워크이며 Apache License 2.0을 따른다. 이 저장소는 GPUI를 원본 대신 fork [`GreenWojaKK/zed`](https://github.com/GreenWojaKK/zed)의 `tpui/v1.26.2-slim-image` 브랜치 커밋 `f941f6a1`로 가져온다.
 
-fork는 Zed 릴리스 v1.26.2(`c4273271`)에 커밋 하나를 더한 것이다. 그 커밋은 Zed 루트 `Cargo.toml`의 `image` crate 기능을 gpui가 쓰는 gif·jpeg·png·webp로 줄여 실행 파일 크기를 줄인다. GPUI 소스 코드는 바꾸지 않는다.
+fork는 Zed 릴리스 v1.26.2(`c4273271`)에서 Zed 루트 `Cargo.toml`의 `image` crate 기능만 gpui가 쓰는 gif·jpeg·png·webp로 줄여 실행 파일 크기를 줄인다. GPUI 소스 코드는 바꾸지 않는다. 바꾼 내용은 fork의 [`FORK.md`](https://github.com/GreenWojaKK/zed/blob/tpui/v1.26.2-slim-image/FORK.md)와 바꾼 줄 옆의 주석에 적혀 있다.
 
 ## 라이선스
 

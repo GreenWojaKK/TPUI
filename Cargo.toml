@@ -32,5 +32,5 @@ embed-resource = "3.0.12"
 
 # GPUI는 Zed 릴리스 v1.26.2에 image 코덱 축소 커밋 하나를 얹은 fork의 커밋으로 고정한다.
 # fork 브랜치: GreenWojaKK/zed tpui/v1.26.2-slim-image
-gpui = { git = "https://github.com/GreenWojaKK/zed", rev = "707d17a3ebb84de27df28429cb8cb5c351e9c4f7" }
-gpui_platform = { git = "https://github.com/GreenWojaKK/zed", rev = "707d17a3ebb84de27df28429cb8cb5c351e9c4f7" }
+gpui = { git = "https://github.com/GreenWojaKK/zed", rev = "f941f6a1c26a295c051e2a3776d9897093b3db8c" }
+gpui_platform = { git = "https://github.com/GreenWojaKK/zed", rev = "f941f6a1c26a295c051e2a3776d9897093b3db8c" }
