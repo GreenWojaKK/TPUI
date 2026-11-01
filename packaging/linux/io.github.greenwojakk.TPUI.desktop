@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=TPUI Parquet Viewer
+Comment=View the raw data and structure of Parquet files and SQLite tables
+Exec=@EXEC@
+Icon=io.github.greenwojakk.TPUI
+Terminal=false
+Categories=Development;Database;Viewer;
+StartupWMClass=io.github.greenwojakk.TPUI

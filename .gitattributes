@@ -1,0 +1,3 @@
+# Linux packaging files keep LF endings so they run and parse from a Windows checkout too.
+*.sh text eol=lf
+*.desktop text eol=lf

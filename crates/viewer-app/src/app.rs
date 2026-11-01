@@ -1587,8 +1587,15 @@ fn moved_index(ix: usize, from: usize, to: usize) -> usize {
 }
 
 /// Whether two paths point to the same file. Windows paths are case-insensitive.
+#[cfg(target_os = "windows")]
 fn same_path(a: &Path, b: &Path) -> bool {
     a.as_os_str().eq_ignore_ascii_case(b.as_os_str())
+}
+
+/// Whether two paths point to the same file. Paths elsewhere are case-sensitive.
+#[cfg(not(target_os = "windows"))]
+fn same_path(a: &Path, b: &Path) -> bool {
+    a == b
 }
 
 /// Whether two sources are the same file, and for SQLite the same table. Table names compare exactly.
@@ -1698,6 +1705,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "windows")]
     fn compares_windows_paths_without_case() {
         assert!(same_path(
             Path::new(r"C:\Data\a.parquet"),
@@ -1710,22 +1718,39 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn compares_paths_with_case() {
+        assert!(same_path(
+            Path::new("/data/a.parquet"),
+            Path::new("/data/a.parquet")
+        ));
+        assert!(!same_path(
+            Path::new("/data/a.parquet"),
+            Path::new("/Data/A.parquet")
+        ));
+    }
+
+    #[test]
     fn tells_sqlite_tables_of_one_file_apart() {
         let table = |path: &str, table: &str| DataSource::Sqlite {
             path: path.into(),
             table: table.into(),
         };
+        let path = if cfg!(target_os = "windows") {
+            r"C:\Data\x.db"
+        } else {
+            "/data/x.db"
+        };
+        assert!(same_source(&table(path, "a"), &table(path, "a")));
+        assert!(!same_source(&table(path, "a"), &table(path, "b")));
+        assert!(!same_source(
+            &table(path, "a"),
+            &DataSource::Parquet(path.into())
+        ));
+        #[cfg(target_os = "windows")]
         assert!(same_source(
             &table(r"C:\Data\x.db", "a"),
             &table(r"c:\data\X.DB", "a")
-        ));
-        assert!(!same_source(
-            &table(r"C:\Data\x.db", "a"),
-            &table(r"C:\Data\x.db", "b")
-        ));
-        assert!(!same_source(
-            &table(r"C:\Data\x.db", "a"),
-            &DataSource::Parquet(r"C:\Data\x.db".into())
         ));
     }
 }

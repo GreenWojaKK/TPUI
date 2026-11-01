@@ -59,9 +59,18 @@ pub fn pick(dark: u32, light: u32) -> Rgba {
 
 /// App-wide font. The system UI font of Korean Windows (Malgun Gothic) draws `\` as `₩`, so
 /// Segoe UI is set explicitly. Hangul falls back to the Windows fallback font.
+#[cfg(target_os = "windows")]
 pub const UI_FONT: &str = "Segoe UI";
+/// App-wide font. DejaVu ships with fontconfig on common Linux distributions; Hangul and other scripts fall back
+/// to installed fonts such as Noto Sans CJK.
+#[cfg(not(target_os = "windows"))]
+pub const UI_FONT: &str = "DejaVu Sans";
 /// Monospace font of the value detail body.
+#[cfg(target_os = "windows")]
 pub const MONO_FONT: &str = "Consolas";
+/// Monospace font of the value detail body.
+#[cfg(not(target_os = "windows"))]
+pub const MONO_FONT: &str = "DejaVu Sans Mono";
 
 pub const TOOLBAR_HEIGHT: Pixels = px(36.);
 pub const STATUS_BAR_HEIGHT: Pixels = px(24.);

@@ -29,6 +29,9 @@ use crate::ui::grid::{
 };
 use crate::ui::value::CopyValue;
 
+/// Application identifier. The Linux desktop entry is `packaging/linux/<APP_ID>.desktop`.
+const APP_ID: &str = "io.github.greenwojakk.TPUI";
+
 fn main() {
     application().run(|cx: &mut App| {
         cx.bind_keys([
@@ -69,6 +72,8 @@ fn main() {
                     title: Some("Parquet Viewer".into()),
                     ..Default::default()
                 }),
+                // Matches the desktop entry name, so Linux desktops show its icon for the window.
+                app_id: Some(APP_ID.into()),
                 ..Default::default()
             },
             |window, cx| cx.new(|cx| AppController::new(window, cx)),

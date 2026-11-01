@@ -6,7 +6,7 @@ Parquet Viewer is a native desktop app that opens local Parquet files and SQLite
 
 The app shows what the raw data looks like and how the file is stored. Statistical analysis and aggregation belong in other analysis tools. Find, filter and sort are ways to locate source rows, not features that compute values.
 
-The first target is Windows x64, matching the current development environment. The app opens several files as tabs in a single window and activates one tab at a time. Without filter or sort, data is shown in the source file's row and column order.
+The targets are Windows x64 and x86-64 Linux (Wayland and X11). Platform differences stay in a few places, listed under **Platforms** in section 3. The app opens several files as tabs in a single window and activates one tab at a time. Without filter or sort, data is shown in the source file's row and column order.
 
 | Area | Technology and role |
 |---|---|
@@ -252,6 +252,19 @@ Charts and maps in `viewer-ui` are drawn directly as GPUI custom `Element`s. No 
 
 `viewer-ui/examples/forecast_charts.rs` is an example that draws, from probabilistic forecast explorer data (`explorer-data.json`), the 24-hour prediction intervals of a date, seasonal bias, quantile reliability and a season × hour bias heatmap.
 
+### Platforms
+
+Code is shared across platforms; each difference is decided in one place, so callers are unchanged.
+
+| Difference | Where | Windows | Linux |
+|---|---|---|---|
+| Display backend | `viewer-app` `Cargo.toml`, target-specific `gpui_platform` features | GPUI's Windows backend | `wayland` and `x11` features, which GPUI does not enable by default |
+| Fonts | `viewer-ui` `theme::UI_FONT`, `theme::MONO_FONT` | Segoe UI and Consolas; the Korean system font draws `\` as `₩` | DejaVu Sans and DejaVu Sans Mono, installed with fontconfig; other scripts fall back to installed fonts |
+| App icon | `viewer-app` `build.rs` and `app.rc`; `packaging/linux` | Icon resource embedded in the executable | Desktop entry and icon named after the window's `app_id` (`io.github.greenwojakk.TPUI`) |
+| Same-file check | `viewer-app` `same_path` | Case-insensitive | Case-sensitive |
+
+`build.rs` embeds the icon resource only for Windows targets; elsewhere `embed_resource` does nothing. The `windows_subsystem` attribute applies only to Windows.
+
 ### Directory layout
 
 ```text
@@ -260,6 +273,10 @@ TPUI/
 ├── Cargo.toml
 ├── Cargo.lock
 ├── rust-toolchain.toml
+├── packaging/
+│   └── linux/
+│       ├── io.github.greenwojakk.TPUI.desktop
+│       └── install.sh
 └── crates/
     ├── viewer-app/
     │   ├── Cargo.toml

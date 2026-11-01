@@ -1,6 +1,6 @@
 # TPUI
 
-A Windows desktop viewer for the raw data and structure of local Parquet files and SQLite tables, plus a UI component crate shared with other GPUI apps. Built with Rust, [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui) and [arrow-rs](https://github.com/apache/arrow-rs).
+A desktop viewer for Windows and Linux showing the raw data and structure of local Parquet files and SQLite tables, plus a UI component crate shared with other GPUI apps. Built with Rust, [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui) and [arrow-rs](https://github.com/apache/arrow-rs).
 
 Analysis and aggregation belong in other tools; this viewer focuses on showing raw values without truncation. The design and behavior contracts are in [architecture.md](architecture.md).
 
@@ -24,13 +24,37 @@ Analysis and aggregation belong in other tools; this viewer focuses on showing r
 
 ## Build
 
-Requires Windows x64, Visual Studio Build Tools 2022 (MSVC) and the Windows SDK. The Rust toolchain is set by `rust-toolchain.toml`.
+The Rust toolchain is set by `rust-toolchain.toml`.
+
+### Windows
+
+Requires Windows x64, Visual Studio Build Tools 2022 (MSVC) and the Windows SDK.
 
 ```
 cargo build --release -p viewer-app
 ```
 
 The result is `target/release/viewer-app.exe`.
+
+### Linux
+
+Builds for x86-64 Linux with both Wayland and X11 backends. On Ubuntu 24.04 and other Debian-based distributions, install the build packages (other distributions use the same libraries under their own package names):
+
+```
+sudo apt-get install build-essential pkg-config libfontconfig-dev libwayland-dev libx11-xcb-dev libxkbcommon-x11-dev
+cargo build --release -p viewer-app
+packaging/linux/install.sh
+```
+
+The result is `target/release/viewer-app`. `install.sh` installs it as `~/.local/bin/tpui-viewer` with a desktop entry and icon (`io.github.greenwojakk.TPUI`), so desktops show the app icon for its window.
+
+At run time the app needs:
+
+- a Vulkan driver (`libvulkan1` and, for most GPUs, `mesa-vulkan-drivers`);
+- `xdg-desktop-portal` with a backend such as `xdg-desktop-portal-gtk` for the Open File and Open Folder dialogs;
+- a font with Hangul or other non-Latin scripts if the data contains them, such as `fonts-noto-cjk`. The UI uses DejaVu Sans and DejaVu Sans Mono and falls back to installed fonts for other scripts.
+
+A binary runs on distributions whose glibc is at least that of the system it was built on, so build on the oldest distribution to support.
 
 The chart example draws probabilistic forecast explorer data (`explorer-data.json`).
 
