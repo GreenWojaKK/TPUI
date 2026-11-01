@@ -336,7 +336,9 @@ impl Render for StructureView {
             .text_xs()
             .child(Self::render_summary(structure))
             .child(section(column_title))
-            .child(table::header(&COLUMN_TABLE))
+            .child(table::header_aligned(&COLUMN_TABLE, |ix| {
+                (3..=6).contains(&ix)
+            }))
             .child(
                 div()
                     .flex_1()
@@ -356,7 +358,7 @@ impl Render for StructureView {
                     .child(section(
                         format!("Row Group {}개", structure.row_groups.len()).into(),
                     ))
-                    .child(table::header(&GROUP_TABLE))
+                    .child(table::header_aligned(&GROUP_TABLE, |ix| ix > 0))
                     .child(
                         uniform_list(
                             "structure-groups",

@@ -44,8 +44,14 @@ fn total_weight(columns: &[ColumnSpec]) -> f32 {
     columns.iter().map(|(_, weight)| weight).sum()
 }
 
-/// 표의 머리글 행.
+/// 표의 머리글 행. 모든 칸을 왼쪽에 맞춘다.
 pub fn header(columns: &[ColumnSpec]) -> Div {
+    header_aligned(columns, |_| false)
+}
+
+/// 표의 머리글 행. `align_right(칸 순번)`이 참인 칸은 오른쪽에 맞춘다. 수치 칸의 머리글을
+/// 값과 같은 쪽에 둘 때 쓴다.
+pub fn header_aligned(columns: &[ColumnSpec], align_right: impl Fn(usize) -> bool) -> Div {
     let total = total_weight(columns);
     div()
         .flex_none()
@@ -57,12 +63,13 @@ pub fn header(columns: &[ColumnSpec]) -> Div {
         .border_b_1()
         .border_color(theme::border())
         .text_color(theme::text_muted())
-        .children(columns.iter().map(|(label, weight)| {
+        .children(columns.iter().enumerate().map(|(ix, (label, weight))| {
             div()
                 .w(relative(weight / total))
                 .min_w_0()
                 .pr_2()
                 .truncate()
+                .when(align_right(ix), |cell| cell.flex().justify_end())
                 .child(*label)
         }))
 }
