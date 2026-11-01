@@ -1,7 +1,7 @@
-//! File structure view. Shows the file summary, per-leaf-column storage information and the Row Group list.
-//!
-//! All values come from the Parquet metadata. Selecting a Row Group switches the column table to that
-//! Row Group's information.
+//! Structure view. For Parquet, shows the file summary, per-leaf-column storage information and the Row Group
+//! list, all from the Parquet metadata; selecting a Row Group switches the column table to that Row Group's
+//! information. For a SQLite table or view, shows the database summary, the columns with their declared types
+//! and the storage classes found in them, the indexes and the `CREATE` statement.
 
 use std::ops::Range;
 
@@ -9,7 +9,7 @@ use gpui::{
     ClickEvent, Context, Div, EventEmitter, SharedString, Stateful, Window, div, prelude::*, px,
     relative, uniform_list,
 };
-use viewer_core::{ColumnChunkInfo, FileStructure, StatValue};
+use viewer_core::{ColumnChunkInfo, FileStructure, SqliteObjectKind, StatValue, TableStructure};
 
 use viewer_ui::format::{format_bytes, format_count, format_quantity, format_ratio};
 use viewer_ui::table::{self, Cell, ColumnSpec};
@@ -24,6 +24,7 @@ enum StructureState {
     Empty,
     Loading,
     Ready(FileStructure),
+    Table(TableStructure),
     Failed(SharedString),
 }
 
@@ -49,6 +50,25 @@ const COLUMN_TABLE: [ColumnSpec; 10] = [
     ("Min", 2.2),
     ("Max", 2.2),
     ("Index", 1.2),
+];
+
+/// Column names and width ratios of the SQLite column table.
+const TABLE_COLUMNS: [ColumnSpec; 7] = [
+    ("Column", 2.6),
+    ("Declared type", 2.0),
+    ("Shown as", 1.4),
+    ("Stored as", 2.0),
+    ("Not null", 1.0),
+    ("Default", 1.6),
+    ("Key", 0.8),
+];
+
+/// Column names and width ratios of the SQLite index table.
+const TABLE_INDEXES: [ColumnSpec; 4] = [
+    ("Index", 2.2),
+    ("Columns", 2.2),
+    ("Unique", 0.9),
+    ("Origin", 1.8),
 ];
 
 /// Column names and width ratios of the Row Group table.
@@ -78,6 +98,13 @@ impl StructureView {
 
     pub fn set_structure(&mut self, structure: FileStructure, cx: &mut Context<Self>) {
         self.state = StructureState::Ready(structure);
+        self.selected = None;
+        self.group_columns = None;
+        cx.notify();
+    }
+
+    pub fn set_table(&mut self, table: TableStructure, cx: &mut Context<Self>) {
+        self.state = StructureState::Table(table);
         self.selected = None;
         self.group_columns = None;
         cx.notify();
@@ -266,6 +293,220 @@ impl StructureView {
     }
 }
 
+impl StructureView {
+    fn render_table_summary(table: &TableStructure) -> Div {
+        let mut kind = match table.kind {
+            SqliteObjectKind::Table => "Table".to_string(),
+            SqliteObjectKind::View => "View".to_string(),
+            SqliteObjectKind::Virtual => "Virtual table".to_string(),
+        };
+        if table.without_rowid {
+            kind.push_str(" · WITHOUT ROWID");
+        }
+        if table.strict {
+            kind.push_str(" · STRICT");
+        }
+        let database = format!(
+            "{} · {} of {} · {} · journal {}",
+            format_bytes(table.file_size),
+            format_quantity(table.page_count, "page", "pages"),
+            format_bytes(table.page_size),
+            table.encoding,
+            table.journal_mode
+        );
+        div()
+            .flex_none()
+            .p_2()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .border_b_1()
+            .border_color(theme::border())
+            .child(summary_line("Kind", kind.into()))
+            .child(summary_line("Rows", format_count(table.total_rows).into()))
+            .child(summary_line("Row order", table.row_order.clone().into()))
+            .child(summary_line("Database", database.into()))
+    }
+
+    fn render_table_column(&self, ix: usize) -> Stateful<Div> {
+        let StructureState::Table(table) = &self.state else {
+            unreachable!("the column table is drawn only with a table structure")
+        };
+        let column = &table.columns[ix];
+        let declared = if column.declared_type.is_empty() {
+            "-".to_string()
+        } else {
+            column.declared_type.clone()
+        };
+        let stored = if column.storage.is_empty() {
+            "-".to_string()
+        } else {
+            column.storage.join(", ")
+        };
+        let default = column.default.clone().unwrap_or_else(|| "-".into());
+        let cells = vec![
+            Cell::new(column.name.clone()).tooltip(column.name.clone()),
+            Cell::new(declared.clone()).tooltip(declared),
+            Cell::new(column.data_type.to_string()),
+            Cell::new(stored),
+            Cell::new(if column.not_null { "yes" } else { "-" }),
+            Cell::new(default.clone()).tooltip(default),
+            Cell::new(
+                column
+                    .primary_key
+                    .map_or("-".into(), |key| format!("PK {key}")),
+            ),
+        ];
+        table::row("table-column", ix, &TABLE_COLUMNS, cells)
+    }
+
+    fn render_table_index(&self, ix: usize) -> Stateful<Div> {
+        let StructureState::Table(table) = &self.state else {
+            unreachable!("the index table is drawn only with a table structure")
+        };
+        let index = &table.indexes[ix];
+        let columns = index.columns.join(", ");
+        let origin = match index.origin.as_str() {
+            "pk" => "primary key",
+            "u" => "UNIQUE",
+            _ => "CREATE INDEX",
+        };
+        let mut name = Cell::new(index.name.clone());
+        if let Some(sql) = &index.sql {
+            name = name.tooltip(sql.clone());
+        }
+        let cells = vec![
+            name,
+            Cell::new(columns.clone()).tooltip(columns),
+            Cell::new(if index.unique { "yes" } else { "-" }),
+            Cell::new(if index.partial {
+                format!("{origin} · partial")
+            } else {
+                origin.to_string()
+            }),
+        ];
+        table::row("table-index", ix, &TABLE_INDEXES, cells)
+    }
+
+    fn render_table(&self, table: &TableStructure, cx: &mut Context<Self>) -> Div {
+        let section = |title: SharedString| {
+            div()
+                .flex_none()
+                .h(theme::PANEL_HEADER_HEIGHT)
+                .px_2()
+                .flex()
+                .items_center()
+                .text_color(theme::text_muted())
+                .child(title)
+        };
+        let indexes: gpui::AnyElement = if table.indexes.is_empty() {
+            div()
+                .p_2()
+                .text_color(theme::text_muted())
+                .child(if table.kind == SqliteObjectKind::Table {
+                    "No indexes"
+                } else {
+                    "Views and virtual tables have no indexes"
+                })
+                .into_any_element()
+        } else {
+            div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .child(table::header(&TABLE_INDEXES))
+                .child(
+                    uniform_list(
+                        "table-indexes",
+                        table.indexes.len(),
+                        cx.processor(|this, range: Range<usize>, _window, _cx| {
+                            range.map(|ix| this.render_table_index(ix)).collect()
+                        }),
+                    )
+                    .flex_1(),
+                )
+                .into_any_element()
+        };
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .text_xs()
+            .child(Self::render_table_summary(table))
+            .child(section(
+                format_quantity(table.columns.len() as u64, "column", "columns").into(),
+            ))
+            .child(table::header(&TABLE_COLUMNS))
+            .child(
+                div().flex_1().min_h_0().flex().flex_col().child(
+                    uniform_list(
+                        "table-columns",
+                        table.columns.len(),
+                        cx.processor(|this, range: Range<usize>, _window, _cx| {
+                            range.map(|ix| this.render_table_column(ix)).collect()
+                        }),
+                    )
+                    .flex_1(),
+                ),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .h(relative(0.35))
+                    .flex()
+                    .border_t_1()
+                    .border_color(theme::border())
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(section(
+                                format_quantity(table.indexes.len() as u64, "index", "indexes")
+                                    .into(),
+                            ))
+                            .child(indexes),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .border_l_1()
+                            .border_color(theme::border())
+                            .child(section("CREATE statement".into()))
+                            .child(
+                                div()
+                                    .id("table-sql")
+                                    .flex_1()
+                                    .min_h_0()
+                                    .overflow_y_scroll()
+                                    .px_2()
+                                    .font_family(theme::MONO_FONT)
+                                    .child(table.sql.clone().unwrap_or_else(|| "-".into())),
+                            ),
+                    ),
+            )
+    }
+}
+
+fn summary_line(label: &'static str, value: SharedString) -> Div {
+    div()
+        .flex()
+        .gap_2()
+        .child(
+            div()
+                .flex_none()
+                .w(px(140.))
+                .text_color(theme::text_muted())
+                .child(label),
+        )
+        .child(div().flex_1().min_w_0().truncate().child(value))
+}
+
 /// Statistics value cell. Approximations truncated in the file get a `≈` prefix.
 fn stat_cell(value: Option<&StatValue>) -> Cell {
     match value {
@@ -298,6 +539,7 @@ impl Render for StructureView {
             StructureState::Failed(message) => {
                 return placeholder(message.clone(), theme::error());
             }
+            StructureState::Table(table) => return self.render_table(table, cx),
             StructureState::Ready(structure) => structure,
         };
         let column_title: SharedString = match self.selected {

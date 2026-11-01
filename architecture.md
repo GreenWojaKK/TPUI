@@ -2,7 +2,7 @@
 
 ## 1. Product scope and technology choices
 
-Parquet Viewer is a native desktop app that opens local Parquet files read-only to explore their structure and data. The MVP consists of **the explorer, file opening, tabs, schema view, a grid virtualized over rows and columns, and value detail**, with **find, filter, sort and the file structure view** on top. The core stack is **Rust + GPUI + Arrow/Parquet**.
+Parquet Viewer is a native desktop app that opens local Parquet files and SQLite tables read-only to explore their structure and data. The MVP consists of **the explorer, file opening, tabs, schema view, a grid virtualized over rows and columns, and value detail**, with **find, filter, sort and the file structure view** on top. The core stack is **Rust + GPUI + Arrow/Parquet**.
 
 The app shows what the raw data looks like and how the file is stored. Statistical analysis and aggregation belong in other analysis tools. Find, filter and sort are ways to locate source rows, not features that compute values.
 
@@ -13,10 +13,11 @@ The first target is Windows x64, matching the current development environment. T
 | Language and build | Rust, Cargo workspace |
 | UI | GPUI used directly: windows, input, layout, text and grid rendering |
 | Parquet reading | arrow-rs `parquet`: footer, schema, Row Groups, decoding selected rows and columns |
+| SQLite reading | `rusqlite` with the bundled SQLite: read-only connections, schema pragmas, range queries in table order |
 | Data representation | `arrow-array`, `arrow-schema`: `RecordBatch` and typed column arrays |
 | Comparison and sorting | `arrow-ord`: value comparison for find and filter, and sort order |
 | Local file access | `std::fs`: read-only file handles and directory listing |
-| Data work execution | One dedicated `std::thread` worker running the synchronous Parquet reader |
+| Data work execution | One dedicated `std::thread` worker running the synchronous Parquet and SQLite readers |
 | Result delivery | Bounded `async-channel`; worker results are received in a GPUI task |
 | Cache | Byte-budgeted LRU inside the engine; all tabs share one budget |
 
@@ -47,17 +48,18 @@ GPUI is pinned to an exact commit of a GitHub fork (`GreenWojaKK/zed`) that adds
 ### Explorer
 
 - `Open Folder` selects the root directory. Expanding a folder lists only its direct children.
-- Directories and files with the `.parquet` extension are shown. The extension is case-insensitive.
+- Directories, files with the `.parquet` extension, and SQLite databases are shown. A database is a file with the `.sqlite`, `.sqlite3`, `.db`, `.db3`, `.s3db` or `.sl3` extension that starts with the SQLite header; other `.db` files are hidden. Extensions are case-insensitive.
+- Expanding a database lists its tables, views and virtual tables by name. Internal `sqlite_` tables and the shadow tables of virtual tables are left out. Views are tagged `view`.
 - Directories come first, then names in order within each kind. Symbolic links and directory junctions are not followed automatically.
 - The expanded tree is flattened into a row list, and only visible entries are rendered.
-- Double-clicking a file, or selecting it and pressing Enter, issues the same open request as `Open File`.
+- Double-clicking a Parquet file or a table, or selecting it and pressing Enter, opens it in a tab. A single click expands a folder or database.
 - A failed folder listing shows an error and retry on that node. Grids of files already open are kept.
 
 ### Opening files
 
 - `Open File` or `Ctrl+O` opens the native file dialog. Cancelling keeps the current state.
-- The selected path is validated by the Parquet reader regardless of extension. The extension filter is only the explorer's display policy.
-- Confirming a new path creates a new tab, activates it and starts in the `Opening` state. If the path is already open in a tab, that tab is activated.
+- A selected file with the SQLite header opens its first table or view by name, and the explorer expands the database to show the others; a database without tables shows a notice in the status bar. Any other file is validated by the Parquet reader regardless of extension. The extension filter is only the explorer's display policy.
+- Opening a new source creates a new tab, activates it and starts in the `Opening` state. A source is a Parquet file, or a SQLite database and a table name. If the source is already open in a tab, that tab is activated. A SQLite tab is titled `table · file name`.
 - The footer and metadata are read first to show the row count and schema, then data for the first viewport is requested.
 - When a file is opened directly and the explorer has no root, its parent directory becomes the explorer root. An existing root is kept.
 
@@ -153,6 +155,13 @@ File and folder selection uses GPUI's `App::prompt_for_paths`. [Official API](ht
 - The bottom table shows, per Row Group, the row count, compressed and uncompressed size, and ratio. The first row, `All`, is the total over all Row Groups. Selecting a Row Group switches the middle table to that Row Group's information.
 - Min and max convert per-Row-Group statistics to Arrow types for comparison and are shown in the same format as the cell display contract. Approximations truncated in the file get a `≈` prefix. Without statistics, or for leaves of nested columns, `-` is shown. Null counts are summed only when every Row Group records them.
 
+### Table structure
+
+- For a SQLite tab, the structure button reads `Table Structure`. It shows the schema and pragmas of the table; no rows are read.
+- The top shows the kind (table, view or virtual table, with `WITHOUT ROWID` and `STRICT`), the row count, the row order, and the database: file size, page count and size, text encoding and journal mode.
+- The column table shows, per column, the name, declared type, the Arrow type the grid shows it as, the storage classes found in it, `NOT NULL`, the default and the primary key position.
+- The bottom shows the indexes (name, columns, uniqueness, origin and whether partial, with the `CREATE INDEX` statement as a tooltip) next to the table's `CREATE` statement.
+
 ### Theme
 
 - Colors come in a light and a dark set. At startup the app follows the Windows app color setting and keeps following its changes. The toolbar's `Light Mode` / `Dark Mode` button switches the theme, after which the app no longer follows the setting until restart.
@@ -163,7 +172,7 @@ The Cargo workspace consists of three crates.
 
 | Crate | Role | Depends on |
 |---|---|---|
-| `viewer-core` | Parquet reading, row views, find, file structure. No GPUI dependency | arrow-rs, parquet |
+| `viewer-core` | Parquet and SQLite reading, row views, find, file and table structure. No GPUI dependency | arrow-rs, parquet, rusqlite |
 | `viewer-ui` | UI components shared by GPUI apps: light and dark themes, single-line input, tab bar, table, small buttons, charts, heatmap, route map, number and size formats. No dependency on the data engine | GPUI |
 | `viewer-app` | The Parquet viewer app. Combines the two crates and owns the worker and screen state | `viewer-core`, `viewer-ui`, GPUI |
 
@@ -184,16 +193,19 @@ flowchart TB
         Engine[ViewerEngine]
         Metadata[Per-session Metadata / Schema / RowGroupIndex]
         Reader[Selected-range Parquet Reader]
+        Sqlite[SQLite table reader: rowid ranges / LIMIT-OFFSET]
         Scan[Sequential column scan]
         View[Condition parsing / row lists / find match table]
         Cache[Arrow block cache shared by all sessions]
         Engine --> Metadata
         Engine --> Reader
+        Engine --> Sqlite
         Engine --> Scan
         Engine --> Cache
     end
     Worker --> Engine
     Reader --> File[Read-only local Parquet file]
+    Sqlite --> Db[Read-only local SQLite database]
 ```
 
 | Component | Responsibilities and owned state |
@@ -204,9 +216,9 @@ flowchart TB
 | `FindBar` | Find input, matching cell count and progress, previous and next input |
 | `FilterPopover` | Column being filtered, operator, value input, parse errors |
 | `ViewBar` | The row view's filter and sort conditions, progress and cancel, notices for unsortable columns |
-| `StructureView` | The active tab's file structure, the selected Row Group and its column information |
+| `StructureView` | The active tab's file structure, the selected Row Group and its column information, or the table structure of a SQLite tab |
 | `TextInput` (`viewer-ui`) | Single-line text input: cursor, selection, clipboard, IME composition |
-| `ExplorerView` | Root path, expanded folders, selected file, directory listing state |
+| `ExplorerView` | Root path, expanded folders and databases, selected file or table, directory and database listing state |
 | `SchemaView` | The active tab's schema nodes and expansion state |
 | `GridView` | The active tab's logical scroll position, visible row and column ranges, cell previews and source row numbers, sort and filter marks in headers, input and rendering |
 | `ValueView` | Value tree nodes and expansion, selected node, body value and display line index, body scroll position |
@@ -299,11 +311,13 @@ TPUI/
         │   ├── scan.rs
         │   ├── condition.rs
         │   ├── row_view.rs
+        │   ├── sqlite.rs
         │   ├── find.rs
         │   ├── structure.rs
         │   └── error.rs
         └── tests/
             ├── reader_contract.rs
+            ├── sqlite_contract.rs
             └── view_contract.rs
 ```
 
@@ -314,16 +328,19 @@ The public API is a synchronous Rust API called within the same process. The wor
 | API | Input | Result and behavior |
 |---|---|---|
 | `open` | `SessionId`, `Path` | Opens a read-only handle and metadata, adds it as a session and returns `DatasetInfo`. Other sessions are kept |
+| `open_sqlite` | `SessionId`, `Path`, table name | Opens a read-only connection to the table or view, reads its row count, storage classes and block keys (see section 5), adds it as a session and returns `DatasetInfo` |
+| `open_source` | `SessionId`, `DataSource` | Calls `open` or `open_sqlite` |
 | `plan_window` | `WindowRequest` | Splits the rows and columns intersected with the file range into `BlockRequest`s per Row Group |
 | `read_block` | `BlockRequest`, cancellation state | Looks up the cache or decodes the selected range and returns a `DecodedBlock` |
 | `read_value` | `ValueRequest`, cancellation state | Finds the block holding the target cell in the cache or decodes it, and returns a `ValueSlice` holding only that cell |
 | `read_rows` | `SessionId`, source row list, column list, cancellation state | Finds each row's block in the cache or decodes it, and returns a `RecordBatch` gathered in row list order |
 | `file_structure` | `SessionId` | Returns a `FileStructure` built from metadata alone: file summary, per-Row-Group sizes, and per-leaf-column storage information over all Row Groups |
 | `row_group_columns` | `SessionId`, Row Group position | Returns that Row Group's per-leaf-column storage information |
+| `table_structure` | `SessionId` | Returns the `TableStructure` of a SQLite session: kind, row order, columns with declared types and storage classes, indexes, `CREATE` statement and database pragmas |
 | `scan` | `SessionId`, column list, optional ascending source row list | Returns a sequential column scan, `ColumnScan`. Each call returns the next batch in source order. With a row list, only those rows are read. The cache is not used |
 | `close` | `SessionId` | Releases that session's file handle, metadata, index and cache entries |
 
-`DatasetInfo` holds the `SessionId`, path, file size, total rows, `SchemaRef`, and row count per Row Group. `DecodedBlock` holds the `SessionId`, file-level start row, actual row count, source column IDs and the `RecordBatch`. `ValueSlice` holds the `SessionId`, global row, `ColumnId`, source `Field`, and an Arrow array of length 1 holding the target cell.
+`DatasetInfo` holds the `SessionId`, `DataSource`, path, file size, total rows, `SchemaRef`, and row count per Row Group; a SQLite table is one group holding all rows. `sqlite_objects(path)` lists the tables and views of a database, and `is_sqlite_file(path)` checks the header. `DecodedBlock` holds the `SessionId`, file-level start row, actual row count, source column IDs and the `RecordBatch`. `ValueSlice` holds the `SessionId`, global row, `ColumnId`, source `Field`, and an Arrow array of length 1 holding the target cell.
 
 The core request types follow this contract:
 
@@ -425,6 +442,17 @@ Decompressing and decoding a Parquet page can process more data than the request
 3. Copy just the target cell from the block batch into a new array of length 1 and return it as a `ValueSlice`. The returned value does not keep the whole block's buffers alive.
 
 Parquet does not decode part of a single value, so the selected value is fully in memory after decoding. The display cost of large values is bounded by virtualizing display lines in value detail.
+
+### SQLite tables
+
+A SQLite table is addressed like a Parquet file with one Row Group: rows are positions in a fixed row order, and blocks, value reads, row reads, scans, row views and find use the same contracts. Filter, sort and find run the shared Arrow computation over scans of the table, so their rules (Null last, UTF-8 byte order, whole-value matches) are the same for both formats; SQLite's own comparison and collation rules are not used.
+
+- Row order: rowid order for ordinary tables and virtual tables with a rowid, primary key order for `WITHOUT ROWID` tables, and the order SQLite returns for views and other virtual tables. The rowid is reached as `rowid`, `_rowid_` or `oid`, whichever no column shadows.
+- Opening runs in one read transaction: one query counts the rows and collects, per column, the storage classes present (`integer`, `real`, `text`, `blob`); for rowid order, a scan of the rowids records the rowid at every 512th row. The transaction ends before the session starts.
+- Column types follow the storage classes found: integers only → Int64; reals, or integers and reals → Float64; text only → Utf8; blobs only → Binary; any other mix → Utf8, where integers and reals are written as SQLite-style text and blobs as `x'…'` literals. A column without values takes the type of its declared affinity. The declared type is kept in the field metadata (`sqlite.declared_type`).
+- A block in rowid order is `WHERE rowid >= block key ORDER BY rowid LIMIT 512`; other orders use `LIMIT`/`OFFSET`, whose cost grows with the offset. Scans continue from the last rowid read, or by offset. A scan with a row list reads each block holding listed rows once.
+- Connections are opened read-only with `query_only`. No transaction is held between reads, so writers are never blocked. Readers of a WAL database update its `-shm` shared-memory file as SQLite requires; the database and WAL files are not written.
+- The size and modification time of the database file and its `-wal` file are compared before reads. A change, a row count that no longer matches, or a value whose storage class the column type cannot hold ends the read with `FileChanged`, and the tab offers reopening.
 
 ## 6. Virtualized grid
 
@@ -621,7 +649,7 @@ Without tabs, the app is in the empty state. Each tab's file state transitions `
 | Condition | Handling and user action |
 |---|---|
 | File dialog cancelled | Current state kept |
-| Missing path, permission error, invalid Parquet footer | The tab's `OpenError` shows the path and reason. Other tabs and opening files keep working |
+| Missing path, permission error, invalid Parquet footer, unreadable database or missing table | The tab's `OpenError` shows the path (and table) and reason. Other tabs and opening files keep working |
 | File with no data | `Ready`, showing the schema, headers and a zero-row state |
 | Decoding failure or unsupported codec in a range | Schema kept; `ReadError` and retry shown for that range |
 | Selected value lookup failure | Grid kept; `ReadError` and retry shown in the Value panel |
@@ -656,6 +684,7 @@ Each stage uses the results of the previous ones. The path from opening the firs
 | 13. Shared UI crate and charts | `viewer-ui` split, shared table, buttons and input bindings, line/band/rule charts, heatmap, automatic ticks, example | The example draws prediction intervals, actuals, bias, reliability and heatmaps of real probabilistic forecast data at the same positions as the source values, and hovered values equal the source |
 | 14. Themes | Light and dark color sets, following the OS app color setting, toolbar switch | Both themes render every view legibly, and the switch applies immediately |
 | 15. Route map | `GeoMap` with areas, routes, markers and labels, prepared area geometry kept across frames, example | The example draws every route map of real analysis runs over the area background in both themes, and frames reuse the prepared geometry |
+| 16. SQLite tables | `DataSource`, SQLite sessions in the engine (typing, row order, block keys, scans, change detection), table listing in the explorer, table tabs, table structure view | Tables, `WITHOUT ROWID` tables, views and virtual tables of real databases open with row counts, last rows, filter, sort and find results equal to the same queries in SQLite, and the database and WAL files are unchanged |
 
 ### Verification required for the MVP
 
@@ -674,5 +703,6 @@ Each stage uses the results of the previous ones. The path from opening the firs
 - Find, filter and sort results: On real Parquet files, compare the app's matching cell counts, filtered row counts and sort order with the same conditions computed by pyarrow.
 - Execution: On large files, check that scrolling, cell selection, tab switching and cancel work during row view and find computation.
 - File structure: Compare the app's per-column and per-Row-Group display with the metadata of real Parquet files read by pyarrow.
+- SQLite: On a contract fixture with rowid gaps, mixed storage classes, a `WITHOUT ROWID` table, a view and an empty table, compare listing, typing, blocks, values, scans, row views, find, table structure and change detection with the inserted data. On real databases, compare row counts, last rows, filtered row counts, sort order and find counts with the same SQL queries.
 
 The MVP is complete when the six product features above and each stage's completion criteria are met. Performance checks record metadata open, first viewport preparation, viewport update on cache hits and value detail preparation separately, to tell file reading cost apart from UI processing cost.

@@ -42,6 +42,10 @@ pub enum ViewerError {
     #[error("{0}")]
     Unsortable(String),
 
+    /// A SQLite database could not be opened or queried, or the table does not exist.
+    #[error("database error: {0}")]
+    Database(String),
+
     /// The cancellation flag was set and the work stopped.
     #[error("the operation was cancelled")]
     Cancelled,

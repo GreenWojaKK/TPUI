@@ -17,6 +17,7 @@ viewer-core.workspace = true
 viewer-ui.workspace = true
 
 [dev-dependencies]
+rusqlite.workspace = true
 tempfile.workspace = true
 
 [build-dependencies]

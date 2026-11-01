@@ -1,4 +1,4 @@
-//! Sequential column scans. Row view and find read all rows of a file, or the rows of a row list, batch by batch.
+//! Sequential column scans. Row view and find read all rows of a source, or the rows of a row list, batch by batch.
 //!
 //! Scans bypass the cache and do not keep the batches they return. They read one batch at a time so
 //! the caller can handle other requests between batches.
@@ -15,6 +15,7 @@ use parquet::arrow::arrow_reader::{
     RowSelector,
 };
 
+use crate::sqlite::SqliteScan;
 use crate::{ColumnId, RowIds, ViewerError};
 
 /// Maximum rows per scan batch.
@@ -27,8 +28,46 @@ pub struct ScanBatch {
     pub batch: RecordBatch,
 }
 
-/// Sequential scan reading only the given top-level columns, in Row Group order.
-pub struct ColumnScan {
+/// Sequential scan reading only the given top-level columns, in source order.
+pub struct ColumnScan(Inner);
+
+enum Inner {
+    Parquet(ParquetScan),
+    Sqlite(SqliteScan),
+}
+
+impl ColumnScan {
+    pub(crate) fn sqlite(scan: SqliteScan) -> Self {
+        Self(Inner::Sqlite(scan))
+    }
+
+    /// Total rows to read.
+    pub fn total(&self) -> u64 {
+        match &self.0 {
+            Inner::Parquet(scan) => scan.total,
+            Inner::Sqlite(scan) => scan.total(),
+        }
+    }
+
+    /// Rows returned so far.
+    pub fn emitted(&self) -> u64 {
+        match &self.0 {
+            Inner::Parquet(scan) => scan.emitted,
+            Inner::Sqlite(scan) => scan.emitted(),
+        }
+    }
+
+    /// Reads the next batch. `None` once everything has been read.
+    pub fn next_batch(&mut self) -> Result<Option<ScanBatch>, ViewerError> {
+        match &mut self.0 {
+            Inner::Parquet(scan) => scan.next_batch(),
+            Inner::Sqlite(scan) => scan.next_batch(),
+        }
+    }
+}
+
+/// Parquet scan in Row Group order.
+struct ParquetScan {
     file: File,
     file_len: u64,
     modified: Option<SystemTime>,
@@ -47,8 +86,23 @@ pub struct ColumnScan {
 }
 
 impl ColumnScan {
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new(
+    pub(crate) fn parquet(
+        file: File,
+        file_len: u64,
+        modified: Option<SystemTime>,
+        metadata: ArrowReaderMetadata,
+        groups: Vec<Range<u64>>,
+        columns: &[ColumnId],
+        selection: Option<Arc<RowIds>>,
+    ) -> Self {
+        Self(Inner::Parquet(ParquetScan::new(
+            file, file_len, modified, metadata, groups, columns, selection,
+        )))
+    }
+}
+
+impl ParquetScan {
+    fn new(
         file: File,
         file_len: u64,
         modified: Option<SystemTime>,
@@ -81,18 +135,7 @@ impl ColumnScan {
         }
     }
 
-    /// Total rows to read.
-    pub fn total(&self) -> u64 {
-        self.total
-    }
-
-    /// Rows returned so far.
-    pub fn emitted(&self) -> u64 {
-        self.emitted
-    }
-
-    /// Reads the next batch. `None` once everything has been read.
-    pub fn next_batch(&mut self) -> Result<Option<ScanBatch>, ViewerError> {
+    fn next_batch(&mut self) -> Result<Option<ScanBatch>, ViewerError> {
         loop {
             if let Some(reader) = &mut self.reader {
                 match reader.next() {

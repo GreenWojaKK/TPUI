@@ -1,5 +1,5 @@
 use std::ops::Range;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{FieldRef, SchemaRef};
@@ -19,16 +19,41 @@ pub struct RequestId(pub u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ColumnId(pub usize);
 
-/// Metadata summary of an open file. Used to show the schema and file summary before reading data.
+/// What a session reads: a Parquet file, or one table or view of a SQLite database.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum DataSource {
+    Parquet(PathBuf),
+    Sqlite { path: PathBuf, table: String },
+}
+
+impl DataSource {
+    /// The file the source is read from.
+    pub fn path(&self) -> &Path {
+        match self {
+            Self::Parquet(path) | Self::Sqlite { path, .. } => path,
+        }
+    }
+
+    /// Table name of a SQLite source.
+    pub fn table(&self) -> Option<&str> {
+        match self {
+            Self::Parquet(_) => None,
+            Self::Sqlite { table, .. } => Some(table),
+        }
+    }
+}
+
+/// Metadata summary of an open source. Used to show the schema and file summary before reading data.
 #[derive(Clone, Debug)]
 pub struct DatasetInfo {
     pub session: SessionId,
+    pub source: DataSource,
     pub path: PathBuf,
     /// File size in bytes.
     pub file_size: u64,
     pub total_rows: u64,
     pub schema: SchemaRef,
-    /// Row count per Row Group, in the Row Group order recorded in the file.
+    /// Row count per Row Group, in the Row Group order recorded in the file. A SQLite table is one group.
     pub row_group_rows: Vec<u64>,
 }
 

@@ -1,4 +1,5 @@
-//! Folder explorer. Lists only the direct children of expanded folders and draws only the visible rows.
+//! Folder explorer. Lists only the direct children of expanded folders and databases, and draws only the
+//! visible rows. Parquet files and SQLite databases are shown; a database expands into its tables and views.
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
@@ -11,17 +12,42 @@ use gpui::{
     div, prelude::*, uniform_list,
 };
 
+use viewer_core::{DataSource, SqliteObjectKind, is_sqlite_file, sqlite_objects};
 use viewer_ui::theme;
 
 actions!(explorer, [OpenSelected]);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EntryKind {
     Directory,
+    /// Parquet file.
     File,
+    /// SQLite database. Expands into its tables and views.
+    Database,
+    /// Table or view of the database at the entry's path.
+    Table {
+        table: String,
+        view: bool,
+    },
 }
 
-/// Directory entry shown in the explorer. Files are limited to the `.parquet` extension.
+impl EntryKind {
+    /// Directories come before files and databases.
+    fn rank(&self) -> u8 {
+        match self {
+            Self::Directory => 0,
+            _ => 1,
+        }
+    }
+
+    /// Directories and databases expand; files and tables open.
+    fn expands(&self) -> bool {
+        matches!(self, Self::Directory | Self::Database)
+    }
+}
+
+/// Explorer entry: a directory, a Parquet file, a SQLite database (`.sqlite`, `.sqlite3`, `.db`, `.db3`,
+/// `.s3db`, `.sl3` with a SQLite header) or one of its tables.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DirEntry {
     pub name: String,
@@ -58,9 +84,12 @@ pub fn list_directory(dir: &Path) -> io::Result<Vec<DirEntry>> {
         } else {
             continue;
         };
-        if kind == EntryKind::File && !is_parquet(&path) {
-            continue;
-        }
+        let kind = match kind {
+            EntryKind::File if is_parquet(&path) => EntryKind::File,
+            EntryKind::File if is_database(&path) => EntryKind::Database,
+            EntryKind::File => continue,
+            other => other,
+        };
         entries.push(DirEntry {
             name: entry.file_name().to_string_lossy().into_owned(),
             path,
@@ -70,16 +99,67 @@ pub fn list_directory(dir: &Path) -> io::Result<Vec<DirEntry>> {
     }
     entries.sort_by(|a, b| {
         a.kind
-            .cmp(&b.kind)
+            .rank()
+            .cmp(&b.kind.rank())
             .then_with(|| compare_names(&a.name, &b.name))
     });
     Ok(entries)
+}
+
+/// Tables and views of a database, by name.
+pub fn list_database(path: &Path) -> Result<Vec<DirEntry>, viewer_core::ViewerError> {
+    Ok(sqlite_objects(path)?
+        .into_iter()
+        .map(|object| DirEntry {
+            name: object.name.clone(),
+            path: path.to_path_buf(),
+            kind: EntryKind::Table {
+                table: object.name,
+                view: object.kind == SqliteObjectKind::View,
+            },
+            is_link: false,
+        })
+        .collect())
 }
 
 fn is_parquet(path: &Path) -> bool {
     path.extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("parquet"))
 }
+
+/// SQLite database by extension and header. The header check hides other files that use `.db`.
+fn is_database(path: &Path) -> bool {
+    path.extension().is_some_and(|extension| {
+        ["sqlite", "sqlite3", "db", "db3", "s3db", "sl3"]
+            .iter()
+            .any(|known| extension.eq_ignore_ascii_case(known))
+    }) && is_sqlite_file(path)
+}
+
+impl DirEntry {
+    /// The source this entry opens, for Parquet files and tables.
+    fn source(&self) -> Option<DataSource> {
+        match &self.kind {
+            EntryKind::File => Some(DataSource::Parquet(self.path.clone())),
+            EntryKind::Table { table, .. } => Some(DataSource::Sqlite {
+                path: self.path.clone(),
+                table: table.clone(),
+            }),
+            EntryKind::Directory | EntryKind::Database => None,
+        }
+    }
+
+    /// Identity used for selection: the path, plus the table name for tables.
+    fn key(&self) -> NodeKey {
+        match &self.kind {
+            EntryKind::Table { table, .. } => (self.path.clone(), Some(table.clone())),
+            _ => (self.path.clone(), None),
+        }
+    }
+}
+
+/// Path of a directory, file or database, with the table name for tables.
+type NodeKey = (PathBuf, Option<String>);
 
 /// Case-insensitive name order, falling back to the original strings on ties.
 fn compare_names(a: &str, b: &str) -> Ordering {
@@ -89,7 +169,7 @@ fn compare_names(a: &str, b: &str) -> Ordering {
 }
 
 pub enum ExplorerEvent {
-    OpenFile(PathBuf),
+    Open(DataSource),
 }
 
 enum Listing {
@@ -108,7 +188,7 @@ enum RowContent {
     Entry { entry: DirEntry, expanded: bool },
     Loading,
     Failed { dir: PathBuf, message: SharedString },
-    Empty,
+    Empty { database: bool },
 }
 
 pub struct ExplorerView {
@@ -116,9 +196,10 @@ pub struct ExplorerView {
     root: Option<PathBuf>,
     /// Incremented whenever the root changes. Used to drop listings for the previous root.
     generation: u64,
+    /// Children of expanded directories and databases, by path.
     listings: HashMap<PathBuf, Listing>,
     expanded: HashSet<PathBuf>,
-    selected: Option<PathBuf>,
+    selected: Option<NodeKey>,
     rows: Vec<ExplorerRow>,
 }
 
@@ -150,14 +231,20 @@ impl ExplorerView {
         cx.notify();
     }
 
-    /// Called when a file was opened by another path. Without a root, sets the file's parent folder as the root.
-    pub fn file_activated(&mut self, path: &Path, cx: &mut Context<Self>) {
+    /// Called when a source was opened by another path. Without a root, sets the file's parent folder as the root.
+    /// A table's database is expanded so the table shows in the tree.
+    pub fn file_activated(&mut self, source: &DataSource, cx: &mut Context<Self>) {
+        let path = source.path();
         if self.root.is_none()
             && let Some(parent) = path.parent()
         {
             self.set_root(parent.to_path_buf(), cx);
         }
-        self.selected = Some(path.to_path_buf());
+        if source.table().is_some() && self.expanded.insert(path.to_path_buf()) {
+            self.start_listing(path.to_path_buf(), cx);
+            self.rebuild_rows();
+        }
+        self.selected = Some((path.to_path_buf(), source.table().map(str::to_string)));
         cx.notify();
     }
 
@@ -170,7 +257,8 @@ impl ExplorerView {
         cx.notify();
     }
 
-    /// Lists the direct children of a folder in a background task. Reuses an in-flight listing of the same folder.
+    /// Lists the direct children of a folder, or the tables of a database, in a background task. Reuses an
+    /// in-flight listing of the same path.
     fn start_listing(&mut self, dir: PathBuf, cx: &mut Context<Self>) {
         if matches!(self.listings.get(&dir), Some(Listing::Loading)) {
             return;
@@ -180,7 +268,15 @@ impl ExplorerView {
         cx.spawn(async move |this, cx| {
             let target = dir.clone();
             let result = cx
-                .background_spawn(async move { list_directory(&target) })
+                .background_spawn(async move {
+                    if target.is_file() {
+                        list_database(&target)
+                            .map_err(|err| format!("Cannot read the database. ({err})"))
+                    } else {
+                        list_directory(&target)
+                            .map_err(|err| format!("Cannot read the folder. ({err})"))
+                    }
+                })
                 .await;
             this.update(cx, |this, cx| {
                 this.finish_listing(generation, dir, result, cx)
@@ -194,7 +290,7 @@ impl ExplorerView {
         &mut self,
         generation: u64,
         dir: PathBuf,
-        result: io::Result<Vec<DirEntry>>,
+        result: Result<Vec<DirEntry>, String>,
         cx: &mut Context<Self>,
     ) {
         if generation != self.generation {
@@ -202,7 +298,7 @@ impl ExplorerView {
         }
         let listing = match result {
             Ok(entries) => Listing::Loaded(entries),
-            Err(err) => Listing::Failed(format!("Cannot read the folder. ({err})").into()),
+            Err(message) => Listing::Failed(message.into()),
         };
         self.listings.insert(dir, listing);
         self.rebuild_rows();
@@ -210,16 +306,16 @@ impl ExplorerView {
     }
 
     fn activate(&mut self, entry: &DirEntry, cx: &mut Context<Self>) {
-        match entry.kind {
-            EntryKind::File => cx.emit(ExplorerEvent::OpenFile(entry.path.clone())),
-            EntryKind::Directory if !entry.is_link => self.toggle(entry.path.clone(), cx),
-            EntryKind::Directory => {}
+        if let Some(source) = entry.source() {
+            cx.emit(ExplorerEvent::Open(source));
+        } else if entry.kind.expands() && !entry.is_link {
+            self.toggle(entry.path.clone(), cx);
         }
     }
 
     fn open_selected(&mut self, _: &OpenSelected, _window: &mut Window, cx: &mut Context<Self>) {
         let selected = self.rows.iter().find_map(|row| match &row.content {
-            RowContent::Entry { entry, .. } if Some(&entry.path) == self.selected.as_ref() => {
+            RowContent::Entry { entry, .. } if Some(entry.key()) == self.selected => {
                 Some(entry.clone())
             }
             _ => None,
@@ -244,9 +340,8 @@ impl ExplorerView {
     }
 
     fn push_entry(&self, rows: &mut Vec<ExplorerRow>, entry: DirEntry, depth: usize) {
-        let expanded = entry.kind == EntryKind::Directory
-            && !entry.is_link
-            && self.expanded.contains(&entry.path);
+        let expanded =
+            entry.kind.expands() && !entry.is_link && self.expanded.contains(&entry.path);
         let dir = entry.path.clone();
         rows.push(ExplorerRow {
             depth,
@@ -270,7 +365,9 @@ impl ExplorerView {
             }),
             Some(Listing::Loaded(children)) if children.is_empty() => rows.push(ExplorerRow {
                 depth: child_depth,
-                content: RowContent::Empty,
+                content: RowContent::Empty {
+                    database: dir.is_file(),
+                },
             }),
             Some(Listing::Loaded(children)) => {
                 for child in children {
@@ -293,11 +390,17 @@ impl ExplorerView {
             .gap_1();
         match &row.content {
             RowContent::Entry { entry, expanded } => {
-                let selected = self.selected.as_ref() == Some(&entry.path);
-                let chevron = match (entry.kind, entry.is_link, expanded) {
-                    (EntryKind::Directory, false, true) => "▾",
-                    (EntryKind::Directory, false, false) => "▸",
+                let selected = self.selected == Some(entry.key());
+                let chevron = match (entry.kind.expands(), entry.is_link, expanded) {
+                    (true, false, true) => "▾",
+                    (true, false, false) => "▸",
                     _ => "",
+                };
+                let tag = match &entry.kind {
+                    _ if entry.is_link => Some("link"),
+                    EntryKind::Database => Some("SQLite"),
+                    EntryKind::Table { view: true, .. } => Some("view"),
+                    _ => None,
                 };
                 let entry = entry.clone();
                 base.cursor_pointer()
@@ -318,23 +421,20 @@ impl ExplorerView {
                             .when(entry.is_link, |name| name.text_color(theme::text_muted()))
                             .child(entry.name.clone()),
                     )
-                    .when(entry.is_link, |row| {
+                    .when_some(tag, |row, tag| {
                         row.child(
                             div()
                                 .flex_none()
                                 .text_xs()
                                 .text_color(theme::text_muted())
-                                .child("link"),
+                                .child(tag),
                         )
                     })
                     .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                         this.focus_handle.focus(window, cx);
-                        this.selected = Some(entry.path.clone());
-                        // Folders expand on a single click; files open on a double click.
-                        let activate = match entry.kind {
-                            EntryKind::Directory => true,
-                            EntryKind::File => event.click_count() >= 2,
-                        };
+                        this.selected = Some(entry.key());
+                        // Folders and databases expand on a single click; files and tables open on a double click.
+                        let activate = entry.kind.expands() || event.click_count() >= 2;
                         if activate {
                             this.activate(&entry, cx);
                         }
@@ -345,10 +445,14 @@ impl ExplorerView {
                 .text_color(theme::text_muted())
                 .child(div().w(theme::TREE_CHEVRON_WIDTH))
                 .child("Reading…"),
-            RowContent::Empty => base
+            RowContent::Empty { database } => base
                 .text_color(theme::text_muted())
                 .child(div().w(theme::TREE_CHEVRON_WIDTH))
-                .child("No Parquet files"),
+                .child(if *database {
+                    "No tables or views"
+                } else {
+                    "No Parquet or SQLite files"
+                }),
             RowContent::Failed { dir, message } => {
                 let dir = dir.clone();
                 base.child(div().w(theme::TREE_CHEVRON_WIDTH))
@@ -447,6 +551,41 @@ mod tests {
         assert_eq!(entries[0].kind, EntryKind::Directory);
         assert_eq!(entries[2].kind, EntryKind::File);
         assert!(entries.iter().all(|entry| !entry.is_link));
+    }
+
+    #[test]
+    fn lists_sqlite_databases_by_header_and_their_tables() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("data.db");
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE b (x); CREATE TABLE a (y); CREATE VIEW v AS SELECT x FROM b;",
+        )
+        .unwrap();
+        drop(conn);
+        // A `.db` file without the SQLite header is not shown.
+        fs::write(dir.path().join("Thumbs.db"), b"thumbnails").unwrap();
+        fs::write(dir.path().join("z.parquet"), b"").unwrap();
+
+        let entries = list_directory(dir.path()).unwrap();
+        let names: Vec<_> = entries.iter().map(|entry| entry.name.as_str()).collect();
+        assert_eq!(names, vec!["data.db", "z.parquet"]);
+        assert_eq!(entries[0].kind, EntryKind::Database);
+
+        let tables = list_database(&db).unwrap();
+        let sources: Vec<_> = tables.iter().filter_map(DirEntry::source).collect();
+        let table = |name: &str| DataSource::Sqlite {
+            path: db.clone(),
+            table: name.into(),
+        };
+        assert_eq!(sources, vec![table("a"), table("b"), table("v")]);
+        assert_eq!(
+            tables[2].kind,
+            EntryKind::Table {
+                table: "v".into(),
+                view: true
+            }
+        );
     }
 
     #[test]

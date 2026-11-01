@@ -8,16 +8,15 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ops::Range;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use arrow_array::ArrayRef;
 use viewer_core::{
-    ColumnChunkInfo, ColumnId, DatasetInfo, DecodedBlock, FileStructure, FindIndex, FindQuery,
-    FindTask, RequestId, RowView, RowViewTask, SessionId, TaskStep, ValueRequest, ValueSlice,
-    ViewSpec, ViewerEngine, ViewerError, WindowRequest,
+    ColumnChunkInfo, ColumnId, DataSource, DatasetInfo, DecodedBlock, FileStructure, FindIndex,
+    FindQuery, FindTask, RequestId, RowView, RowViewTask, SessionId, TableStructure, TaskStep,
+    ValueRequest, ValueSlice, ViewSpec, ViewerEngine, ViewerError, WindowRequest,
 };
 
 use crate::cell_preview::{CellPreview, preview_column};
@@ -115,6 +114,12 @@ pub enum WorkerEvent {
         request: RequestId,
         error: ViewerError,
     },
+    /// Structure of a SQLite table or view.
+    TableStructure {
+        session: SessionId,
+        request: RequestId,
+        result: Result<TableStructure, ViewerError>,
+    },
     /// File structure, built from metadata alone.
     FileStructure {
         session: SessionId,
@@ -130,10 +135,12 @@ pub enum WorkerEvent {
     },
 }
 
-/// File structure request. With `row_group`, requests that Row Group's per-column information.
+/// Structure request. For a SQLite source (`table`), the table structure; for Parquet, the file structure, or with
+/// `row_group` that Row Group's per-column information.
 pub struct StructureRequest {
     pub session: SessionId,
     pub request: RequestId,
+    pub table: bool,
     pub row_group: Option<usize>,
 }
 
@@ -171,8 +178,13 @@ pub struct FindRequest {
 
 /// Command opening or closing the file session of one tab. All are processed in request order.
 enum Command {
-    Open { session: SessionId, path: PathBuf },
-    Close { session: SessionId },
+    Open {
+        session: SessionId,
+        source: DataSource,
+    },
+    Close {
+        session: SessionId,
+    },
 }
 
 /// Visible range request. Rows are row view positions. With `find`, cells equal to that input are marked.
@@ -236,9 +248,9 @@ impl Mailbox {
         !self.shutdown && self.live_sessions.contains(&session) && self.latest_find == Some(request)
     }
 
-    fn push_open(&mut self, session: SessionId, path: PathBuf) {
+    fn push_open(&mut self, session: SessionId, source: DataSource) {
         self.live_sessions.insert(session);
-        self.commands.push_back(Command::Open { session, path });
+        self.commands.push_back(Command::Open { session, source });
     }
 
     /// Cancels open commands not yet processed, and queues a close command for sessions already open or opening.
@@ -365,9 +377,9 @@ impl ViewerWorker {
         self.wake();
     }
 
-    /// Requests opening a file for a new tab. Other sessions are left untouched.
-    pub fn open(&self, session: SessionId, path: PathBuf) {
-        self.with_mailbox(|mailbox| mailbox.push_open(session, path));
+    /// Requests opening a source for a new tab. Other sessions are left untouched.
+    pub fn open(&self, session: SessionId, source: DataSource) {
+        self.with_mailbox(|mailbox| mailbox.push_open(session, source));
     }
 
     /// Closes a tab's session. Cancels open commands not yet processed and closes open sessions in the engine.
@@ -560,8 +572,8 @@ impl WorkerState {
     fn handle(&mut self, job: Job, mailbox: &Mutex<Mailbox>, send: Send) -> bool {
         let lock = || mailbox.lock().expect("mailbox lock poisoned");
         match job {
-            Job::Command(Command::Open { session, path }) => {
-                let result = self.engine.open(session, &path);
+            Job::Command(Command::Open { session, source }) => {
+                let result = self.engine.open_source(session, &source);
                 if lock().is_current(session, None) {
                     if let Ok(info) = &result {
                         self.views
@@ -651,12 +663,18 @@ impl WorkerState {
                 let StructureRequest {
                     session,
                     request,
+                    table,
                     row_group,
                 } = request;
                 if !lock().is_current(session, None) {
                     return true;
                 }
                 match row_group {
+                    None if table => send(WorkerEvent::TableStructure {
+                        session,
+                        request,
+                        result: self.engine.table_structure(session),
+                    }),
                     None => send(WorkerEvent::FileStructure {
                         session,
                         request,
@@ -1151,10 +1169,10 @@ mod tests {
     #[test]
     fn keeps_every_open_in_order_and_closes_first() {
         let mut mailbox = Mailbox::default();
-        mailbox.push_open(SessionId(1), "a.parquet".into());
-        mailbox.push_open(SessionId(2), "b.parquet".into());
+        mailbox.push_open(SessionId(1), DataSource::Parquet("a.parquet".into()));
+        mailbox.push_open(SessionId(2), DataSource::Parquet("b.parquet".into()));
         mailbox.window = Some(window(2, 1));
-        mailbox.push_open(SessionId(3), "c.parquet".into());
+        mailbox.push_open(SessionId(3), DataSource::Parquet("c.parquet".into()));
         assert_eq!(job_kind(mailbox.next_job()), Some(("open", SessionId(1))));
         mailbox.push_close(SessionId(1));
 
@@ -1168,8 +1186,8 @@ mod tests {
     #[test]
     fn closing_before_open_cancels_the_open() {
         let mut mailbox = Mailbox::default();
-        mailbox.push_open(SessionId(1), "a.parquet".into());
-        mailbox.push_open(SessionId(2), "b.parquet".into());
+        mailbox.push_open(SessionId(1), DataSource::Parquet("a.parquet".into()));
+        mailbox.push_open(SessionId(2), DataSource::Parquet("b.parquet".into()));
         mailbox.window = Some(window(1, 1));
         mailbox.push_close(SessionId(1));
 
@@ -1182,7 +1200,7 @@ mod tests {
     #[test]
     fn only_the_latest_window_request_is_current() {
         let mut mailbox = Mailbox::default();
-        mailbox.push_open(SessionId(1), "a.parquet".into());
+        mailbox.push_open(SessionId(1), DataSource::Parquet("a.parquet".into()));
         mailbox.latest_request = Some(RequestId(2));
 
         assert!(mailbox.is_current(SessionId(1), None));
@@ -1194,8 +1212,8 @@ mod tests {
     #[test]
     fn keeps_one_view_request_per_session() {
         let mut mailbox = Mailbox::default();
-        mailbox.push_open(SessionId(1), "a.parquet".into());
-        mailbox.push_open(SessionId(2), "b.parquet".into());
+        mailbox.push_open(SessionId(1), DataSource::Parquet("a.parquet".into()));
+        mailbox.push_open(SessionId(2), DataSource::Parquet("b.parquet".into()));
         mailbox.push_view(SessionId(1), RequestId(1), ViewSpec::default());
         mailbox.push_view(SessionId(2), RequestId(2), ViewSpec::default());
         mailbox.push_view(SessionId(1), RequestId(3), ViewSpec::default());

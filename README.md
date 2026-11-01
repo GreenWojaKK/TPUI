@@ -1,6 +1,6 @@
 # TPUI
 
-A Windows desktop viewer for the raw data and file structure of local Parquet files, plus a UI component crate shared with other GPUI apps. Built with Rust, [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui) and [arrow-rs](https://github.com/apache/arrow-rs).
+A Windows desktop viewer for the raw data and structure of local Parquet files and SQLite tables, plus a UI component crate shared with other GPUI apps. Built with Rust, [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui) and [arrow-rs](https://github.com/apache/arrow-rs).
 
 Analysis and aggregation belong in other tools; this viewer focuses on showing raw values without truncation. The design and behavior contracts are in [architecture.md](architecture.md).
 
@@ -11,15 +11,16 @@ Analysis and aggregation belong in other tools; this viewer focuses on showing r
 - Value detail: long strings, Binary and nested values shown without truncation and copied exactly as stored
 - Find cells whose whole value matches, per-column filters, column sort
 - File structure: size, compression, encodings, null counts and min/max per column and Row Group
+- SQLite: databases expand into their tables and views in the explorer; each opens as a tab with the same grid, value detail, find, filter and sort, plus a table structure view (columns, declared and stored types, indexes, `CREATE` statement). Databases are opened read-only and never locked for writers.
 - Light and dark themes: follows the Windows app color setting, switchable from the toolbar
 
 ## Crates
 
 | Crate | Contents |
 |---|---|
-| `viewer-core` | Parquet reading, filter/sort/find computation, file structure. No GPUI dependency |
+| `viewer-core` | Parquet and SQLite reading, filter/sort/find computation, file and table structure. No GPUI dependency |
 | `viewer-ui` | GPUI components: light and dark themes, single-line input, tab bar, table, buttons, line/band charts, heatmap, route map |
-| `viewer-app` | The Parquet viewer app |
+| `viewer-app` | The viewer app |
 
 ## Build
 
@@ -63,4 +64,4 @@ Starting from the Zed v1.26.2 release (`c4273271`), the fork only narrows the `i
 
 The code in this repository is licensed under the [MIT License](LICENSE).
 
-Dependencies follow their own licenses. GPUI and arrow-rs are Apache License 2.0. When distributing a built executable, include the license notices of these dependencies.
+Dependencies follow their own licenses. GPUI and arrow-rs are Apache License 2.0; rusqlite is MIT, and the bundled SQLite is in the public domain. When distributing a built executable, include the license notices of these dependencies.

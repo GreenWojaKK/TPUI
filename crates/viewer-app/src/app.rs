@@ -8,8 +8,9 @@ use gpui::{
     prelude::*, relative,
 };
 use viewer_core::{
-    ColumnId, DatasetInfo, FilterCondition, RequestId, SessionId, SortKey, ValueRequest, ViewSpec,
-    ViewerError, WindowRequest, is_sortable,
+    ColumnId, DataSource, DatasetInfo, FilterCondition, RequestId, SessionId, SortKey,
+    ValueRequest, ViewSpec, ViewerError, WindowRequest, is_sortable, is_sqlite_file,
+    sqlite_objects,
 };
 
 use crate::ui::explorer::{ExplorerEvent, ExplorerView};
@@ -94,10 +95,11 @@ enum CenterMode {
     Structure,
 }
 
-/// Tab with one open file. Each tab has its own schema view so it remembers expanded nodes.
+/// Tab with one open source: a Parquet file or a SQLite table. Each tab has its own schema view so it remembers
+/// expanded nodes.
 struct Tab {
     session: SessionId,
-    path: PathBuf,
+    source: DataSource,
     state: TabState,
     schema: Entity<SchemaView>,
     /// Grid scroll position and selected cell saved when leaving the tab.
@@ -107,12 +109,29 @@ struct Tab {
 }
 
 impl Tab {
+    /// File name, or `table · file name` for a SQLite table.
     fn title(&self) -> SharedString {
-        self.path
+        let path = self.source.path();
+        let file = path
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| self.path.display().to_string())
-            .into()
+            .unwrap_or_else(|| path.display().to_string());
+        match self.source.table() {
+            Some(table) => format!("{table} · {file}").into(),
+            None => file.into(),
+        }
+    }
+
+    fn is_sqlite(&self) -> bool {
+        self.source.table().is_some()
+    }
+}
+
+/// Full path, with `› table` for a SQLite table.
+fn source_label(source: &DataSource) -> String {
+    match source.table() {
+        Some(table) => format!("{} › {table}", source.path().display()),
+        None => source.path().display().to_string(),
     }
 }
 
@@ -172,7 +191,7 @@ impl AppController {
             cx.subscribe(
                 &explorer,
                 |this, _, event: &ExplorerEvent, cx| match event {
-                    ExplorerEvent::OpenFile(path) => this.open_path(path.clone(), cx),
+                    ExplorerEvent::Open(source) => this.open_source(source.clone(), cx),
                 },
             );
 
@@ -323,23 +342,56 @@ impl AppController {
         .detach();
     }
 
-    /// Opens a file in a new tab and activates it. If the path is already open in a tab, activates that tab.
+    /// Opens a picked file. A SQLite database opens its first table or view by name and reveals the others in the
+    /// explorer; any other file opens as Parquet.
     fn open_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        if let Some(ix) = self.tabs.iter().position(|tab| same_path(&tab.path, &path)) {
+        if !is_sqlite_file(&path) {
+            self.open_source(DataSource::Parquet(path), cx);
+            return;
+        }
+        match sqlite_objects(&path) {
+            Ok(objects) => match objects.into_iter().next() {
+                Some(first) => self.open_source(
+                    DataSource::Sqlite {
+                        path,
+                        table: first.name,
+                    },
+                    cx,
+                ),
+                None => {
+                    self.dialog_error =
+                        Some(format!("No tables or views in {}.", path.display()).into());
+                    cx.notify();
+                }
+            },
+            Err(err) => {
+                self.dialog_error = Some(open_error_message(&err).into());
+                cx.notify();
+            }
+        }
+    }
+
+    /// Opens a source in a new tab and activates it. If the source is already open in a tab, activates that tab.
+    fn open_source(&mut self, source: DataSource, cx: &mut Context<Self>) {
+        if let Some(ix) = self
+            .tabs
+            .iter()
+            .position(|tab| same_source(&tab.source, &source))
+        {
             self.activate(ix, cx);
             return;
         }
         let session = self.next_session();
         self.tabs.push(Tab {
             session,
-            path: path.clone(),
+            source: source.clone(),
             state: TabState::Opening,
             schema: cx.new(|_| SchemaView::new()),
             grid_position: GridPosition::default(),
             view: TabView::default(),
             mode: CenterMode::default(),
         });
-        self.worker.open(session, path);
+        self.worker.open(session, source);
         self.remember_grid_position(cx);
         self.active = Some(self.tabs.len() - 1);
         self.show_active_tab(cx);
@@ -406,9 +458,9 @@ impl AppController {
             }
             _ => self.grid.update(cx, |grid, cx| grid.clear(cx)),
         }
-        if let Some(path) = active.map(|tab| tab.path.clone()) {
+        if let Some(source) = active.map(|tab| tab.source.clone()) {
             self.explorer
-                .update(cx, |explorer, cx| explorer.file_activated(&path, cx));
+                .update(cx, |explorer, cx| explorer.file_activated(&source, cx));
         }
         let structure_mode = active.is_some_and(|tab| {
             tab.mode == CenterMode::Structure && matches!(tab.state, TabState::Ready(_))
@@ -497,7 +549,7 @@ impl AppController {
         };
         tab.schema
             .update(cx, |schema, cx| schema.set_schema(None, cx));
-        self.worker.open(session, tab.path.clone());
+        self.worker.open(session, tab.source.clone());
         self.show_active_tab(cx);
     }
 
@@ -778,18 +830,24 @@ impl AppController {
         cx.notify();
     }
 
-    /// Requests the active tab's file structure. With `row_group`, requests that Row Group's column information.
+    /// Requests the active tab's file or table structure. With `row_group`, requests that Row Group's column
+    /// information.
     fn request_structure(&mut self, row_group: Option<usize>, cx: &mut Context<Self>) {
-        let Some(TabState::Ready(info)) = self.active_tab().map(|tab| &tab.state) else {
+        let Some(tab) = self.active_tab() else {
+            return;
+        };
+        let TabState::Ready(info) = &tab.state else {
             return;
         };
         let session = info.session;
+        let table = tab.is_sqlite();
         self.last_request += 1;
         let request = RequestId(self.last_request);
         self.latest_structure = Some(request);
         self.worker.request_structure(StructureRequest {
             session,
             request,
+            table,
             row_group,
         });
         if row_group.is_none() {
@@ -1053,6 +1111,18 @@ impl AppController {
                     });
                 }
             }
+            WorkerEvent::TableStructure {
+                session,
+                request,
+                result,
+            } => {
+                if self.is_latest_structure(session, request) {
+                    self.structure.update(cx, |structure, cx| match result {
+                        Ok(table) => structure.set_table(table, cx),
+                        Err(error) => structure.set_failed(read_error_message(&error).into(), cx),
+                    });
+                }
+            }
             WorkerEvent::RowGroupColumns {
                 session,
                 request,
@@ -1205,15 +1275,16 @@ impl AppController {
     /// Draws the tab bar and the active tab's grid if there are tabs, or the empty state otherwise.
     fn render_center(&self, cx: &mut Context<Self>) -> Div {
         let Some(tab) = self.active_tab() else {
-            return panel("Data Grid")
-                .child(placeholder("Open a Parquet file with Open File or Ctrl+O."));
+            return panel("Data Grid").child(placeholder(
+                "Open a Parquet or SQLite file with Open File or Ctrl+O.",
+            ));
         };
         let labels = self
             .tabs
             .iter()
             .map(|tab| TabLabel {
                 title: tab.title(),
-                path: tab.path.display().to_string().into(),
+                path: source_label(&tab.source).into(),
                 status: match tab.state {
                     TabState::Opening => TabStatus::Opening,
                     TabState::Ready(_) => TabStatus::Ready,
@@ -1231,16 +1302,20 @@ impl AppController {
                 div().flex_1().min_h_0().child(self.structure.clone())
             }
             TabState::Ready(_) => div().flex_1().min_h_0().child(self.grid.clone()),
-            TabState::OpenError(message) => placeholder("Cannot open the file.")
-                .flex_col()
-                .gap_2()
-                .text_color(theme::error())
-                .child(div().text_color(theme::text()).child(message.clone()))
-                .child(
-                    div()
-                        .text_color(theme::text_muted())
-                        .child(tab.path.display().to_string()),
-                ),
+            TabState::OpenError(message) => placeholder(if tab.is_sqlite() {
+                "Cannot open the table."
+            } else {
+                "Cannot open the file."
+            })
+            .flex_col()
+            .gap_2()
+            .text_color(theme::error())
+            .child(div().text_color(theme::text()).child(message.clone()))
+            .child(
+                div()
+                    .text_color(theme::text_muted())
+                    .child(source_label(&tab.source)),
+            ),
         };
         let view_bar = match &tab.state {
             TabState::Ready(info) if tab.mode == CenterMode::Data => {
@@ -1293,7 +1368,11 @@ impl AppController {
                 .child(mode_button("mode-data", "Data", CenterMode::Data))
                 .child(mode_button(
                     "mode-structure",
-                    "File Structure",
+                    if tab.is_sqlite() {
+                        "Table Structure"
+                    } else {
+                        "File Structure"
+                    },
                     CenterMode::Structure,
                 ))
         });
@@ -1322,7 +1401,7 @@ impl AppController {
 
     fn render_status_bar(&self, cx: &App) -> impl IntoElement {
         let path: SharedString = match self.active_tab() {
-            Some(tab) => tab.path.display().to_string().into(),
+            Some(tab) => source_label(&tab.source).into(),
             None => "No file".into(),
         };
         let mut summary: Vec<String> = Vec::new();
@@ -1346,11 +1425,13 @@ impl AppController {
                     "column",
                     "columns",
                 ));
-                summary.push(format_quantity(
-                    info.row_group_rows.len() as u64,
-                    "Row Group",
-                    "Row Groups",
-                ));
+                if info.source.table().is_none() {
+                    summary.push(format_quantity(
+                        info.row_group_rows.len() as u64,
+                        "Row Group",
+                        "Row Groups",
+                    ));
+                }
                 summary.push(format_bytes(info.file_size));
                 match self.grid.read(cx).load_state() {
                     GridLoadState::Loading => "Reading",
@@ -1510,6 +1591,17 @@ fn same_path(a: &Path, b: &Path) -> bool {
     a.as_os_str().eq_ignore_ascii_case(b.as_os_str())
 }
 
+/// Whether two sources are the same file, and for SQLite the same table. Table names compare exactly.
+fn same_source(a: &DataSource, b: &DataSource) -> bool {
+    match (a, b) {
+        (DataSource::Parquet(a), DataSource::Parquet(b)) => same_path(a, b),
+        (DataSource::Sqlite { path: a, table: x }, DataSource::Sqlite { path: b, table: y }) => {
+            same_path(a, b) && x == y
+        }
+        _ => false,
+    }
+}
+
 /// Turns an engine error into a user message.
 fn open_error_message(err: &ViewerError) -> String {
     match err {
@@ -1522,6 +1614,7 @@ fn open_error_message(err: &ViewerError) -> String {
             format!("Not a Parquet file, or its metadata is corrupted. ({parquet_err})")
         }
         ViewerError::InvalidRowCount => "The Row Group row counts are invalid.".into(),
+        ViewerError::Database(message) => format!("Cannot read the database. ({message})"),
         other => other.to_string(),
     }
 }
@@ -1533,6 +1626,7 @@ fn read_error_message(err: &ViewerError) -> String {
             format!("Cannot decode the data. ({decode_err})")
         }
         ViewerError::Io(io_err) => format!("Cannot read the file. ({io_err})"),
+        ViewerError::Database(message) => format!("Cannot read the database. ({message})"),
         other => other.to_string(),
     }
 }
@@ -1612,6 +1706,26 @@ mod tests {
         assert!(!same_path(
             Path::new(r"C:\Data\a.parquet"),
             Path::new(r"C:\Data\b.parquet")
+        ));
+    }
+
+    #[test]
+    fn tells_sqlite_tables_of_one_file_apart() {
+        let table = |path: &str, table: &str| DataSource::Sqlite {
+            path: path.into(),
+            table: table.into(),
+        };
+        assert!(same_source(
+            &table(r"C:\Data\x.db", "a"),
+            &table(r"c:\data\X.DB", "a")
+        ));
+        assert!(!same_source(
+            &table(r"C:\Data\x.db", "a"),
+            &table(r"C:\Data\x.db", "b")
+        ));
+        assert!(!same_source(
+            &table(r"C:\Data\x.db", "a"),
+            &DataSource::Parquet(r"C:\Data\x.db".into())
         ));
     }
 }

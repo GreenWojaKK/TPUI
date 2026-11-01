@@ -15,13 +15,15 @@ use arrow_select::take::take;
 use crate::cache::{BlockCache, BlockKey, DEFAULT_CACHE_BUDGET};
 use crate::reader;
 use crate::scan::ColumnScan;
+use crate::sqlite::{SqliteTable, TableStructure};
 use crate::structure::{self, ColumnChunkInfo, FileStructure};
 use crate::{
-    BLOCK_ROWS, BlockRequest, ColumnId, DatasetInfo, DecodedBlock, RowGroupIndex, RowIds,
-    SessionId, ValueRequest, ValueSlice, ViewerError, WindowRequest,
+    BLOCK_ROWS, BlockRequest, ColumnId, DataSource, DatasetInfo, DecodedBlock, RowGroupIndex,
+    RowIds, SessionId, ValueRequest, ValueSlice, ViewerError, WindowRequest,
 };
 
-/// Synchronous engine that keeps several files open read-only, one per session. The worker decides when it is called.
+/// Synchronous engine that keeps several sources open read-only, one per session: Parquet files and SQLite
+/// tables. The worker decides when it is called.
 ///
 /// Decoded blocks live in an LRU cache with a byte budget shared by all sessions.
 pub struct ViewerEngine {
@@ -35,23 +37,61 @@ impl Default for ViewerEngine {
     }
 }
 
-/// Session state of an open file. The file handle and metadata are reused for the whole session.
+/// Session state of an open source. File handles, connections and metadata are reused for the whole session.
 struct OpenDataset {
-    file: File,
-    /// File size and modification time seen at open. Compared before and after reads to detect changes.
-    file_len: u64,
-    modified: Option<SystemTime>,
-    metadata: ArrowReaderMetadata,
+    schema: SchemaRef,
     index: RowGroupIndex,
+    backend: Backend,
+}
+
+enum Backend {
+    Parquet {
+        file: File,
+        /// File size and modification time seen at open. Compared before and after reads to detect changes.
+        file_len: u64,
+        modified: Option<SystemTime>,
+        metadata: ArrowReaderMetadata,
+    },
+    Sqlite(Box<SqliteTable>),
 }
 
 impl OpenDataset {
     fn ensure_unchanged(&self) -> Result<(), ViewerError> {
-        let current = self.file.metadata()?;
-        if current.len() != self.file_len || current.modified().ok() != self.modified {
-            return Err(ViewerError::FileChanged);
+        match &self.backend {
+            Backend::Parquet {
+                file,
+                file_len,
+                modified,
+                ..
+            } => {
+                let current = file.metadata()?;
+                if current.len() != *file_len || current.modified().ok() != *modified {
+                    return Err(ViewerError::FileChanged);
+                }
+                Ok(())
+            }
+            Backend::Sqlite(table) => table.ensure_unchanged(),
         }
-        Ok(())
+    }
+
+    fn decode(
+        &self,
+        block: &BlockRequest,
+        is_cancelled: &dyn Fn() -> bool,
+    ) -> Result<RecordBatch, ViewerError> {
+        match &self.backend {
+            Backend::Parquet { file, metadata, .. } => {
+                reader::decode_block(file, metadata, block, is_cancelled)
+            }
+            Backend::Sqlite(table) => table.decode_block(block, is_cancelled),
+        }
+    }
+
+    fn parquet_metadata(&self) -> Result<&ArrowReaderMetadata, ViewerError> {
+        match &self.backend {
+            Backend::Parquet { metadata, .. } => Ok(metadata),
+            Backend::Sqlite(_) => Err(ViewerError::InvalidRequest("not a Parquet file")),
+        }
     }
 }
 
@@ -70,6 +110,56 @@ impl ViewerEngine {
     /// Bytes of Arrow buffers held by the cache.
     pub fn cache_bytes(&self) -> usize {
         self.cache.used_bytes()
+    }
+
+    /// Opens a source as a new session. See [`Self::open`] and [`Self::open_sqlite`].
+    pub fn open_source(
+        &mut self,
+        session: SessionId,
+        source: &DataSource,
+    ) -> Result<DatasetInfo, ViewerError> {
+        match source {
+            DataSource::Parquet(path) => self.open(session, path),
+            DataSource::Sqlite { path, table } => self.open_sqlite(session, path, table),
+        }
+    }
+
+    /// Opens a table or view of a SQLite database read-only as a new session. Reads the row count, the storage
+    /// classes of each column and, for rowid tables, the rowid at every block start. Other sessions are left
+    /// untouched.
+    ///
+    /// If the session number is already open, it is closed first, whether or not the open succeeds.
+    pub fn open_sqlite(
+        &mut self,
+        session: SessionId,
+        path: &Path,
+        table: &str,
+    ) -> Result<DatasetInfo, ViewerError> {
+        self.close(session);
+        let opened = SqliteTable::open(path, table)?;
+        let total_rows = opened.total_rows();
+        let index = RowGroupIndex::new(&[total_rows])?;
+        let info = DatasetInfo {
+            session,
+            source: DataSource::Sqlite {
+                path: path.to_path_buf(),
+                table: table.to_string(),
+            },
+            path: path.to_path_buf(),
+            file_size: opened.file_size(),
+            total_rows,
+            schema: opened.schema().clone(),
+            row_group_rows: vec![total_rows],
+        };
+        self.datasets.insert(
+            session,
+            OpenDataset {
+                schema: opened.schema().clone(),
+                index,
+                backend: Backend::Sqlite(Box::new(opened)),
+            },
+        );
+        Ok(info)
     }
 
     /// Opens the file read-only as a new session and reads only the footer and metadata. Data
@@ -94,6 +184,7 @@ impl ViewerEngine {
 
         let info = DatasetInfo {
             session,
+            source: DataSource::Parquet(path.to_path_buf()),
             path: path.to_path_buf(),
             file_size: file_metadata.len(),
             total_rows: index.total_rows(),
@@ -103,11 +194,14 @@ impl ViewerEngine {
         self.datasets.insert(
             session,
             OpenDataset {
-                file,
-                file_len: file_metadata.len(),
-                modified: file_metadata.modified().ok(),
-                metadata,
+                schema: metadata.schema().clone(),
                 index,
+                backend: Backend::Parquet {
+                    file,
+                    file_len: file_metadata.len(),
+                    modified: file_metadata.modified().ok(),
+                    metadata,
+                },
             },
         );
         Ok(info)
@@ -124,8 +218,7 @@ impl ViewerEngine {
                 "row range start is greater than its end",
             ));
         }
-        let field_count = dataset.metadata.schema().fields().len();
-        let columns = normalize_columns(&request.columns, field_count)?;
+        let columns = normalize_columns(&request.columns, dataset.schema.fields().len())?;
         let total_rows = dataset.index.total_rows();
         let rows = request.rows.start.min(total_rows)..request.rows.end.min(total_rows);
         Ok(reader::plan_blocks(
@@ -153,9 +246,7 @@ impl ViewerEngine {
         let batch = match self.cache.get(&key) {
             Some(batch) => batch,
             None => {
-                let dataset = lookup(&self.datasets, block.session)?;
-                let batch =
-                    reader::decode_block(&dataset.file, &dataset.metadata, block, is_cancelled)?;
+                let batch = lookup(&self.datasets, block.session)?.decode(block, is_cancelled)?;
                 self.ensure_unchanged(block.session)?;
                 self.cache.insert(key, batch.clone());
                 batch
@@ -178,8 +269,7 @@ impl ViewerEngine {
         is_cancelled: &dyn Fn() -> bool,
     ) -> Result<ValueSlice, ViewerError> {
         let dataset = lookup(&self.datasets, request.session)?;
-        let schema = dataset.metadata.schema();
-        let Some(field) = schema.fields().get(request.column.0).cloned() else {
+        let Some(field) = dataset.schema.fields().get(request.column.0).cloned() else {
             return Err(ViewerError::InvalidRequest("column is outside the schema"));
         };
         let Some((row_group, group_row)) = dataset.index.locate(request.row) else {
@@ -204,9 +294,8 @@ impl ViewerEngine {
         let (batch, position) = match cached {
             Some(found) => found,
             None => {
-                let dataset = lookup(&self.datasets, request.session)?;
                 let batch =
-                    reader::decode_block(&dataset.file, &dataset.metadata, &block, is_cancelled)?;
+                    lookup(&self.datasets, request.session)?.decode(&block, is_cancelled)?;
                 self.ensure_unchanged(request.session)?;
                 self.cache.insert(
                     BlockKey {
@@ -246,7 +335,7 @@ impl ViewerEngine {
         is_cancelled: &dyn Fn() -> bool,
     ) -> Result<RecordBatch, ViewerError> {
         let dataset = self.dataset(session)?;
-        let schema = dataset.metadata.schema().clone();
+        let schema = dataset.schema.clone();
         let columns = normalize_columns(columns, schema.fields().len())?;
         let mut blocks: Vec<BlockRequest> = Vec::new();
         let mut block_ix: HashMap<(usize, u64), usize> = HashMap::new();
@@ -290,8 +379,9 @@ impl ViewerEngine {
         interleave_record_batch(&refs, &indices).map_err(|err| ViewerError::Decode(err.into()))
     }
 
-    /// Creates a sequential scan reading the given columns in Row Group order. `selection` is an ascending
-    /// list of source rows; if present, only those rows are read. Scans do not use the cache.
+    /// Creates a sequential scan reading the given columns in source order (Row Group order for Parquet, the
+    /// table's row order for SQLite). `selection` is an ascending list of source rows; if present, only those
+    /// rows are read. Scans do not use the cache.
     pub fn scan(
         &self,
         session: SessionId,
@@ -299,32 +389,50 @@ impl ViewerEngine {
         selection: Option<Arc<RowIds>>,
     ) -> Result<ColumnScan, ViewerError> {
         let dataset = self.dataset(session)?;
-        let columns = normalize_columns(columns, dataset.metadata.schema().fields().len())?;
+        let columns = normalize_columns(columns, dataset.schema.fields().len())?;
         if columns.is_empty() {
             return Err(ViewerError::InvalidRequest("no columns to read"));
         }
         dataset.ensure_unchanged()?;
-        let groups = (0..dataset.index.row_group_count())
-            .map(|group| dataset.index.row_group_range(group))
-            .collect();
-        Ok(ColumnScan::new(
-            dataset.file.try_clone()?,
-            dataset.file_len,
-            dataset.modified,
-            dataset.metadata.clone(),
-            groups,
-            &columns,
-            selection,
-        ))
+        match &dataset.backend {
+            Backend::Parquet {
+                file,
+                file_len,
+                modified,
+                metadata,
+            } => {
+                let groups = (0..dataset.index.row_group_count())
+                    .map(|group| dataset.index.row_group_range(group))
+                    .collect();
+                Ok(ColumnScan::parquet(
+                    file.try_clone()?,
+                    *file_len,
+                    *modified,
+                    metadata.clone(),
+                    groups,
+                    &columns,
+                    selection,
+                ))
+            }
+            Backend::Sqlite(table) => Ok(ColumnScan::sqlite(table.scan(&columns, selection)?)),
+        }
     }
 
     /// File structure. Uses only the storage information in the metadata and reads no data pages.
     pub fn file_structure(&self, session: SessionId) -> Result<FileStructure, ViewerError> {
-        let dataset = self.dataset(session)?;
+        let metadata = self.dataset(session)?.parquet_metadata()?;
         Ok(structure::file_structure(
-            dataset.metadata.metadata(),
-            dataset.metadata.schema(),
+            metadata.metadata(),
+            metadata.schema(),
         ))
+    }
+
+    /// Structure of a SQLite table or view: columns, indexes, `CREATE` statement and database pragmas.
+    pub fn table_structure(&self, session: SessionId) -> Result<TableStructure, ViewerError> {
+        match &self.dataset(session)?.backend {
+            Backend::Sqlite(table) => table.structure(),
+            Backend::Parquet { .. } => Err(ViewerError::InvalidRequest("not a SQLite table")),
+        }
     }
 
     /// Per-leaf-column storage information of one Row Group.
@@ -334,19 +442,20 @@ impl ViewerEngine {
         row_group: usize,
     ) -> Result<Vec<ColumnChunkInfo>, ViewerError> {
         let dataset = self.dataset(session)?;
+        let metadata = dataset.parquet_metadata()?;
         if row_group >= dataset.index.row_group_count() {
             return Err(ViewerError::InvalidRequest("Row Group is out of range"));
         }
         Ok(structure::column_infos(
-            dataset.metadata.metadata(),
-            dataset.metadata.schema(),
+            metadata.metadata(),
+            metadata.schema(),
             &[row_group],
         ))
     }
 
     /// Arrow schema of the session's file.
     pub fn schema(&self, session: SessionId) -> Result<SchemaRef, ViewerError> {
-        Ok(self.dataset(session)?.metadata.schema().clone())
+        Ok(self.dataset(session)?.schema.clone())
     }
 
     /// Total rows of the session's file.
