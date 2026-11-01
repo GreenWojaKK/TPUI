@@ -77,11 +77,12 @@ pub struct StripChart {
     rows: Vec<StripRow>,
     markers: Vec<StripMarker>,
     empty_label: Option<SharedString>,
+    track_thickness: Pixels,
+    dot_radius: Pixels,
+    background: Option<Hsla>,
     hover: Option<(Option<(usize, usize)>, PointHoverHandler)>,
 }
 
-const TRACK_HEIGHT: Pixels = px(8.);
-const DOT_RADIUS: Pixels = px(5.5);
 /// Ring around each point in the background color, so that overlapping points stay apart.
 const DOT_RING: Pixels = px(2.);
 /// Length of tick and marker lines beyond the track.
@@ -101,8 +102,30 @@ impl StripChart {
             rows,
             markers: Vec::new(),
             empty_label: None,
+            track_thickness: px(8.),
+            dot_radius: px(5.5),
+            background: None,
             hover: None,
         }
+    }
+
+    /// Thickness of each row's track. 8 px by default.
+    pub fn track_thickness(mut self, thickness: Pixels) -> Self {
+        self.track_thickness = thickness;
+        self
+    }
+
+    /// Radius of each point. 5.5 px by default.
+    pub fn dot_radius(mut self, radius: Pixels) -> Self {
+        self.dot_radius = radius;
+        self
+    }
+
+    /// Color behind the chart. Points get a ring of this color so that overlapping points stay apart. The surface
+    /// color of the theme by default.
+    pub fn background(mut self, color: impl Into<Hsla>) -> Self {
+        self.background = Some(color.into());
+        self
     }
 
     pub fn marker(mut self, marker: StripMarker) -> Self {
@@ -141,6 +164,7 @@ impl StripChart {
             marker_labels: self.markers.iter().any(|marker| marker.label.is_some()),
             ticks: !self.axis.ticks.is_empty(),
             title: self.axis.title.is_some(),
+            point_band: ((self.dot_radius + DOT_RING) * 2.).max(self.track_thickness),
         }
     }
 
@@ -157,6 +181,8 @@ struct Shape {
     marker_labels: bool,
     ticks: bool,
     title: bool,
+    /// Height of the band holding a row's track and points.
+    point_band: Pixels,
 }
 
 /// Whether a row writes text above and below its track.
@@ -184,7 +210,7 @@ impl Shape {
         let line_height = text.line_height;
         let max_label = width.map_or(px(f32::MAX), |width| width * LABEL_SHARE);
         let labels = LabelColumn::new(&self.labels, max_label, text);
-        let dot = (DOT_RADIUS + DOT_RING) * 2.;
+        let dot = self.point_band;
         let text_line = line_height + LABEL_GAP;
         let rows_top = if self.marker_labels {
             text_line + OVERHANG
@@ -312,9 +338,9 @@ impl Element for StripChart {
         } else {
             px(0.)
         };
-        let plot_left = bounds.left() + frame.labels.width + label_gap + DOT_RADIUS;
-        let plot_right =
-            (bounds.right() - (last_tick / 2.).max(DOT_RADIUS + DOT_RING)).max(plot_left + px(1.));
+        let plot_left = bounds.left() + frame.labels.width + label_gap + self.dot_radius;
+        let plot_right = (bounds.right() - (last_tick / 2.).max(self.dot_radius + DOT_RING))
+            .max(plot_left + px(1.));
         let x = |value: f64| self.axis.position(value, plot_left, plot_right - plot_left);
         // Keeps a label of `width` inside the chart.
         let clamp =
@@ -324,18 +350,19 @@ impl Element for StripChart {
         let mut tracks = Vec::new();
         let mut ticks = Vec::new();
         let mut dots = Vec::new();
-        let dot = DOT_RADIUS + DOT_RING;
+        let dot = self.dot_radius + DOT_RING;
+        let track = self.track_thickness;
         for (ix, row) in self.rows.iter().enumerate() {
             let (row_top, row_height) = frame.rows[ix];
             let center = top + frame.centers[ix];
             tracks.push(Bounds::new(
-                point(plot_left, center - TRACK_HEIGHT / 2.),
-                size(plot_right - plot_left, TRACK_HEIGHT),
+                point(plot_left, center - track / 2.),
+                size(plot_right - plot_left, track),
             ));
             for (value, _) in &self.axis.ticks {
                 ticks.push(Bounds::new(
-                    point(x(*value), center - TRACK_HEIGHT / 2. - OVERHANG),
-                    size(px(1.), TRACK_HEIGHT + OVERHANG * 2.),
+                    point(x(*value), center - track / 2. - OVERHANG),
+                    size(px(1.), track + OVERHANG * 2.),
                 ));
             }
 
@@ -444,7 +471,7 @@ impl Element for StripChart {
     ) {
         for track in &layout.tracks {
             window.paint_quad(
-                fill(*track, theme::track()).corner_radii(Corners::all(TRACK_HEIGHT / 2.)),
+                fill(*track, theme::track()).corner_radii(Corners::all(self.track_thickness / 2.)),
             );
         }
         for tick in &layout.ticks {
@@ -459,12 +486,13 @@ impl Element for StripChart {
             }
         }
         let hovered = self.hover.as_ref().and_then(|(hovered, _)| *hovered);
-        let radius = DOT_RADIUS + DOT_RING;
+        let radius = self.dot_radius + DOT_RING;
+        let background = self.background.unwrap_or_else(|| theme::surface().into());
         for dot in &layout.dots {
             let ring = if hovered == Some((dot.row, dot.index)) {
-                theme::text()
+                theme::text().into()
             } else {
-                theme::surface()
+                background
             };
             window.paint_quad(
                 fill(

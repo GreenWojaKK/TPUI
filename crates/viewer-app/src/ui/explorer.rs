@@ -15,6 +15,8 @@ use gpui::{
 use viewer_core::{DataSource, SqliteObjectKind, is_sqlite_file, sqlite_objects};
 use viewer_ui::theme;
 
+use super::style;
+
 actions!(explorer, [OpenSelected]);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -382,9 +384,9 @@ impl ExplorerView {
         let base = div()
             .id(ix)
             .w_full()
-            .h(theme::LIST_ROW_HEIGHT)
-            .pl(theme::TREE_INDENT * row.depth as f32 + theme::TREE_ROW_PADDING)
-            .pr(theme::TREE_ROW_PADDING)
+            .h(theme::metrics().list_row_height)
+            .pl(style::TREE_INDENT * row.depth as f32 + style::TREE_ROW_PADDING)
+            .pr(style::TREE_ROW_PADDING)
             .flex()
             .items_center()
             .gap_1();
@@ -409,7 +411,7 @@ impl ExplorerView {
                     .child(
                         div()
                             .flex_none()
-                            .w(theme::TREE_CHEVRON_WIDTH)
+                            .w(style::TREE_CHEVRON_WIDTH)
                             .text_color(theme::text_muted())
                             .child(chevron),
                     )
@@ -443,11 +445,11 @@ impl ExplorerView {
             }
             RowContent::Loading => base
                 .text_color(theme::text_muted())
-                .child(div().w(theme::TREE_CHEVRON_WIDTH))
+                .child(div().w(style::TREE_CHEVRON_WIDTH))
                 .child("Reading…"),
             RowContent::Empty { database } => base
                 .text_color(theme::text_muted())
-                .child(div().w(theme::TREE_CHEVRON_WIDTH))
+                .child(div().w(style::TREE_CHEVRON_WIDTH))
                 .child(if *database {
                     "No tables or views"
                 } else {
@@ -455,7 +457,7 @@ impl ExplorerView {
                 }),
             RowContent::Failed { dir, message } => {
                 let dir = dir.clone();
-                base.child(div().w(theme::TREE_CHEVRON_WIDTH))
+                base.child(div().w(style::TREE_CHEVRON_WIDTH))
                     .child(
                         div()
                             .flex_1()

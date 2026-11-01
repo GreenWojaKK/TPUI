@@ -54,10 +54,10 @@ pub struct BarChart {
     series: Vec<BarSeries>,
     max: Option<f64>,
     format: Rc<dyn Fn(f64) -> String>,
+    bar_thickness: Pixels,
     hover: Option<(Option<(usize, usize)>, BarHoverHandler)>,
 }
 
-const BAR_HEIGHT: Pixels = px(12.);
 const BAR_GAP: Pixels = px(4.);
 const ROW_GAP: Pixels = px(10.);
 const COLUMN_GAP: Pixels = px(10.);
@@ -73,8 +73,15 @@ impl BarChart {
             series,
             max: None,
             format: Rc::new(|value| value.to_string()),
+            bar_thickness: px(12.),
             hover: None,
         }
+    }
+
+    /// Thickness of each bar. 12 px by default.
+    pub fn bar_thickness(mut self, thickness: Pixels) -> Self {
+        self.bar_thickness = thickness;
+        self
     }
 
     /// Value at the right end of the scale. Larger values fill the whole track.
@@ -150,12 +157,13 @@ impl Rows {
     fn new(
         labels: &[SharedString],
         series: usize,
+        bar_thickness: Pixels,
         width: Option<Pixels>,
         text: &TextShaper,
     ) -> Self {
         let max_label = width.map_or(px(f32::MAX), |width| width * LABEL_SHARE);
         let labels = LabelColumn::new(labels, max_label, text);
-        let slot = (BAR_HEIGHT + BAR_GAP).max(text.line_height);
+        let slot = (bar_thickness + BAR_GAP).max(text.line_height);
         let group = slot * series as f32;
         let mut tops = Vec::new();
         let mut heights = Vec::new();
@@ -223,12 +231,13 @@ impl Element for BarChart {
         let text = TextShaper::new(window);
         let labels = self.rows.clone();
         let series = self.series.len();
+        let bar_thickness = self.bar_thickness;
         let mut style = Style::default();
         style.size.width = relative(1.).into();
         let layout_id =
             window.request_measured_layout(style, move |known, available, _window, _cx| {
                 let width = definite_width(known, available);
-                let rows = Rows::new(&labels, series, width, &text);
+                let rows = Rows::new(&labels, series, bar_thickness, width, &text);
                 size(width.unwrap_or(rows.labels.width + px(240.)), rows.height)
             });
         (layout_id, ())
@@ -249,6 +258,7 @@ impl Element for BarChart {
         let rows = Rows::new(
             &self.rows,
             self.series.len(),
+            self.bar_thickness,
             Some(bounds.size.width),
             &text,
         );
@@ -296,8 +306,8 @@ impl Element for BarChart {
             for series in 0..self.series.len() {
                 let slot_top = group_top + rows.slot * series as f32;
                 let track = Bounds::new(
-                    point(track_left, slot_top + (rows.slot - BAR_HEIGHT) / 2.),
-                    size(track_right - track_left, BAR_HEIGHT),
+                    point(track_left, slot_top + (rows.slot - self.bar_thickness) / 2.),
+                    size(track_right - track_left, self.bar_thickness),
                 );
                 let fill = self
                     .value(row, series)
@@ -414,7 +424,7 @@ fn paint_hatch(track: Bounds<Pixels>, window: &mut Window) {
     }
     if let Ok(path) = path.build() {
         window.with_content_mask(Some(ContentMask { bounds: track }), |window| {
-            window.paint_path(path, theme::border());
+            window.paint_path(path, theme::missing());
         });
     }
 }

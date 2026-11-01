@@ -10,6 +10,8 @@ use gpui::{
 
 use viewer_ui::theme;
 
+use super::style;
+
 /// One schema field and its child fields.
 #[derive(Debug, PartialEq, Eq)]
 struct SchemaNode {
@@ -145,9 +147,9 @@ impl SchemaView {
         div()
             .id(ix)
             .w_full()
-            .h(theme::LIST_ROW_HEIGHT)
-            .pl(theme::TREE_INDENT * row.depth as f32 + theme::TREE_ROW_PADDING)
-            .pr(theme::TREE_ROW_PADDING)
+            .h(theme::metrics().list_row_height)
+            .pl(style::TREE_INDENT * row.depth as f32 + style::TREE_ROW_PADDING)
+            .pr(style::TREE_ROW_PADDING)
             .flex()
             .items_center()
             .gap_1()
@@ -161,7 +163,7 @@ impl SchemaView {
             .child(
                 div()
                     .flex_none()
-                    .w(theme::TREE_CHEVRON_WIDTH)
+                    .w(style::TREE_CHEVRON_WIDTH)
                     .text_color(theme::text_muted())
                     .child(chevron),
             )
@@ -169,7 +171,7 @@ impl SchemaView {
             .child(
                 div()
                     .flex_none()
-                    .max_w(theme::SCHEMA_TYPE_MAX_WIDTH)
+                    .max_w(style::SCHEMA_TYPE_MAX_WIDTH)
                     .truncate()
                     .text_color(theme::text_muted())
                     .child(row.type_label.clone()),
@@ -177,7 +179,7 @@ impl SchemaView {
             .child(
                 div()
                     .flex_none()
-                    .w(theme::SCHEMA_NULLABLE_WIDTH)
+                    .w(style::SCHEMA_NULLABLE_WIDTH)
                     .text_xs()
                     .text_color(theme::text_muted())
                     .child(if row.nullable { "nullable" } else { "not null" }),

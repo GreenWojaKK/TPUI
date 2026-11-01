@@ -5065,10 +5065,12 @@ dependencies = [
  "arrow-cast",
  "arrow-schema",
  "async-channel",
+ "chrono",
  "embed-resource",
  "gpui",
  "gpui_platform",
  "rusqlite",
+ "serde_json",
  "tempfile",
  "unicode-width",
  "viewer-core",
@@ -5095,10 +5097,14 @@ dependencies = [
 name = "viewer-ui"
 version = "0.1.0"
 dependencies = [
+ "async-channel",
  "gpui",
  "gpui_platform",
+ "raw-window-handle",
  "serde_json",
+ "tempfile",
  "unicode-segmentation",
+ "windows 0.62.2",
 ]
 
 [[package]]

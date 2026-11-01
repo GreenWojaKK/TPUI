@@ -9,17 +9,18 @@ Analysis and aggregation belong in other tools; this viewer focuses on showing r
 - Opening a file reads only its metadata, and only the visible rows and columns are decoded. Decoded blocks live in a 128 MiB cache shared by all tabs.
 - Explorer, tabs, schema tree, and a grid virtualized over rows and columns
 - Value detail: long strings, Binary and nested values shown without truncation and copied exactly as stored
-- Find cells whose whole value matches, per-column filters, column sort
+- Find cells whose whole value matches, filters and column sort from the right-click menus of headers and cells. Conditions on different columns are joined with `and`; conditions on one column also with `or`, shown in parentheses. Shift+click adds with `or`, Alt+click adds the opposite condition, `▾` boxes between conditions switch `and` and `or`, and dragging across conditions of one column puts them in one set of parentheses. The conditions read as query text (`filter (age < 20 or age >= 60) and status == "활성"`), which `Copy Query` copies
 - File structure: size, compression, encodings, null counts and min/max per column and Row Group
 - SQLite: databases expand into their tables and views in the explorer; each opens as a tab with the same grid, value detail, find, filter and sort, plus a table structure view (columns, declared and stored types, indexes, `CREATE` statement). Databases are opened read-only and never locked for writers.
+- Queries as text: the toolbar's `Query` menu opens a query window for writing `find`, `filter` and `sort` lines, and copies the path of a message file that agents and other programs write queries to. Every applied query is appended to a daily log in `%LOCALAPPDATA%\TPUI\query-log`
 - Light and dark themes: follows the Windows app color setting, switchable from the toolbar
 
 ## Crates
 
 | Crate | Contents |
 |---|---|
-| `viewer-core` | Parquet and SQLite reading, filter/sort/find computation, file and table structure. No GPUI dependency |
-| `viewer-ui` | GPUI components: light and dark themes, single-line input, tab bar, tables with fixed or wrapping rows, buttons, line/band charts, bar charts, strip charts, heatmap, route map |
+| `viewer-core` | Parquet and SQLite reading, filter/sort/find computation, query text, file and table structure. No GPUI dependency |
+| `viewer-ui` | GPUI components: light and dark themes, context menu, query window (Windows), message file, tab bar, tables with fixed or wrapping rows, buttons, line/band charts, bar charts, strip charts, heatmap, route map |
 | `viewer-app` | The viewer app |
 
 ## Build
@@ -40,6 +41,15 @@ Add it as a git dependency and pin GPUI to the same fork commit as this reposito
 [dependencies]
 viewer-ui = { git = "https://github.com/GreenWojaKK/TPUI", rev = "<TPUI commit>" }
 gpui = { git = "https://github.com/GreenWojaKK/zed", rev = "f941f6a1c26a295c051e2a3776d9897093b3db8c" }
+```
+
+Components read colors by role and take their fonts and densities from the theme. An app with its own look starts from the default theme, changes the fields it needs and installs it once, before the first window opens. Colors of the app's own views come from `theme::pick(dark, light)`.
+
+```rust
+let mut theme = viewer_ui::theme::Theme::default();
+theme.light.text = gpui::rgb(0x345575);
+theme.metrics.list_row_height = gpui::px(32.);
+viewer_ui::theme::install(theme);
 ```
 
 ## GPUI fork

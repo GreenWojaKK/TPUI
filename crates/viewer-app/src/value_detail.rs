@@ -12,7 +12,7 @@ use arrow_array::{Array, ArrayRef, downcast_dictionary_array};
 use arrow_cast::display::{ArrayFormatter, FormatOptions};
 use arrow_schema::DataType;
 use gpui::SharedString;
-use viewer_core::ValueSlice;
+use viewer_core::{ValueClass, ValueSlice, value_class};
 use viewer_ui::format::format_quantity;
 
 use crate::cell_preview::{CellPreview, is_number, preview_column};
@@ -111,6 +111,27 @@ pub fn body(array: &ArrayRef, row: usize) -> ValueBody {
                 ),
             },
         },
+    }
+}
+
+/// A cell's value as filter and find input.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CellValue {
+    Null,
+    /// Text that parses back to the same value: strings as is, Binary as hexadecimal, other values as displayed.
+    Text(String),
+    /// Nested values and types without value comparison.
+    NotComparable,
+}
+
+pub fn cell_value(array: &ArrayRef, row: usize) -> CellValue {
+    if array.is_null(row) {
+        CellValue::Null
+    } else if is_container(array.data_type()) || value_class(array.data_type()) == ValueClass::Other
+    {
+        CellValue::NotComparable
+    } else {
+        CellValue::Text(copy_text(array, row))
     }
 }
 
@@ -400,6 +421,42 @@ mod tests {
     use arrow_schema::Field;
 
     use super::*;
+
+    #[test]
+    fn cell_values_parse_back_to_the_same_value() {
+        use arrow_array::{Date32Array, TimestampMillisecondArray};
+        use arrow_schema::Schema;
+        use viewer_core::{ColumnId, FilterCondition, FilterOp, check_condition, parse_value};
+
+        let columns: Vec<ArrayRef> = vec![
+            Arc::new(StringArray::from(vec!["울산역 \"1\""])),
+            Arc::new(Int32Array::from(vec![-42])),
+            Arc::new(Float64Array::from(vec![0.1 + 0.2])),
+            Arc::new(Date32Array::from(vec![20_000])),
+            Arc::new(
+                TimestampMillisecondArray::from(vec![1_746_489_600_123])
+                    .with_timezone("Asia/Seoul"),
+            ),
+            Arc::new(BinaryArray::from(vec![&[0u8, 15, 255][..]])),
+        ];
+        for array in columns {
+            let CellValue::Text(text) = cell_value(&array, 0) else {
+                panic!("{} has a comparable value", array.data_type());
+            };
+            let schema = Schema::new(vec![Field::new("v", array.data_type().clone(), true)]);
+            let condition = FilterCondition {
+                column: ColumnId(0),
+                op: FilterOp::Eq,
+                value: text.clone(),
+            };
+            assert_eq!(check_condition(&schema, &condition), Ok(()), "{text}");
+            let parsed = parse_value(&text, array.data_type()).unwrap();
+            assert_eq!(parsed.as_ref(), array.as_ref(), "{text}");
+        }
+        let nulls: ArrayRef = Arc::new(Int32Array::from(vec![None]));
+        assert_eq!(cell_value(&nulls, 0), CellValue::Null);
+        assert_eq!(cell_value(&point(), 0), CellValue::NotComparable);
+    }
 
     fn tags() -> ArrayRef {
         let mut list = ListBuilder::new(StringBuilder::new());

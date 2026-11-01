@@ -392,7 +392,7 @@ impl StructureView {
         let section = |title: SharedString| {
             div()
                 .flex_none()
-                .h(theme::PANEL_HEADER_HEIGHT)
+                .h(theme::metrics().panel_header_height)
                 .px_2()
                 .flex()
                 .items_center()
@@ -485,7 +485,7 @@ impl StructureView {
                                     .min_h_0()
                                     .overflow_y_scroll()
                                     .px_2()
-                                    .font_family(theme::MONO_FONT)
+                                    .font_family(theme::mono_font())
                                     .child(table.sql.clone().unwrap_or_else(|| "-".into())),
                             ),
                     ),
@@ -559,7 +559,7 @@ impl Render for StructureView {
         let section = |title: SharedString| {
             div()
                 .flex_none()
-                .h(theme::PANEL_HEADER_HEIGHT)
+                .h(theme::metrics().panel_header_height)
                 .px_2()
                 .flex()
                 .items_center()

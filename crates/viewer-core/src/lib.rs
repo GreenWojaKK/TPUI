@@ -8,8 +8,10 @@ mod cache;
 mod condition;
 mod engine;
 mod error;
+mod filter;
 mod find;
 mod model;
+mod query;
 mod reader;
 mod row_index;
 mod row_view;
@@ -23,11 +25,16 @@ pub use condition::{
 };
 pub use engine::ViewerEngine;
 pub use error::ViewerError;
+pub use filter::{Filter, FilterClause, LogicOp};
 pub use find::{FindIndex, FindQuery, FindTask};
 pub use model::{
     BLOCK_ROWS, BlockRequest, ColumnId, DataSource, DatasetInfo, DecodedBlock, FilterCondition,
     FilterOp, RequestId, RowIds, SessionId, SortKey, ValueRequest, ValueSlice, ViewSpec,
     WindowRequest,
+};
+pub use query::{
+    Query, QueryError, format_condition, format_filter, format_query, format_sort, format_value,
+    op_text, parse_query, quote_name,
 };
 pub use row_index::RowGroupIndex;
 pub use row_view::{RowView, RowViewTask, TaskStep};

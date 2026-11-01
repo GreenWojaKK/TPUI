@@ -1,30 +1,40 @@
 use std::io;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::time::Duration;
 
 use gpui::{
-    App, ClickEvent, ClipboardItem, Context, Div, Entity, FocusHandle, PathPromptOptions, Pixels,
-    Point, SharedString, Stateful, Subscription, Window, actions, anchored, deferred, div,
-    prelude::*, relative,
+    App, ClickEvent, ClipboardItem, Context, Div, Entity, FocusHandle, Modifiers,
+    PathPromptOptions, Pixels, Point, SharedString, Stateful, Subscription, WeakEntity, Window,
+    actions, div, prelude::*, relative,
 };
 use viewer_core::{
-    ColumnId, DataSource, DatasetInfo, FilterCondition, RequestId, SessionId, SortKey,
-    ValueRequest, ViewSpec, ViewerError, WindowRequest, is_sortable, is_sqlite_file,
-    sqlite_objects,
+    ColumnId, DataSource, DatasetInfo, Filter, FilterCondition, FilterOp, LogicOp, Query,
+    RequestId, SessionId, SortKey, ValueRequest, ViewSpec, ViewerError, WindowRequest,
+    check_condition, filter_ops, format_condition, format_query, format_sort, format_value,
+    is_sortable, is_sqlite_file, op_text, parse_query, sqlite_objects,
 };
 
+use crate::query_log::{Entry, Origin, QueryLog};
 use crate::ui::explorer::{ExplorerEvent, ExplorerView};
-use crate::ui::filter_popover::{FilterPopover, FilterPopoverEvent, op_label};
 use crate::ui::find_bar::{FindBar, FindBarEvent, FindStatus};
-use crate::ui::grid::{GridEvent, GridLoadState, GridPosition, GridRows, GridView, HeaderMarks};
+use crate::ui::grid::{
+    GridEvent, GridLoadState, GridPosition, GridRows, GridView, HeaderMarks, MenuTarget,
+};
 use crate::ui::schema::SchemaView;
 use crate::ui::structure::{StructureEvent, StructureView};
+use crate::ui::style;
 use crate::ui::value::{ValueEvent, ValueView};
-use crate::ui::view_bar::{ViewBar, ViewBarAction};
+use crate::ui::view_bar::{SweepRange, ViewBar, ViewBarAction};
+use crate::value_detail::CellValue;
 use crate::worker::{
     FindRequest, StructureRequest, ValueOp, ValueOpKind, ViewId, ViewerWorker, WorkerEvent,
 };
 use viewer_ui::format::{format_bytes, format_count, format_quantity};
+use viewer_ui::inbox::Inbox;
+#[cfg(target_os = "windows")]
+use viewer_ui::input_window::{self, InputEvent, InputWindow};
+use viewer_ui::menu::{self, Menu, MenuEvent};
 use viewer_ui::tab_bar::{TabBar, TabBarState, TabLabel, TabStatus};
 use viewer_ui::theme;
 use viewer_ui::widgets::toggle_button;
@@ -39,7 +49,8 @@ actions!(
         CloseTab,
         Find,
         FindNext,
-        FindPrevious
+        FindPrevious,
+        CloseFind
     ]
 );
 
@@ -159,22 +170,64 @@ pub struct AppController {
     /// Last searched input. While the find bar is open, the grid highlights cells equal to it.
     find_query: Option<String>,
     latest_find: Option<RequestId>,
-    /// Open filter popover and its position (window coordinates).
-    filter_popover: Option<(Entity<FilterPopover>, Point<Pixels>, Subscription)>,
+    /// Open context menu and its position (window coordinates).
+    context_menu: Option<(Entity<Menu>, Point<Pixels>, Subscription)>,
+    /// A right-clicked cell whose menu opens once its value arrives: the value request, column and position.
+    pending_cell_menu: Option<(RequestId, usize, Point<Pixels>)>,
     /// Notice shown briefly in the filter and sort bar.
     notice: Option<SharedString>,
+    /// Conditions being swept in the filter and sort bar: where the drag started and where it is, in the order shown.
+    sweep: Option<(usize, usize)>,
     structure: Entity<StructureView>,
     /// Latest request the file structure view may apply.
     latest_structure: Option<RequestId>,
     /// Whether to follow the OS app color setting. Stops following once the theme button is pressed.
     follow_system: bool,
+    /// Message file other programs write queries to.
+    inbox: Option<Inbox>,
+    query_log: Option<QueryLog>,
+    /// A logged query waiting for its row view to finish: the row view request and the entry to complete.
+    pending_log: Option<(RequestId, Entry)>,
+    /// Last logged query text and its session, so that a click repeating it is not logged twice.
+    last_logged: Option<(SessionId, String)>,
+    /// A find from a query waits for the query's row view, since find works on finished row views.
+    search_after_view: bool,
+    /// Open query input window and its number, which tells its events from those of a window closed earlier.
+    #[cfg(target_os = "windows")]
+    input_window: Option<(u64, InputWindow)>,
+    #[cfg(target_os = "windows")]
+    input_windows_opened: u64,
+    /// Row view request whose result the query input window waits for.
+    input_request: Option<RequestId>,
     _subscriptions: Vec<Subscription>,
 }
+
+/// Hint above the text of the query input window.
+#[cfg(target_os = "windows")]
+const INPUT_HINT: &str = "find, filter and sort lines, such as: filter age >= 30 and status == \"active\". Ctrl+Enter applies.";
+/// How often the message file is checked.
+const INBOX_INTERVAL: Duration = Duration::from_millis(500);
 
 impl AppController {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
+
+        // Esc while sweeping conditions drops the sweep before any key binding sees it.
+        let this = cx.entity().downgrade();
+        let sweep_escape = cx.intercept_keystrokes(move |event, window, cx| {
+            if event.keystroke.key != "escape" {
+                return;
+            }
+            this.update(cx, |this, cx| {
+                if this.sweep.take().is_some() {
+                    cx.stop_active_drag(window);
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+            })
+            .ok();
+        });
 
         theme::set_mode(theme::Mode::from_appearance(window.appearance()));
         let appearance_events = cx.observe_window_appearance(window, |this, window, cx| {
@@ -205,8 +258,8 @@ impl AppController {
                 GridEvent::SelectionChanged => this.request_value(cx),
                 GridEvent::CopyRequested => this.value_op(Vec::new(), ValueOpKind::Copy),
                 GridEvent::SortRequested(column) => this.toggle_sort(*column, cx),
-                GridEvent::FilterRequested { column, anchor } => {
-                    this.open_filter(*column, *anchor, window, cx)
+                GridEvent::ContextMenu { target, position } => {
+                    this.open_context_menu(*target, *position, window, cx)
                 }
             },
         );
@@ -224,12 +277,13 @@ impl AppController {
                 },
             );
 
-        let find_bar = cx.new(FindBar::new);
+        let find_bar = cx.new(|_| FindBar::new());
         let find_events = cx.subscribe_in(
             &find_bar,
             window,
             |this, _, event: &FindBarEvent, window, cx| match event {
                 FindBarEvent::Search { backward } => this.search(*backward, cx),
+                FindBarEvent::Change => this.write_find(window, cx),
                 FindBarEvent::Close => this.close_find(window, cx),
             },
         );
@@ -247,11 +301,39 @@ impl AppController {
             ValueEvent::Retry => this.request_value(cx),
         });
 
+        let app_dir = viewer_ui::storage::app_dir("TPUI");
+        let inbox = app_dir.as_deref().and_then(|dir| Inbox::create(dir).ok());
+        let query_log = app_dir.map(|dir| QueryLog::new(dir.join("query-log")));
+        cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor().timer(INBOX_INTERVAL).await;
+                if this
+                    .update_in(cx, |this, window, cx| this.poll_inbox(window, cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+
+        // The message file and the input window go with the app.
+        let quit = cx.on_app_quit(|this, _| {
+            this.inbox = None;
+            #[cfg(target_os = "windows")]
+            {
+                this.input_window = None;
+            }
+            async {}
+        });
+
         let (worker, events) = ViewerWorker::spawn();
-        cx.spawn(async move |this, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             while let Ok(event) = events.recv().await {
                 if this
-                    .update(cx, |this, cx| this.handle_worker_event(event, cx))
+                    .update_in(cx, |this, window, cx| {
+                        this.handle_worker_event(event, window, cx)
+                    })
                     .is_err()
                 {
                     break;
@@ -278,18 +360,32 @@ impl AppController {
             find_open: false,
             find_query: None,
             latest_find: None,
-            filter_popover: None,
+            context_menu: None,
+            pending_cell_menu: None,
             notice: None,
+            sweep: None,
             structure,
             latest_structure: None,
             follow_system: true,
+            inbox,
+            query_log,
+            pending_log: None,
+            last_logged: None,
+            search_after_view: false,
+            #[cfg(target_os = "windows")]
+            input_window: None,
+            #[cfg(target_os = "windows")]
+            input_windows_opened: 0,
+            input_request: None,
             _subscriptions: vec![
+                sweep_escape,
                 appearance_events,
                 explorer_events,
                 grid_events,
                 value_events,
                 find_events,
                 structure_events,
+                quit,
             ],
         }
     }
@@ -429,12 +525,13 @@ impl AppController {
     fn show_active_tab(&mut self, cx: &mut Context<Self>) {
         self.worker.cancel_window();
         self.latest_request = None;
-        // Find results and the filter popover belong to the previous tab.
+        // Find results and context menus belong to the previous tab.
         self.worker.cancel_find();
         self.latest_find = None;
         self.find_bar
             .update(cx, |bar, cx| bar.set_status(FindStatus::Idle, cx));
-        self.filter_popover = None;
+        self.context_menu = None;
+        self.pending_cell_menu = None;
         self.notice = None;
         if let Some(ix) = self.active {
             self.tab_bar.scroll_to_tab(ix);
@@ -717,91 +814,634 @@ impl AppController {
                 descending: false,
             }),
         };
-        self.apply_view(spec, cx);
+        self.apply_click(spec, cx);
     }
 
-    fn open_filter(
-        &mut self,
-        column: usize,
-        anchor: Point<Pixels>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    /// Sets the sort of the active tab: ascending, descending, or none.
+    fn set_sort(&mut self, column: usize, descending: Option<bool>, cx: &mut Context<Self>) {
+        let Some(tab) = self.active_tab() else {
+            return;
+        };
+        let mut spec = tab.view.target().clone();
+        spec.sort = descending.map(|descending| SortKey {
+            column: ColumnId(column),
+            descending,
+        });
+        self.apply_click(spec, cx);
+    }
+
+    /// Adds a condition as a click does (see [`Filter::add`]); `or` asks to join the column's conditions with `or`.
+    /// Shows the reason when the value does not parse as the column type.
+    fn add_filter(&mut self, condition: FilterCondition, or: bool, cx: &mut Context<Self>) {
         let Some(tab) = self.active_tab() else {
             return;
         };
         let TabState::Ready(info) = &tab.state else {
             return;
         };
-        let schema = info.schema.clone();
-        let existing = tab
-            .view
-            .target()
-            .filters
-            .iter()
-            .find(|condition| condition.column.0 == column)
-            .cloned();
-        let popover = cx.new(|cx| FilterPopover::new(schema, ColumnId(column), existing, cx));
-        popover.update(cx, |popover, cx| popover.focus(window, cx));
-        let subscription = cx.subscribe_in(
-            &popover,
-            window,
-            |this, _, event: &FilterPopoverEvent, window, cx| {
-                match event {
-                    FilterPopoverEvent::Apply(condition) => this.set_filter(condition.clone(), cx),
-                    FilterPopoverEvent::Remove(column) => this.remove_filter(*column, cx),
-                    FilterPopoverEvent::Close => {}
+        if let Err(message) = check_condition(&info.schema, &condition) {
+            self.notice = Some(message.into());
+            cx.notify();
+            return;
+        }
+        let mut spec = tab.view.target().clone();
+        spec.filter.add(condition, or);
+        self.apply_click(spec, cx);
+    }
+
+    fn remove_column_filters(&mut self, column: ColumnId, cx: &mut Context<Self>) {
+        let Some(tab) = self.active_tab() else {
+            return;
+        };
+        let mut spec = tab.view.target().clone();
+        spec.filter.retain(|condition| condition.column != column);
+        self.apply_click(spec, cx);
+    }
+
+    // ----- Context menus -----
+
+    fn open_context_menu(
+        &mut self,
+        target: MenuTarget,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.context_menu = None;
+        self.pending_cell_menu = None;
+        match target {
+            MenuTarget::Header(column) => {
+                if let Some(menu) = self.header_menu(column, cx) {
+                    self.show_menu(menu, position, window, cx);
                 }
-                this.close_filter(window, cx);
-            },
-        );
-        self.filter_popover = Some((popover, anchor, subscription));
+            }
+            // Selecting the cell already requested its value. The menu opens once the value arrives as filter input.
+            MenuTarget::Cell { column, .. } => {
+                if let Some(request) = self.latest_value {
+                    self.pending_cell_menu = Some((request, column, position));
+                    self.value_op(Vec::new(), ValueOpKind::Cell);
+                }
+            }
+        }
         cx.notify();
     }
 
-    fn close_filter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.filter_popover.take().is_some() {
-            self.grid.update(cx, |grid, cx| grid.focus(window, cx));
+    fn show_menu(
+        &mut self,
+        menu: Entity<Menu>,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if menu.read(cx).is_empty() {
+            return;
+        }
+        menu.update(cx, |menu, cx| menu.focus(window, cx));
+        let subscription = cx.subscribe_in(
+            &menu,
+            window,
+            |this, _, MenuEvent::Dismissed, window, cx| {
+                if this.context_menu.take().is_some() {
+                    this.grid.update(cx, |grid, cx| grid.focus(window, cx));
+                    cx.notify();
+                }
+            },
+        );
+        self.context_menu = Some((menu, position, subscription));
+        cx.notify();
+    }
+
+    /// Sort and null filters of a column, and removal of its conditions.
+    fn header_menu(&self, column: usize, cx: &mut Context<Self>) -> Option<Entity<Menu>> {
+        let tab = self.active_tab()?;
+        let TabState::Ready(info) = &tab.state else {
+            return None;
+        };
+        let data_type = info.schema.fields()[column].data_type().clone();
+        let spec = tab.view.target();
+        let sorted = spec
+            .sort
+            .filter(|sort| sort.column.0 == column)
+            .map(|sort| sort.descending);
+        let has_filters = spec
+            .filter
+            .conditions()
+            .iter()
+            .any(|condition| condition.column.0 == column);
+        let ops = filter_ops(&data_type);
+        let filter = Rc::new(spec.filter.clone());
+        let this = cx.entity().downgrade();
+        Some(cx.new(|cx| {
+            let mut menu = Menu::new(cx);
+            if is_sortable(&data_type) {
+                for (label, descending) in [("Sort Ascending", false), ("Sort Descending", true)] {
+                    let this = this.clone();
+                    menu = menu.item(label, move |_, cx| {
+                        this.update(cx, |this, cx| this.set_sort(column, Some(descending), cx))
+                            .ok();
+                    });
+                }
+            } else {
+                menu = menu.disabled_item("Sort (not sortable)");
+            }
+            if sorted.is_some() {
+                let this = this.clone();
+                menu = menu.item("Clear Sort", move |_, cx| {
+                    this.update(cx, |this, cx| this.set_sort(column, None, cx))
+                        .ok();
+                });
+            }
+            menu = null_items(menu.separator(), &filter, ColumnId(column), ops, &this);
+            if has_filters {
+                menu = menu.separator().item("Remove Conditions on This Column", {
+                    let this = this.clone();
+                    move |_, cx| {
+                        this.update(cx, |this, cx| {
+                            this.remove_column_filters(ColumnId(column), cx)
+                        })
+                        .ok();
+                    }
+                });
+            }
+            menu.separator().item("Write Query…", move |window, cx| {
+                this.update(cx, |this, cx| this.write_query(window, cx))
+                    .ok();
+            })
+        }))
+    }
+
+    /// Conditions built from a cell's value, finding the value and copying it.
+    fn cell_menu(
+        &self,
+        column: usize,
+        value: CellValue,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<Menu>> {
+        let tab = self.active_tab()?;
+        let TabState::Ready(info) = &tab.state else {
+            return None;
+        };
+        let ops = filter_ops(info.schema.fields()[column].data_type());
+        let schema = info.schema.clone();
+        let filter = Rc::new(tab.view.target().filter.clone());
+        let this = cx.entity().downgrade();
+        let finder = cx.entity().downgrade();
+        let copier = cx.entity().downgrade();
+        let writer = cx.entity().downgrade();
+        Some(cx.new(|cx| {
+            let mut menu = Menu::new(cx);
+            match &value {
+                CellValue::Null => {
+                    menu = null_items(menu, &filter, ColumnId(column), ops, &this);
+                }
+                CellValue::Text(text) => {
+                    let shown: Rc<str> =
+                        menu_value(&format_value(&schema, ColumnId(column), text)).into();
+                    for op in [
+                        FilterOp::Eq,
+                        FilterOp::NotEq,
+                        FilterOp::Gt,
+                        FilterOp::GtEq,
+                        FilterOp::Lt,
+                        FilterOp::LtEq,
+                    ] {
+                        if ops.contains(&op) {
+                            let shown = shown.clone();
+                            menu = condition_item(
+                                menu,
+                                &filter,
+                                FilterCondition {
+                                    column: ColumnId(column),
+                                    op,
+                                    value: text.clone(),
+                                },
+                                move |op, or| {
+                                    let join = if or { "or " } else { "" };
+                                    format!("{join}{} {shown}", op_text(op))
+                                },
+                                &this,
+                            );
+                        }
+                    }
+                    menu = menu.note(MODIFIER_NOTE);
+                    let text = text.clone();
+                    menu = menu
+                        .separator()
+                        .item(format!("Find {shown}"), move |window, cx| {
+                            finder
+                                .update(cx, |this, cx| {
+                                    this.find_value(text.clone(), window, cx);
+                                    this.record(Origin::Click, cx);
+                                })
+                                .ok();
+                        });
+                }
+                CellValue::NotComparable => {
+                    menu = menu.disabled_item("No conditions for nested values");
+                }
+            }
+            menu.separator()
+                .item("Copy Value", move |_, cx| {
+                    copier
+                        .update(cx, |this, _| this.value_op(Vec::new(), ValueOpKind::Copy))
+                        .ok();
+                })
+                .item("Write Query…", move |window, cx| {
+                    writer
+                        .update(cx, |this, cx| this.write_query(window, cx))
+                        .ok();
+                })
+        }))
+    }
+
+    /// Applies conditions changed with the mouse and logs the resulting query.
+    fn apply_click(&mut self, spec: ViewSpec, cx: &mut Context<Self>) {
+        self.apply_view(spec, cx);
+        self.record(Origin::Click, cx);
+    }
+
+    // ----- Queries from text -----
+
+    /// Applies a query text from the input window or the message file. The text states the whole view: conditions,
+    /// sort and find value. A text that does not parse changes nothing, and the reason is shown and logged.
+    fn apply_message(
+        &mut self,
+        text: String,
+        origin: Origin,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let schema = match self.active_tab().map(|tab| &tab.state) {
+            Some(TabState::Ready(info)) => info.schema.clone(),
+            Some(_) => return self.report_message("The file is still opening.", cx),
+            None => return self.report_message("Open a file before sending a query.", cx),
+        };
+        let query = match parse_query(&schema, &text) {
+            Ok(query) => query,
+            Err(error) => {
+                let message = error.to_string();
+                if let Some(tab) = self.active_tab() {
+                    let entry = Entry {
+                        source: tab.source.path().to_path_buf(),
+                        table: tab.source.table().map(str::to_string),
+                        origin,
+                        query: text.trim().to_string(),
+                        rows: None,
+                        error: Some(message.clone()),
+                    };
+                    self.write_log(&entry);
+                }
+                self.report_message(&message, cx);
+                return;
+            }
+        };
+        self.set_mode(CenterMode::Data, cx);
+        self.apply_view(query.view, cx);
+        match query.find {
+            Some(value) => self.find_value(value, window, cx),
+            None if self.find_open => self.close_find(window, cx),
+            None => {}
+        }
+        self.record(origin, cx);
+    }
+
+    /// Shows a problem with a query text in the filter and sort bar and in the input window.
+    fn report_message(&mut self, message: &str, cx: &mut Context<Self>) {
+        self.notice = Some(message.to_string().into());
+        self.set_input_status(message);
+        cx.notify();
+    }
+
+    /// Logs the active tab's query after a change. A query that starts a row view computation is logged with its
+    /// row count when the computation ends.
+    fn record(&mut self, origin: Origin, cx: &mut Context<Self>) {
+        let Some(query) = self.query_text() else {
+            return;
+        };
+        let Some(tab) = self.active_tab() else {
+            return;
+        };
+        let session = tab.session;
+        let pending = tab.view.pending.as_ref().map(|pending| pending.request);
+        let rows = tab.view.rows;
+        let entry = Entry {
+            source: tab.source.path().to_path_buf(),
+            table: tab.source.table().map(str::to_string),
+            origin,
+            query: query.clone(),
+            rows: None,
+            error: None,
+        };
+        if origin == Origin::Click && self.last_logged.as_ref() == Some(&(session, query.clone())) {
+            return;
+        }
+        self.last_logged = Some((session, query));
+        let waiting = origin == Origin::Window;
+        match pending {
+            Some(request) => {
+                self.pending_log = Some((request, entry));
+                if waiting {
+                    self.input_request = Some(request);
+                    self.set_input_status("Applying…");
+                }
+            }
+            None => {
+                self.write_log(&Entry {
+                    rows: Some(rows),
+                    ..entry
+                });
+                if waiting {
+                    self.input_request = None;
+                    let status = self.rows_status(session, rows);
+                    self.set_input_status(&status);
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    /// Completes the log entry and the input window status of a finished row view.
+    fn finish_view_log(
+        &mut self,
+        session: SessionId,
+        request: RequestId,
+        result: Result<u64, String>,
+    ) {
+        if let Some((pending, _)) = &self.pending_log
+            && *pending == request
+            && let Some((_, entry)) = self.pending_log.take()
+        {
+            let (rows, error) = match &result {
+                Ok(rows) => (Some(*rows), None),
+                Err(message) => (None, Some(message.clone())),
+            };
+            self.write_log(&Entry {
+                rows,
+                error,
+                ..entry
+            });
+        }
+        if self.input_request == Some(request) {
+            self.input_request = None;
+            let status = match result {
+                Ok(rows) => self.rows_status(session, rows),
+                Err(message) => message,
+            };
+            self.set_input_status(&status);
+        }
+    }
+
+    fn write_log(&mut self, entry: &Entry) {
+        if let Some(log) = &self.query_log
+            && let Err(error) = log.append(entry)
+        {
+            self.notice = Some(format!("Cannot write the query log: {error}").into());
+        }
+    }
+
+    /// `Applied · 1,081 of 280,797 rows`.
+    fn rows_status(&self, session: SessionId, rows: u64) -> String {
+        let total = self.tabs.iter().find_map(|tab| match &tab.state {
+            TabState::Ready(info) if tab.session == session => Some(info.total_rows),
+            _ => None,
+        });
+        match total {
+            Some(total) => format!(
+                "Applied · {} of {}",
+                format_count(rows),
+                format_quantity(total, "row", "rows")
+            ),
+            None => format!("Applied · {}", format_quantity(rows, "row", "rows")),
+        }
+    }
+
+    fn poll_inbox(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(inbox) = &mut self.inbox else {
+            return;
+        };
+        match inbox.poll() {
+            None => {}
+            Some(Ok(text)) => self.apply_message(text, Origin::File, window, cx),
+            Some(Err(error)) => {
+                self.notice = Some(format!("Cannot read the message file: {error}").into());
+                cx.notify();
+            }
+        }
+    }
+
+    /// Opens the query input window with the active tab's query, or brings it to the front. Systems without the
+    /// input window are pointed to the message file.
+    fn write_query(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.query_text().unwrap_or_default();
+        self.open_input(text, window, cx);
+    }
+
+    /// Opens the query window to find a value: the conditions first, then a `find` line with the current value, or
+    /// an empty one, where the cursor waits.
+    fn write_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(TabState::Ready(info)) = self.active_tab().map(|tab| &tab.state) else {
+            return self.write_query(window, cx);
+        };
+        let view = self.active_tab().map(|tab| tab.view.target().clone());
+        let conditions = format_query(
+            &info.schema,
+            &Query {
+                view: view.unwrap_or_default(),
+                find: None,
+            },
+        );
+        let find = match self.find_open.then(|| self.find_query.clone()).flatten() {
+            Some(value) => format_query(
+                &info.schema,
+                &Query {
+                    view: ViewSpec::default(),
+                    find: Some(value),
+                },
+            ),
+            None => "find ".to_string(),
+        };
+        let text = if conditions.is_empty() {
+            find
+        } else {
+            format!("{conditions}\n{find}")
+        };
+        self.open_input(text, window, cx);
+    }
+
+    fn open_input(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(target_os = "windows")]
+        {
+            if let Some((_, input)) = &self.input_window {
+                input.set_text(&text);
+                input.set_status("");
+                input.show();
+                return;
+            }
+            let owner = input_window::window_handle(window);
+            match InputWindow::open(owner, "Query", INPUT_HINT, &text) {
+                Ok((input, events)) => {
+                    self.input_windows_opened += 1;
+                    let number = self.input_windows_opened;
+                    self.input_window = Some((number, input));
+                    cx.spawn_in(window, async move |this, cx| {
+                        while let Ok(event) = events.recv().await {
+                            let closed =
+                                matches!(event, InputEvent::Closed | InputEvent::Failed(_));
+                            let alive = this.update_in(cx, |this, window, cx| match event {
+                                InputEvent::Submit(text) => {
+                                    this.apply_message(text, Origin::Window, window, cx)
+                                }
+                                InputEvent::Failed(error) => {
+                                    this.notice = Some(
+                                        format!("Cannot open the query window: {error}").into(),
+                                    );
+                                    this.input_window = None;
+                                    cx.notify();
+                                }
+                                InputEvent::Closed => {
+                                    if this
+                                        .input_window
+                                        .as_ref()
+                                        .is_some_and(|(open, _)| *open == number)
+                                    {
+                                        this.input_window = None;
+                                        this.input_request = None;
+                                    }
+                                }
+                            });
+                            if alive.is_err() || closed {
+                                break;
+                            }
+                        }
+                    })
+                    .detach();
+                }
+                Err(error) => {
+                    self.notice = Some(format!("Cannot open the query window: {error}").into());
+                    cx.notify();
+                }
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = (window, text);
+            self.notice = Some(match &self.inbox {
+                Some(inbox) => format!("Write the query to {}", inbox.path().display()).into(),
+                None => "No message file is available.".into(),
+            });
             cx.notify();
         }
     }
 
-    /// Changes or adds the filter condition of a column. One condition per column.
-    fn set_filter(&mut self, condition: FilterCondition, cx: &mut Context<Self>) {
-        let Some(tab) = self.active_tab() else {
-            return;
-        };
-        let mut spec = tab.view.target().clone();
-        match spec
-            .filters
-            .iter_mut()
-            .find(|existing| existing.column == condition.column)
-        {
-            Some(existing) => *existing = condition,
-            None => spec.filters.push(condition),
+    fn set_input_status(&self, status: &str) {
+        #[cfg(target_os = "windows")]
+        if let Some((_, input)) = &self.input_window {
+            input.set_status(status);
         }
-        self.apply_view(spec, cx);
+        #[cfg(not(target_os = "windows"))]
+        let _ = status;
     }
 
-    fn remove_filter(&mut self, column: ColumnId, cx: &mut Context<Self>) {
-        let Some(tab) = self.active_tab() else {
-            return;
+    /// Query actions of the toolbar.
+    fn open_query_menu(
+        &mut self,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let this = cx.entity().downgrade();
+        let inbox = self.inbox.as_ref().map(|inbox| inbox.path().to_path_buf());
+        let log_dir = self.query_log.as_ref().map(|log| log.dir().to_path_buf());
+        let has_query = self.query_text().is_some();
+        let menu = cx.new(|cx| {
+            let writer = this.clone();
+            let mut menu = Menu::new(cx).item("Write Query…", move |window, cx| {
+                writer
+                    .update(cx, |this, cx| this.write_query(window, cx))
+                    .ok();
+            });
+            if has_query {
+                let copier = this.clone();
+                menu = menu.item("Copy Query", move |_, cx| {
+                    copier
+                        .update(cx, |this, cx| {
+                            let text = this.query_text().unwrap_or_default();
+                            cx.write_to_clipboard(ClipboardItem::new_string(text));
+                        })
+                        .ok();
+                });
+            }
+            menu = menu.separator();
+            if let Some(path) = inbox {
+                menu = menu.item("Copy Message File Path", move |_, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(path.display().to_string()));
+                });
+            }
+            if let Some(dir) = log_dir {
+                menu = menu.item("Open Query Log Folder", move |_, cx| {
+                    let _ = std::fs::create_dir_all(&dir);
+                    cx.open_with_system(&dir);
+                });
+            }
+            menu
+        });
+        self.show_menu(menu, position, window, cx);
+    }
+
+    /// The active tab's query as text: its target conditions and, while the find bar is open, the find value.
+    fn query_text(&self) -> Option<String> {
+        let tab = self.active_tab()?;
+        let TabState::Ready(info) = &tab.state else {
+            return None;
         };
-        let mut spec = tab.view.target().clone();
-        spec.filters.retain(|condition| condition.column != column);
-        self.apply_view(spec, cx);
+        let query = Query {
+            view: tab.view.target().clone(),
+            find: self.find_open.then(|| self.find_query.clone()).flatten(),
+        };
+        Some(format_query(&info.schema, &query))
     }
 
-    fn view_bar_action(&mut self, action: ViewBarAction, cx: &mut Context<Self>) {
+    fn view_bar_action(
+        &mut self,
+        action: ViewBarAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(tab) = self.active_tab() else {
             return;
         };
         let mut spec = tab.view.target().clone();
         match action {
-            ViewBarAction::RemoveFilter(column) => {
-                spec.filters.retain(|condition| condition.column != column)
+            ViewBarAction::RemoveFilter { clause, ix } => {
+                spec.filter.remove(clause, ix);
             }
+            ViewBarAction::ChooseJoin {
+                clause,
+                ix,
+                position,
+            } => return self.open_logic_menu(clause, ix, position, window, cx),
             ViewBarAction::RemoveSort => spec.sort = None,
+            ViewBarAction::CopyQuery => {
+                let text = self.query_text().unwrap_or_default();
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+                return;
+            }
+            ViewBarAction::Sweep { from, to } => {
+                if self.sweep != Some((from, to)) {
+                    self.sweep = Some((from, to));
+                    cx.notify();
+                }
+                return;
+            }
+            ViewBarAction::EndSweep => {
+                let Some((from, to)) = self.sweep.take() else {
+                    return;
+                };
+                cx.notify();
+                if !spec.filter.join_range(from, to) {
+                    return;
+                }
+            }
             ViewBarAction::ClearAll => spec = ViewSpec::default(),
             ViewBarAction::Cancel => spec = tab.view.applied.clone(),
             ViewBarAction::Retry => match &tab.view.failed {
@@ -809,7 +1449,55 @@ impl AppController {
                 None => return,
             },
         }
-        self.apply_view(spec, cx);
+        self.apply_click(spec, cx);
+    }
+
+    /// The choice of `and` and `or` after condition `ix` of clause `clause`. Inside a clause `and` splits it there;
+    /// between two clauses on one column `or` merges them. Between columns only `and` can be chosen.
+    fn open_logic_menu(
+        &mut self,
+        clause: usize,
+        ix: usize,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(tab) = self.active_tab() else {
+            return;
+        };
+        let Some((current, changeable)) = tab.view.target().filter.join_after(clause, ix) else {
+            return;
+        };
+        let this = cx.entity().downgrade();
+        let menu = cx.new(|cx| {
+            let mut menu = Menu::new(cx);
+            for op in LogicOp::ALL {
+                if op == current {
+                    menu = menu.item(format!("✓ {}", op.text()), |_, _| {});
+                } else if changeable {
+                    let this = this.clone();
+                    menu = menu.item(format!("   {}", op.text()), move |_, cx| {
+                        this.update(cx, |this, cx| this.set_join(clause, ix, op, cx))
+                            .ok();
+                    });
+                } else {
+                    menu = menu
+                        .disabled_item(format!("   {}", op.text()))
+                        .note("or joins conditions on one column only");
+                }
+            }
+            menu
+        });
+        self.show_menu(menu, position, window, cx);
+    }
+
+    fn set_join(&mut self, clause: usize, ix: usize, op: LogicOp, cx: &mut Context<Self>) {
+        let Some(tab) = self.active_tab() else {
+            return;
+        };
+        let mut spec = tab.view.target().clone();
+        spec.filter.set_join(clause, ix, op);
+        self.apply_click(spec, cx);
     }
 
     // ----- File structure -----
@@ -823,7 +1511,8 @@ impl AppController {
             return;
         }
         self.tabs[ix].mode = mode;
-        self.filter_popover = None;
+        self.context_menu = None;
+        self.pending_cell_menu = None;
         if mode == CenterMode::Structure {
             self.request_structure(None, cx);
         }
@@ -863,17 +1552,40 @@ impl AppController {
 
     // ----- Find -----
 
+    /// `Ctrl+F`: the find bar has no input, so the query window opens with a `find` line to write the value in.
     fn open_find(&mut self, _: &Find, window: &mut Window, cx: &mut Context<Self>) {
         if self.active_tab().is_none() {
             return;
         }
         // Find works in the data grid.
         self.set_mode(CenterMode::Data, cx);
-        if !self.find_open {
-            self.find_open = true;
-            cx.notify();
+        self.write_find(window, cx);
+    }
+
+    fn close_find_action(&mut self, _: &CloseFind, window: &mut Window, cx: &mut Context<Self>) {
+        if self.find_open {
+            self.close_find(window, cx);
         }
-        self.find_bar.update(cx, |bar, cx| bar.focus(window, cx));
+    }
+
+    /// Opens the find bar with `text` and finds its next match from the selected cell.
+    fn find_value(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_mode(CenterMode::Data, cx);
+        self.find_open = true;
+        self.find_bar
+            .update(cx, |bar, cx| bar.set_query(text.clone(), cx));
+        // Find works on finished row views; a find sent with new conditions runs once they are applied.
+        if self
+            .active_tab()
+            .is_some_and(|tab| tab.view.pending.is_some())
+        {
+            self.find_query = Some(text);
+            self.search_after_view = true;
+        } else {
+            self.search(false, cx);
+        }
+        self.grid.update(cx, |grid, cx| grid.focus(window, cx));
+        cx.notify();
     }
 
     fn find_next(&mut self, _: &FindNext, _window: &mut Window, cx: &mut Context<Self>) {
@@ -904,7 +1616,7 @@ impl AppController {
 
     /// Finds the next (previous) match from the selected cell. If the input changed, updates the grid highlight too.
     fn search(&mut self, backward: bool, cx: &mut Context<Self>) {
-        let query = self.find_bar.read(cx).query(cx);
+        let query = self.find_bar.read(cx).query().to_string();
         if query.is_empty() {
             return;
         }
@@ -955,7 +1667,12 @@ impl AppController {
             && self.latest_find == Some(request)
     }
 
-    fn handle_worker_event(&mut self, event: WorkerEvent, cx: &mut Context<Self>) {
+    fn handle_worker_event(
+        &mut self,
+        event: WorkerEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         match event {
             WorkerEvent::Opened { session, result } => {
                 // Drop responses for previous sessions of closed or reopened tabs.
@@ -1038,7 +1755,11 @@ impl AppController {
                 tab.grid_position = position.at_first_row();
                 if self.active == Some(ix) {
                     self.show_active_tab(cx);
+                    if std::mem::take(&mut self.search_after_view) {
+                        self.search(false, cx);
+                    }
                 }
+                self.finish_view_log(session, request, Ok(rows));
                 cx.notify();
             }
             WorkerEvent::ViewFailed {
@@ -1064,7 +1785,9 @@ impl AppController {
                     }
                     other => read_error_message(other),
                 };
-                tab.view.failed = Some((message.into(), pending.spec));
+                tab.view.failed = Some((message.clone().into(), pending.spec));
+                self.search_after_view = false;
+                self.finish_view_log(session, request, Err(message));
                 cx.notify();
             }
             WorkerEvent::FindProgress {
@@ -1216,6 +1939,21 @@ impl AppController {
                     cx.write_to_clipboard(ClipboardItem::new_string(text));
                 }
             }
+            WorkerEvent::ValueCell {
+                session,
+                request,
+                value,
+            } => {
+                if self.is_latest_value(session, request)
+                    && let Some((pending, column, position)) = self.pending_cell_menu
+                    && pending == request
+                {
+                    self.pending_cell_menu = None;
+                    if let Some(menu) = self.cell_menu(column, value, cx) {
+                        self.show_menu(menu, position, window, cx);
+                    }
+                }
+            }
             WorkerEvent::ValueFailed {
                 session,
                 request,
@@ -1234,7 +1972,7 @@ impl AppController {
         let title = self.active_tab().map(Tab::title).unwrap_or_default();
         div()
             .flex_none()
-            .h(theme::TOOLBAR_HEIGHT)
+            .h(style::TOOLBAR_HEIGHT)
             .px_2()
             .flex()
             .items_center()
@@ -1252,6 +1990,11 @@ impl AppController {
                     |this, _: &ClickEvent, window, cx| this.open_folder(&OpenFolder, window, cx),
                 )),
             )
+            .child(toolbar_button("query", "Query").on_click(cx.listener(
+                |this, event: &ClickEvent, window, cx| {
+                    this.open_query_menu(event.position(), window, cx)
+                },
+            )))
             .child(div().flex_1())
             .child(div().min_w_0().truncate().child(title))
             .child(
@@ -1319,21 +2062,46 @@ impl AppController {
         };
         let view_bar = match &tab.state {
             TabState::Ready(info) if tab.mode == CenterMode::Data => {
-                let view_action = cx.listener(|this, action: &ViewBarAction, _, cx| {
-                    this.view_bar_action(*action, cx)
+                let view_action = cx.listener(|this, action: &ViewBarAction, window, cx| {
+                    this.view_bar_action(action.clone(), window, cx)
+                });
+                let filter = &tab.view.target().filter;
+                let sweep = self.sweep.map(|(from, to)| {
+                    let joinable = filter.can_join_range(from, to);
+                    let hint: SharedString = if from == to {
+                        "Drag across conditions on one column to join them with or".into()
+                    } else if joinable {
+                        format!(
+                            "Release to join {} conditions with or",
+                            from.abs_diff(to) + 1
+                        )
+                        .into()
+                    } else {
+                        "or joins conditions on one column only".into()
+                    };
+                    (SweepRange { from, to, joinable }, hint)
                 });
                 let bar = ViewBar {
-                    filters: tab
+                    sweep,
+                    filter: tab
                         .view
                         .target()
-                        .filters
+                        .filter
+                        .clauses()
                         .iter()
-                        .map(|condition| (condition.column, filter_label(info, condition)))
+                        .map(|clause| {
+                            clause
+                                .conditions()
+                                .iter()
+                                .map(|condition| format_condition(&info.schema, condition).into())
+                                .collect()
+                        })
                         .collect(),
-                    sort: tab.view.target().sort.map(|sort| {
-                        let name = info.schema.fields()[sort.column.0].name();
-                        format!("{name} {}", if sort.descending { "▼" } else { "▲" }).into()
-                    }),
+                    sort: tab
+                        .view
+                        .target()
+                        .sort
+                        .map(|sort| format_sort(&info.schema, sort).into()),
                     pending: tab.view.pending.as_ref().map(|pending| pending.progress),
                     failed: tab.view.failed.as_ref().map(|(message, _)| message.clone()),
                     notice: self.notice.clone(),
@@ -1356,7 +2124,7 @@ impl AppController {
         let mode_toggle = matches!(tab.state, TabState::Ready(_)).then(|| {
             div()
                 .flex_none()
-                .h(theme::PANEL_HEADER_HEIGHT)
+                .h(theme::metrics().panel_header_height)
                 .px_2()
                 .flex()
                 .items_center()
@@ -1411,7 +2179,7 @@ impl AppController {
             Some(TabState::Opening) => "Opening",
             Some(TabState::Ready(info)) => {
                 let view = &self.active_tab().expect("active tab").view;
-                if view.applied.filters.is_empty() {
+                if view.applied.filter.is_empty() {
                     summary.push(format_quantity(info.total_rows, "row", "rows"));
                 } else {
                     summary.push(format!(
@@ -1455,7 +2223,7 @@ impl AppController {
 
         div()
             .flex_none()
-            .h(theme::STATUS_BAR_HEIGHT)
+            .h(style::STATUS_BAR_HEIGHT)
             .px_2()
             .flex()
             .items_center()
@@ -1483,6 +2251,10 @@ impl AppController {
 
 impl Render for AppController {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // A sweep released away from the conditions ends without a drop.
+        if self.sweep.is_some() && !cx.has_active_drag() {
+            self.sweep = None;
+        }
         let schema = self.active_tab().map(|tab| tab.schema.clone());
         div()
             .track_focus(&self.focus_handle)
@@ -1492,13 +2264,14 @@ impl Render for AppController {
             .on_action(cx.listener(Self::previous_tab))
             .on_action(cx.listener(Self::close_active_tab))
             .on_action(cx.listener(Self::open_find))
+            .on_action(cx.listener(Self::close_find_action))
             .on_action(cx.listener(Self::find_next))
             .on_action(cx.listener(Self::find_previous))
             .size_full()
             .flex()
             .flex_col()
             .bg(theme::background())
-            .font_family(theme::UI_FONT)
+            .font_family(theme::ui_font())
             .text_color(theme::text())
             .text_sm()
             .child(self.render_toolbar(cx))
@@ -1510,7 +2283,7 @@ impl Render for AppController {
                     .child(
                         panel("Explorer")
                             .flex_none()
-                            .w(theme::EXPLORER_WIDTH)
+                            .w(style::EXPLORER_WIDTH)
                             .border_r_1()
                             .child(div().flex_1().min_h_0().child(self.explorer.clone())),
                     )
@@ -1518,7 +2291,7 @@ impl Render for AppController {
                     .child(
                         div()
                             .flex_none()
-                            .w(theme::SIDE_PANEL_WIDTH)
+                            .w(style::SIDE_PANEL_WIDTH)
                             .flex()
                             .flex_col()
                             .border_l_1()
@@ -1538,15 +2311,11 @@ impl Render for AppController {
                     ),
             )
             .child(self.render_status_bar(cx))
-            .children(self.filter_popover.as_ref().map(|(popover, anchor, _)| {
-                deferred(
-                    anchored()
-                        .position(*anchor)
-                        .snap_to_window_with_margin(theme::GRID_CELL_PADDING)
-                        .child(popover.clone()),
-                )
-                .with_priority(1)
-            }))
+            .children(
+                self.context_menu
+                    .as_ref()
+                    .map(|(menu, position, _)| menu::overlay(menu, *position)),
+            )
     }
 }
 
@@ -1555,21 +2324,102 @@ fn header_marks(spec: &ViewSpec) -> HeaderMarks {
     HeaderMarks {
         sort: spec.sort.map(|sort| (sort.column.0, sort.descending)),
         filtered: spec
-            .filters
+            .filter
+            .conditions()
             .iter()
             .map(|condition| condition.column.0)
             .collect(),
     }
 }
 
-/// Condition shown in the filter and sort bar, e.g. `stop_name contains "Station"`.
-fn filter_label(info: &DatasetInfo, condition: &FilterCondition) -> SharedString {
-    let name = info.schema.fields()[condition.column.0].name();
-    let op = op_label(condition.op);
-    if condition.op.takes_value() {
-        format!("{name} {op} \"{}\"", condition.value).into()
+/// What Shift and Alt do on the menu items that add conditions.
+const MODIFIER_NOTE: &str = "Shift: or · Alt: not";
+
+/// A menu item adding a condition. A plain click adds it as [`Filter::add`] does, Shift+click joins its column's
+/// conditions with `or`, and Alt+click adds the opposite condition (`!=` for `==`). The label, from
+/// `label(op, or)`, shows what a click with the keys held adds, or a check mark when the condition is already
+/// there.
+fn condition_item(
+    menu: Menu,
+    filter: &Rc<Filter>,
+    condition: FilterCondition,
+    label: impl Fn(FilterOp, bool) -> String + 'static,
+    this: &WeakEntity<AppController>,
+) -> Menu {
+    fn chosen(condition: &FilterCondition, modifiers: Modifiers) -> FilterCondition {
+        let op = match modifiers.alt {
+            true => condition.op.opposite().unwrap_or(condition.op),
+            false => condition.op,
+        };
+        FilterCondition {
+            op,
+            ..condition.clone()
+        }
+    }
+    let (filter, shown, this) = (filter.clone(), condition.clone(), this.clone());
+    menu.item_with_modifiers(
+        move |modifiers| {
+            let condition = chosen(&shown, modifiers);
+            if !filter.adds(&condition, modifiers.shift) {
+                return format!("✓ {}", label(condition.op, false)).into();
+            }
+            let or = filter.or_clause(&condition, modifiers.shift).is_some();
+            label(condition.op, or).into()
+        },
+        move |modifiers, _, cx| {
+            let condition = chosen(&condition, modifiers);
+            this.update(cx, |this, cx| {
+                this.add_filter(condition, modifiers.shift, cx)
+            })
+            .ok();
+        },
+    )
+}
+
+/// `Only Nulls` and `Exclude Nulls` for a column, with the note on Shift and Alt.
+fn null_items(
+    mut menu: Menu,
+    filter: &Rc<Filter>,
+    column: ColumnId,
+    ops: &[FilterOp],
+    this: &WeakEntity<AppController>,
+) -> Menu {
+    for op in [FilterOp::IsNull, FilterOp::IsNotNull] {
+        if ops.contains(&op) {
+            let condition = FilterCondition {
+                column,
+                op,
+                value: String::new(),
+            };
+            menu = condition_item(
+                menu,
+                filter,
+                condition,
+                |op, or| match (op, or) {
+                    (_, true) => format!("or {}", op_text(op)),
+                    (FilterOp::IsNull, false) => "Only Nulls".into(),
+                    _ => "Exclude Nulls".into(),
+                },
+                this,
+            );
+        }
+    }
+    menu.note(MODIFIER_NOTE)
+}
+
+/// A value in query form as shown in a menu item, shortened when long. A shortened quoted value keeps its closing
+/// quote.
+fn menu_value(value: &str) -> String {
+    const LIMIT: usize = 40;
+    let mut chars = value.chars();
+    let shown: String = chars.by_ref().take(LIMIT).collect();
+    if chars.next().is_none() {
+        return shown;
+    }
+    if value.starts_with('"') {
+        format!("{shown}…\"")
     } else {
-        format!("{name} {op}").into()
+        format!("{shown}…")
     }
 }
 
@@ -1653,7 +2503,7 @@ fn panel(title: &'static str) -> Div {
         .child(
             div()
                 .flex_none()
-                .h(theme::PANEL_HEADER_HEIGHT)
+                .h(theme::metrics().panel_header_height)
                 .px_2()
                 .flex()
                 .items_center()
@@ -1680,6 +2530,14 @@ fn placeholder(message: impl Into<SharedString>) -> Div {
 mod tests {
     use super::*;
 
+    #[test]
+    fn shortens_long_menu_values() {
+        assert_eq!(menu_value("\"중구01\""), "\"중구01\"");
+        assert_eq!(menu_value("1.5"), "1.5");
+        let quoted = format!("\"{}\"", "가".repeat(45));
+        assert_eq!(menu_value(&quoted), format!("\"{}…\"", "가".repeat(39)));
+        assert_eq!(menu_value(&"9".repeat(50)), format!("{}…", "9".repeat(40)));
+    }
     #[test]
     fn keeps_track_of_a_tab_when_another_tab_moves() {
         let move_and_find = |len: usize, ix: usize, from: usize, to: usize| {

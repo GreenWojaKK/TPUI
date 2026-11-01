@@ -14,7 +14,7 @@ use arrow_cast::display::FormatOptions;
 use arrow_ord::cmp;
 use arrow_schema::{DataType, Schema};
 
-use crate::{ColumnId, FilterCondition, FilterOp, ViewerError};
+use crate::{ColumnId, Filter, FilterCondition, FilterOp, ViewerError};
 
 /// Column types grouped by how conditions and find handle their values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -255,42 +255,31 @@ impl CompiledCondition {
     }
 }
 
-/// The full set of filter conditions. Reads only the columns with conditions and computes the rows that satisfy all of them.
+/// A whole filter, compiled. Reads only the columns with conditions and computes the rows for which the filter
+/// holds. Each condition gives a Boolean per row with Null cells already false, so clauses combine them with plain
+/// `|` and the filter combines clauses with `&`.
 pub struct CompiledFilter {
     columns: Vec<ColumnId>,
-    conditions: Vec<CompiledCondition>,
+    clauses: Vec<Vec<CompiledCondition>>,
 }
 
 impl CompiledFilter {
-    pub fn new(schema: &Schema, conditions: &[FilterCondition]) -> Result<Self, ViewerError> {
-        let mut columns: Vec<ColumnId> = conditions.iter().map(|c| c.column).collect();
+    pub fn new(schema: &Schema, filter: &Filter) -> Result<Self, ViewerError> {
+        let mut columns: Vec<ColumnId> = filter.conditions().iter().map(|c| c.column).collect();
         columns.sort_unstable();
         columns.dedup();
-        let compiled = conditions
+        let clauses = filter
+            .clauses()
             .iter()
-            .map(|condition| {
-                check_condition(schema, condition).map_err(ViewerError::InvalidCondition)?;
-                let field = &schema.fields()[condition.column.0];
-                let value = condition
-                    .op
-                    .takes_value()
-                    .then(|| parse_value(&condition.value, field.data_type()))
-                    .transpose()
-                    .map_err(ViewerError::InvalidCondition)?;
-                Ok(CompiledCondition {
-                    position: columns
-                        .binary_search(&condition.column)
-                        .expect("condition columns are in the list"),
-                    op: condition.op,
-                    text: condition.value.clone(),
-                    value,
-                })
+            .map(|clause| {
+                clause
+                    .conditions()
+                    .iter()
+                    .map(|condition| compile_condition(schema, &columns, condition))
+                    .collect::<Result<Vec<_>, ViewerError>>()
             })
             .collect::<Result<Vec<_>, ViewerError>>()?;
-        Ok(Self {
-            columns,
-            conditions: compiled,
-        })
+        Ok(Self { columns, clauses })
     }
 
     /// Columns to read, in source schema order.
@@ -298,15 +287,42 @@ impl CompiledFilter {
         &self.columns
     }
 
-    /// Rows of the batch that satisfy all conditions. Batch columns follow [`Self::columns`].
+    /// Rows of the batch for which the filter holds. Batch columns follow [`Self::columns`].
     pub fn evaluate(&self, batch: &RecordBatch) -> Result<BooleanBuffer, ViewerError> {
-        let mut result = BooleanBuffer::new_set(batch.num_rows());
-        for condition in &self.conditions {
-            let matched = condition.evaluate(batch.column(condition.position))?;
-            result = &result & &matched;
+        let rows = batch.num_rows();
+        let mut result = BooleanBuffer::new_set(rows);
+        for clause in &self.clauses {
+            let mut any = BooleanBuffer::new_unset(rows);
+            for condition in clause {
+                any = &any | &condition.evaluate(batch.column(condition.position))?;
+            }
+            result = &result & &any;
         }
         Ok(result)
     }
+}
+
+fn compile_condition(
+    schema: &Schema,
+    columns: &[ColumnId],
+    condition: &FilterCondition,
+) -> Result<CompiledCondition, ViewerError> {
+    check_condition(schema, condition).map_err(ViewerError::InvalidCondition)?;
+    let field = &schema.fields()[condition.column.0];
+    let value = condition
+        .op
+        .takes_value()
+        .then(|| parse_value(&condition.value, field.data_type()))
+        .transpose()
+        .map_err(ViewerError::InvalidCondition)?;
+    Ok(CompiledCondition {
+        position: columns
+            .binary_search(&condition.column)
+            .expect("condition columns are in the list"),
+        op: condition.op,
+        text: condition.value.clone(),
+        value,
+    })
 }
 
 /// Checks that the condition fits the column type and that its value can be parsed. On failure,
@@ -342,7 +358,7 @@ mod tests {
     }
 
     fn filter(fields: Vec<Field>, conditions: Vec<FilterCondition>) -> CompiledFilter {
-        CompiledFilter::new(&Schema::new(fields), &conditions).unwrap()
+        CompiledFilter::new(&Schema::new(fields), &Filter::all(conditions)).unwrap()
     }
 
     fn condition(column: usize, op: FilterOp, value: &str) -> FilterCondition {

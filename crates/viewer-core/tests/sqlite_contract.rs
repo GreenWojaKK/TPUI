@@ -11,9 +11,10 @@ use arrow_schema::DataType;
 use arrow_select::concat::concat_batches;
 use rusqlite::{Connection, params};
 use viewer_core::{
-    ColumnId, DECLARED_TYPE_KEY, DataSource, FilterCondition, FilterOp, FindQuery, FindTask,
-    RequestId, RowIds, RowView, RowViewTask, SessionId, SortKey, SqliteObject, SqliteObjectKind,
-    TaskStep, ViewSpec, ViewerEngine, ViewerError, WindowRequest, is_sqlite_file, sqlite_objects,
+    ColumnId, DECLARED_TYPE_KEY, DataSource, Filter, FilterCondition, FilterOp, FindQuery,
+    FindTask, RequestId, RowIds, RowView, RowViewTask, SessionId, SortKey, SqliteObject,
+    SqliteObjectKind, TaskStep, ViewSpec, ViewerEngine, ViewerError, WindowRequest, is_sqlite_file,
+    sqlite_objects,
 };
 
 /// Rows inserted into `items`; every seventh id is deleted afterwards, leaving rowid gaps.
@@ -273,11 +274,11 @@ fn filters_sorts_and_finds_with_the_shared_rules() {
     let ids = kept_ids();
     // Names containing "12", sorted by score descending; Null scores last, ties in rowid order.
     let spec = ViewSpec {
-        filters: vec![FilterCondition {
+        filter: Filter::all(vec![FilterCondition {
             column: ColumnId(1),
             op: FilterOp::Contains,
             value: "12".into(),
-        }],
+        }]),
         sort: Some(SortKey {
             column: ColumnId(2),
             descending: true,

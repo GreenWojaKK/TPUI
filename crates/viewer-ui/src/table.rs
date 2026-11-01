@@ -59,10 +59,11 @@ pub fn header_aligned<L: Clone + Into<SharedString>>(
     align_right: impl Fn(usize) -> bool,
 ) -> Div {
     let total = total_weight(columns);
+    let metrics = theme::metrics();
     div()
         .flex_none()
-        .h(theme::LIST_ROW_HEIGHT)
-        .px_2()
+        .h(metrics.list_row_height)
+        .px(metrics.cell_padding_x)
         .flex()
         .items_center()
         .bg(theme::surface())
@@ -73,7 +74,7 @@ pub fn header_aligned<L: Clone + Into<SharedString>>(
             div()
                 .w(relative(weight / total))
                 .min_w_0()
-                .pr_2()
+                .pr(metrics.cell_padding_x)
                 .truncate()
                 .when(align_right(ix), |cell| cell.flex().justify_end())
                 .child(label.clone().into())
@@ -88,11 +89,12 @@ pub fn row<L>(
     cells: Vec<Cell>,
 ) -> Stateful<Div> {
     let total = total_weight(columns);
+    let metrics = theme::metrics();
     div()
         .id((name, row))
         .w_full()
-        .h(theme::LIST_ROW_HEIGHT)
-        .px_2()
+        .h(metrics.list_row_height)
+        .px(metrics.cell_padding_x)
         .flex()
         .items_center()
         .border_b_1()
@@ -103,7 +105,7 @@ pub fn row<L>(
                     .id(SharedString::from(format!("{name}-{row}-{column}")))
                     .w(relative(weight / total))
                     .min_w_0()
-                    .pr_2()
+                    .pr(metrics.cell_padding_x)
                     .truncate()
                     .when(cell.align_right, |cell| cell.flex().justify_end())
                     .when_some(cell.tooltip, |element, tooltip| {
@@ -123,12 +125,13 @@ pub fn wrapped_row<L>(
     cells: Vec<Cell>,
 ) -> Stateful<Div> {
     let total = total_weight(columns);
+    let metrics = theme::metrics();
     div()
         .id((name, row))
         .w_full()
-        .min_h(theme::LIST_ROW_HEIGHT)
-        .px_2()
-        .py(px(3.))
+        .min_h(metrics.list_row_height)
+        .px(metrics.cell_padding_x)
+        .py(metrics.wrapped_row_padding_y)
         .flex()
         .items_start()
         .border_b_1()
@@ -140,7 +143,7 @@ pub fn wrapped_row<L>(
                     .id(SharedString::from(format!("{name}-{row}-{column}")))
                     .w(relative(weight / total))
                     .min_w_0()
-                    .pr_2()
+                    .pr(metrics.cell_padding_x)
                     .child(if cell.align_right { text.right() } else { text })
                     .when_some(cell.tooltip, |element, tooltip| {
                         element.tooltip(text_tooltip(tooltip))
@@ -163,12 +166,12 @@ impl Render for TextTooltip {
             .px_2()
             .py_1()
             .rounded_md()
-            .bg(theme::surface())
+            .bg(theme::overlay())
             .border_1()
             .border_color(theme::border())
             .text_xs()
             .text_color(theme::text())
-            .font_family(theme::UI_FONT)
+            .font_family(theme::ui_font())
             .whitespace_normal()
             .children(self.0.split('\n').map(|line| div().child(line.to_string())))
     }

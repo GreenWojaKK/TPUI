@@ -19,6 +19,8 @@ use crate::cell_preview::{CellKind, control_picture};
 use crate::value_detail::{ValueBody, ValueDetail, ValueHeader, ValueNode};
 use viewer_ui::theme;
 
+use super::style;
+
 actions!(value, [CopyValue]);
 
 /// Nodes with more children than this group them into range nodes of this size.
@@ -436,16 +438,16 @@ impl ValueView {
         let row = div()
             .id(ix)
             .w_full()
-            .h(theme::LIST_ROW_HEIGHT)
-            .pr(theme::TREE_ROW_PADDING)
+            .h(theme::metrics().list_row_height)
+            .pr(style::TREE_ROW_PADDING)
             .flex()
             .items_center()
             .gap_1();
-        let indent = |depth: usize| theme::TREE_INDENT * depth as f32 + theme::TREE_ROW_PADDING;
+        let indent = |depth: usize| style::TREE_INDENT * depth as f32 + style::TREE_ROW_PADDING;
         let chevron = |expandable: bool, expanded: bool| {
             div()
                 .flex_none()
-                .w(theme::TREE_CHEVRON_WIDTH)
+                .w(style::TREE_CHEVRON_WIDTH)
                 .text_color(theme::text_muted())
                 .child(match (expandable, expanded) {
                     (true, true) => "▾",
@@ -464,8 +466,8 @@ impl ValueView {
                 let path = path.clone();
                 let expandable = node.child_count > 0;
                 let preview_color = match node.preview.kind {
-                    CellKind::Null => theme::null_text(),
-                    CellKind::Summary => theme::summary_text(),
+                    CellKind::Null => theme::missing(),
+                    CellKind::Summary => style::summary_text(),
                     CellKind::Unsupported => theme::text_muted(),
                     CellKind::Text | CellKind::Number => theme::text(),
                 };
@@ -552,7 +554,7 @@ impl ValueView {
                     .text_system()
                     .shape_line("0".into(), font_size, &[run], None)
                     .width();
-                let usable = bounds.size.width - theme::GRID_CELL_PADDING * 2.;
+                let usable = bounds.size.width - style::GRID_CELL_PADDING * 2.;
                 let columns = ((usable / char_width).floor() as usize).max(8);
                 view.update(cx, |view, cx| view.set_wrap_columns(columns, cx));
             },
@@ -569,8 +571,8 @@ impl ValueView {
                     range
                         .map(|ix| {
                             div()
-                                .h(theme::VALUE_LINE_HEIGHT)
-                                .px(theme::GRID_CELL_PADDING)
+                                .h(style::VALUE_LINE_HEIGHT)
+                                .px(style::GRID_CELL_PADDING)
                                 .whitespace_nowrap()
                                 .child(render(ix))
                         })
@@ -588,12 +590,12 @@ impl ValueView {
             Body::Null => div()
                 .p_2()
                 .italic()
-                .text_color(theme::null_text())
+                .text_color(theme::missing())
                 .child("null")
                 .into_any_element(),
             Body::Summary(text) => div()
                 .p_2()
-                .text_color(theme::summary_text())
+                .text_color(style::summary_text())
                 .child(text.clone())
                 .into_any_element(),
             Body::Unsupported(text) => div()
@@ -627,7 +629,7 @@ impl ValueView {
             .flex_1()
             .min_h_0()
             .relative()
-            .font_family(theme::MONO_FONT)
+            .font_family(theme::mono_font())
             .child(measure)
             .child(content)
     }

@@ -1,11 +1,11 @@
-//! Find bar above the grid. Shows the input, previous and next buttons, and the find status.
+//! Find bar above the grid. Shows the value being found, the find status, and previous and next buttons.
+//!
+//! The bar has no text input. The value comes from a cell's context menu or from a query (`find …`) written in the
+//! query window or the message file; `Change…` opens the query window to write another.
 
-use gpui::{
-    ClickEvent, Context, Entity, EventEmitter, SharedString, Subscription, Window, div, prelude::*,
-};
+use gpui::{ClickEvent, Context, EventEmitter, SharedString, Window, div, prelude::*, px};
 
 use viewer_ui::format::format_quantity;
-use viewer_ui::text_input::{TextInput, TextInputEvent};
 use viewer_ui::theme;
 use viewer_ui::widgets::small_button;
 
@@ -14,6 +14,8 @@ pub enum FindBarEvent {
     Search {
         backward: bool,
     },
+    /// Opens the query window to change the value.
+    Change,
     Close,
 }
 
@@ -29,50 +31,33 @@ pub enum FindStatus {
     Failed(SharedString),
 }
 
+#[derive(Default)]
 pub struct FindBar {
-    input: Entity<TextInput>,
-    status: FindStatus,
-    _subscription: Subscription,
+    query: String,
+    status: Option<FindStatus>,
 }
 
 impl EventEmitter<FindBarEvent> for FindBar {}
 
 impl FindBar {
-    pub fn new(cx: &mut Context<Self>) -> Self {
-        let input = cx.new(|cx| TextInput::new("Find cells whose whole value matches", cx));
-        let subscription =
-            cx.subscribe(&input, |this, _, event: &TextInputEvent, cx| match event {
-                TextInputEvent::Submit { backward } => cx.emit(FindBarEvent::Search {
-                    backward: *backward,
-                }),
-                TextInputEvent::Cancel => cx.emit(FindBarEvent::Close),
-                TextInputEvent::Changed => {
-                    if this.status != FindStatus::Idle {
-                        this.status = FindStatus::Idle;
-                        cx.notify();
-                    }
-                }
-            });
-        Self {
-            input,
-            status: FindStatus::Idle,
-            _subscription: subscription,
-        }
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    pub fn query(&self, cx: &gpui::App) -> String {
-        self.input.read(cx).text().to_string()
+    pub fn query(&self) -> &str {
+        &self.query
     }
 
-    /// Focuses the input and selects all of its content.
-    pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
-        self.input
-            .update(cx, |input, cx| input.focus_and_select_all(window, cx));
+    /// Replaces the value being found.
+    pub fn set_query(&mut self, text: String, cx: &mut Context<Self>) {
+        self.query = text;
+        self.status = None;
+        cx.notify();
     }
 
     pub fn set_status(&mut self, status: FindStatus, cx: &mut Context<Self>) {
-        if self.status != status {
-            self.status = status;
+        if self.status.as_ref() != Some(&status) {
+            self.status = Some(status);
             cx.notify();
         }
     }
@@ -80,21 +65,22 @@ impl FindBar {
 
 impl Render for FindBar {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (status, is_error): (SharedString, bool) = match &self.status {
-            FindStatus::Idle => ("Enter: next · Shift+Enter: previous".into(), false),
-            FindStatus::Searching(progress) => {
-                (format!("Searching {:.0}%", progress * 100.).into(), false)
-            }
-            FindStatus::Found(cells) => (
-                format_quantity(*cells, "matching cell", "matching cells").into(),
-                false,
-            ),
-            FindStatus::NotFound => ("No matching cells.".into(), true),
-            FindStatus::Failed(message) => (message.clone(), true),
-        };
+        let (status, is_error): (SharedString, bool) =
+            match self.status.as_ref().unwrap_or(&FindStatus::Idle) {
+                FindStatus::Idle => ("F3: next · Shift+F3: previous".into(), false),
+                FindStatus::Searching(progress) => {
+                    (format!("Searching {:.0}%", progress * 100.).into(), false)
+                }
+                FindStatus::Found(cells) => (
+                    format_quantity(*cells, "matching cell", "matching cells").into(),
+                    false,
+                ),
+                FindStatus::NotFound => ("No matching cells.".into(), true),
+                FindStatus::Failed(message) => (message.clone(), true),
+            };
         div()
             .flex_none()
-            .h(theme::PANEL_HEADER_HEIGHT + px_4())
+            .h(theme::metrics().panel_header_height + px(4.))
             .px_2()
             .flex()
             .items_center()
@@ -112,8 +98,17 @@ impl Render for FindBar {
             .child(
                 div()
                     .flex_none()
-                    .w(gpui::px(280.))
-                    .child(self.input.clone()),
+                    .max_w(px(280.))
+                    .px_2()
+                    .rounded_sm()
+                    .bg(theme::button())
+                    .truncate()
+                    .child(self.query.clone()),
+            )
+            .child(
+                small_button("find-change", "Change…").on_click(
+                    cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(FindBarEvent::Change)),
+                ),
             )
             .child(
                 small_button("find-previous", "Previous").on_click(cx.listener(
@@ -140,8 +135,4 @@ impl Render for FindBar {
                     .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(FindBarEvent::Close))),
             )
     }
-}
-
-fn px_4() -> gpui::Pixels {
-    gpui::px(4.)
 }

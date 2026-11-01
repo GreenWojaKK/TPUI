@@ -21,6 +21,8 @@ use crate::ui::value::CopyValue;
 use crate::worker::WindowCells;
 use viewer_ui::theme;
 
+use super::style;
+
 actions!(
     grid,
     [
@@ -41,11 +43,11 @@ const OVERSCAN_ROWS: u64 = 8;
 const OVERSCAN_COLUMNS: usize = 1;
 
 fn row_height() -> f64 {
-    f64::from(theme::GRID_ROW_HEIGHT / px(1.))
+    f64::from(style::GRID_ROW_HEIGHT / px(1.))
 }
 
 fn column_width() -> f64 {
-    f64::from(theme::GRID_COLUMN_WIDTH / px(1.))
+    f64::from(style::GRID_COLUMN_WIDTH / px(1.))
 }
 
 fn to_f64(pixels: Pixels) -> f64 {
@@ -185,7 +187,7 @@ fn request_range(visible: &Viewport, extent: &Extent) -> Viewport {
 
 /// Start and length of the scrollbar thumb. The position ratio is computed in f64.
 fn thumb_span(track: f64, content: f64, view: f64, scroll: f64) -> (f64, f64) {
-    let min_thumb = to_f64(theme::GRID_SCROLLBAR_MIN_THUMB).min(track);
+    let min_thumb = to_f64(style::GRID_SCROLLBAR_MIN_THUMB).min(track);
     let len = (track * view / content.max(1.)).clamp(min_thumb, track);
     let max_scroll = content - view;
     let start = if max_scroll > 0. {
@@ -232,10 +234,11 @@ pub enum GridEvent {
     ViewportChanged,
     /// A column header was clicked to change the sort.
     SortRequested(usize),
-    /// A column header's filter button was clicked. `anchor` is the window coordinate of the header cell's bottom left.
-    FilterRequested {
-        column: usize,
-        anchor: Point<Pixels>,
+    /// A header or a cell was right-clicked. A right-clicked cell is selected first. `position` is the window
+    /// coordinate of the click.
+    ContextMenu {
+        target: MenuTarget,
+        position: Point<Pixels>,
     },
     /// The selected cell changed.
     SelectionChanged,
@@ -245,6 +248,13 @@ pub enum GridEvent {
     RetryRequested,
     /// The file changed and must be reopened.
     ReopenRequested,
+}
+
+/// What a context menu was opened on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MenuTarget {
+    Header(usize),
+    Cell { row: u64, column: usize },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -588,25 +598,48 @@ impl GridView {
             if column < 0. || column as usize >= total_columns {
                 return;
             }
-            let column = column as usize;
-            let cell_left =
-                to_f64(hit.header.left()) + column as f64 * column_width() - self.scroll.x();
-            let cell_right = cell_left + column_width();
-            if x >= cell_right - to_f64(theme::GRID_FILTER_BUTTON_WIDTH) {
-                let anchor = point(
-                    px(cell_left.max(to_f64(hit.header.left())) as f32),
-                    hit.header.bottom(),
-                );
-                cx.emit(GridEvent::FilterRequested { column, anchor });
-            } else {
-                cx.emit(GridEvent::SortRequested(column));
-            }
+            cx.emit(GridEvent::SortRequested(column as usize));
             return;
         }
         if hit.data.contains(&position) {
             let row = ((y - to_f64(hit.data.top()) + self.scroll.y()) / row_height()).floor();
             let column = ((x - to_f64(hit.data.left()) + self.scroll.x()) / column_width()).floor();
             self.select(row as u64, column as usize, cx);
+        }
+    }
+
+    /// Right-clicking a header opens its menu; right-clicking a cell selects it and opens its menu.
+    fn context_menu(&mut self, position: Point<Pixels>, hit: &HitAreas, cx: &mut Context<Self>) {
+        let Some(dataset) = &self.dataset else {
+            return;
+        };
+        let total_columns = dataset.column_names.len();
+        let total_rows = dataset.total_rows;
+        let x = to_f64(position.x);
+        let column = ((x - to_f64(hit.data.left()) + self.scroll.x()) / column_width()).floor();
+        if column < 0. || column as usize >= total_columns {
+            return;
+        }
+        let column = column as usize;
+        if hit.header.contains(&position) {
+            cx.emit(GridEvent::ContextMenu {
+                target: MenuTarget::Header(column),
+                position,
+            });
+            return;
+        }
+        if hit.data.contains(&position) {
+            let y = to_f64(position.y);
+            let row = ((y - to_f64(hit.data.top()) + self.scroll.y()) / row_height()).floor();
+            if row < 0. || row as u64 >= total_rows {
+                return;
+            }
+            let row = row as u64;
+            self.select(row, column, cx);
+            cx.emit(GridEvent::ContextMenu {
+                target: MenuTarget::Cell { row, column },
+                position,
+            });
         }
     }
 
@@ -890,12 +923,12 @@ impl Element for GridElement {
             .shape_line(widest, font_size, &[run], None)
             .width();
         let row_number_width =
-            (number_width + theme::GRID_CELL_PADDING * 2.).max(theme::GRID_MIN_ROW_NUMBER_WIDTH);
+            (number_width + style::GRID_CELL_PADDING * 2.).max(style::GRID_MIN_ROW_NUMBER_WIDTH);
 
         // Decide which scrollbars are needed. One bar appearing shrinks the data area on the other axis.
-        let bar = to_f64(theme::GRID_SCROLLBAR_SIZE);
+        let bar = to_f64(style::GRID_SCROLLBAR_SIZE);
         let body_width = to_f64(bounds.size.width - row_number_width).max(0.);
-        let body_height = to_f64(bounds.size.height - theme::GRID_HEADER_HEIGHT).max(0.);
+        let body_height = to_f64(bounds.size.height - style::GRID_HEADER_HEIGHT).max(0.);
         let content_height = total_rows as f64 * row_height();
         let content_width = total_columns as f64 * column_width();
         let mut needs_vertical = content_height > body_height;
@@ -917,7 +950,7 @@ impl Element for GridElement {
         let data = Bounds::new(
             point(
                 bounds.left() + row_number_width,
-                bounds.top() + theme::GRID_HEADER_HEIGHT,
+                bounds.top() + style::GRID_HEADER_HEIGHT,
             ),
             size(px(data_width as f32), px(data_height as f32)),
         );
@@ -926,14 +959,14 @@ impl Element for GridElement {
         let vertical = needs_vertical.then(|| ScrollbarGeometry {
             track: Bounds::new(
                 point(data.right(), data.top()),
-                size(theme::GRID_SCROLLBAR_SIZE, data.size.height),
+                size(style::GRID_SCROLLBAR_SIZE, data.size.height),
             ),
             thumb: thumb_span(data_height, content_height, data_height, scroll.y()),
         });
         let horizontal = needs_horizontal.then(|| ScrollbarGeometry {
             track: Bounds::new(
                 point(data.left(), data.bottom()),
-                size(data.size.width, theme::GRID_SCROLLBAR_SIZE),
+                size(data.size.width, style::GRID_SCROLLBAR_SIZE),
             ),
             thumb: thumb_span(data_width, content_width, data_width, scroll.x()),
         });
@@ -983,7 +1016,7 @@ impl Element for GridElement {
             areas: HitAreas {
                 header: Bounds::new(
                     point(data.left(), bounds.top()),
-                    size(data.size.width, theme::GRID_HEADER_HEIGHT),
+                    size(data.size.width, style::GRID_HEADER_HEIGHT),
                 ),
                 data,
                 vertical,
@@ -1031,9 +1064,9 @@ impl GridElement {
             line_height: window.line_height(),
         };
         let data = layout.areas.data;
-        let header_height = theme::GRID_HEADER_HEIGHT;
-        let row_height = theme::GRID_ROW_HEIGHT;
-        let column_width = theme::GRID_COLUMN_WIDTH;
+        let header_height = style::GRID_HEADER_HEIGHT;
+        let row_height = style::GRID_ROW_HEIGHT;
+        let column_width = style::GRID_COLUMN_WIDTH;
         let rows_top = data.top() - layout.row_offset;
         let columns_left = data.left() - layout.column_offset;
         let rows_bottom = (rows_top + row_height * layout.rows.len() as f32).min(data.bottom());
@@ -1074,17 +1107,16 @@ impl GridElement {
                 |window| {
                     for (ix, header) in layout.headers.iter().enumerate() {
                         let left = columns_left + column_width * ix as f32;
-                        let button = theme::GRID_FILTER_BUTTON_WIDTH;
                         let mark = if header.sort.is_some() {
-                            theme::GRID_SORT_MARK_WIDTH
+                            style::GRID_SORT_MARK_WIDTH
                         } else {
                             px(0.)
                         };
-                        // The name is drawn in the width left after the sort marker and filter button.
+                        // The name is drawn in the width left after the sort marker.
                         let name = Bounds::new(
                             point(left, bounds.top()),
                             size(
-                                column_width - button - mark + theme::GRID_CELL_PADDING,
+                                column_width - mark + style::GRID_CELL_PADDING,
                                 header_height,
                             ),
                         );
@@ -1094,7 +1126,11 @@ impl GridElement {
                             name,
                             header.name.clone(),
                             header_font.clone(),
-                            theme::text().into(),
+                            if header.filtered {
+                                theme::accent().into()
+                            } else {
+                                theme::text().into()
+                            },
                             TextAlign::Left,
                         );
                         if let Some(descending) = header.sort {
@@ -1102,27 +1138,13 @@ impl GridElement {
                                 window,
                                 cx,
                                 Bounds::new(
-                                    point(left + column_width - button - mark, bounds.top()),
+                                    point(left + column_width - mark, bounds.top()),
                                     size(mark, header_height),
                                 ),
                                 if descending { "▼" } else { "▲" },
                                 theme::accent().into(),
                             );
                         }
-                        painter.paint_glyph(
-                            window,
-                            cx,
-                            Bounds::new(
-                                point(left + column_width - button, bounds.top()),
-                                size(button, header_height),
-                            ),
-                            "▾",
-                            if header.filtered {
-                                theme::accent().into()
-                            } else {
-                                theme::text_muted().into()
-                            },
-                        );
                     }
                 },
             );
@@ -1163,7 +1185,7 @@ impl GridElement {
                         if row.selected_column == Some(column_ix) {
                             window.paint_quad(fill(cell, theme::selection()));
                         } else if preview.as_ref().is_some_and(|preview| preview.matched) {
-                            window.paint_quad(fill(cell, theme::find_match()));
+                            window.paint_quad(fill(cell, style::find_match()));
                         }
                         let (text, font, color, align) = match preview {
                             Some(preview) => painter.style(preview),
@@ -1264,7 +1286,7 @@ impl GridElement {
             if phase != DispatchPhase::Bubble || !hitbox.should_handle_scroll(window) {
                 return;
             }
-            let delta = event.delta.pixel_delta(theme::GRID_ROW_HEIGHT);
+            let delta = event.delta.pixel_delta(style::GRID_ROW_HEIGHT);
             let (mut dx, mut dy) = (to_f64(delta.x), to_f64(delta.y));
             if event.modifiers.shift && dx == 0. {
                 (dx, dy) = (dy, 0.);
@@ -1285,6 +1307,22 @@ impl GridElement {
             view.update(cx, |view, cx| {
                 view.focus_handle.focus(window, cx);
                 view.mouse_down(event.position, &areas, cx);
+            });
+        });
+
+        let view = self.view.clone();
+        let hitbox = layout.hitbox.clone();
+        let menu_areas = areas;
+        window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
+            if phase != DispatchPhase::Bubble
+                || event.button != MouseButton::Right
+                || !hitbox.is_hovered(window)
+            {
+                return;
+            }
+            view.update(cx, |view, cx| {
+                view.focus_handle.focus(window, cx);
+                view.context_menu(event.position, &menu_areas, cx);
             });
         });
 
@@ -1339,13 +1377,13 @@ impl CellPainter {
             CellKind::Null => (
                 text,
                 self.font.clone().italic(),
-                theme::null_text().into(),
+                theme::missing().into(),
                 TextAlign::Left,
             ),
             CellKind::Summary => (
                 text,
                 self.font.clone(),
-                theme::summary_text().into(),
+                style::summary_text().into(),
                 TextAlign::Left,
             ),
             CellKind::Unsupported => (
@@ -1392,7 +1430,7 @@ impl CellPainter {
         if text.is_empty() {
             return;
         }
-        let padding = theme::GRID_CELL_PADDING;
+        let padding = style::GRID_CELL_PADDING;
         let inner = Bounds::new(
             point(cell.left() + padding, cell.top()),
             size(

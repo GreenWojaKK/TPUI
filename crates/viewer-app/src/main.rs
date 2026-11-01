@@ -2,14 +2,15 @@
 
 mod app;
 mod cell_preview;
+mod query_log;
 mod value_detail;
 mod ui {
     pub mod explorer;
-    pub mod filter_popover;
     pub mod find_bar;
     pub mod grid;
     pub mod schema;
     pub mod structure;
+    pub mod style;
     pub mod value;
     pub mod view_bar;
 }
@@ -21,7 +22,8 @@ use gpui::{
 use gpui_platform::application;
 
 use crate::app::{
-    AppController, CloseTab, Find, FindNext, FindPrevious, NextTab, OpenFile, PreviousTab,
+    AppController, CloseFind, CloseTab, Find, FindNext, FindPrevious, NextTab, OpenFile,
+    PreviousTab,
 };
 use crate::ui::explorer::OpenSelected;
 use crate::ui::grid::{
@@ -39,6 +41,7 @@ fn main() {
             KeyBinding::new("ctrl-f", Find, None),
             KeyBinding::new("f3", FindNext, None),
             KeyBinding::new("shift-f3", FindPrevious, None),
+            KeyBinding::new("escape", CloseFind, Some("Grid")),
             KeyBinding::new("enter", OpenSelected, Some("Explorer")),
             KeyBinding::new("up", MoveUp, Some("Grid")),
             KeyBinding::new("down", MoveDown, Some("Grid")),
@@ -51,7 +54,6 @@ fn main() {
             KeyBinding::new("ctrl-c", CopyValue, Some("Grid")),
             KeyBinding::new("ctrl-c", CopyValue, Some("ValuePanel")),
         ]);
-        viewer_ui::text_input::bind_keys(cx);
 
         // Single-window app: quit when the window closes.
         cx.on_window_closed(|cx, _| {

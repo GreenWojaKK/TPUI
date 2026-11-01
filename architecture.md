@@ -107,23 +107,39 @@ File and folder selection uses GPUI's `App::prompt_for_paths`. [Official API](ht
 - Each tab has filter conditions and a sort key. Together they decide which rows the grid shows and in what order; this is the row view. Without filter or sort, the row view is the source file's row order.
 - Grid row positions, scrolling, selection and key movement follow the row view's order. The row number area shows the source file's row numbers, and so does the Value panel.
 - Changing the filter or sort makes the worker build a new row view. While it is being built, the grid keeps showing the previous row view, and the filter and sort bar above the grid shows progress and `Cancel`. When complete, the grid moves to the new row view's first row and clears the selection; the horizontal scroll position is kept. `Cancel` restores the conditions from before the change.
-- The filter and sort bar is shown when there are conditions. Each condition has an item removed with `×`, and `Clear All` returns to source order. The status bar shows the row view's row count together with the total.
+- The filter and sort bar is shown when there are conditions. It reads as the query text, such as `filter ( OBE_ID == "366" or ▾ OBE_ID == "977" ) and ▾ route_name == "중구01" sort -id`: each condition and the sort is a chip removed with `×`, operators are boxes with `▾`, and conditions joined by `or` are in parentheses. A long filter wraps onto more lines. `Copy Query` copies the whole query text, including the find value while the find bar is open, and `Clear All` returns to source order. The status bar shows the row view's row count together with the total.
 - Each tab remembers its row view. Conditions and results survive tab switches.
 
 ### Find
 
-- `Ctrl+F` opens the find bar above the grid and focuses its input. `Esc` closes the find bar and returns focus to the grid.
+- The viewer has no text input of its own. `Ctrl+F` opens the query window with the active tab's conditions and a `find` line, the cursor after `find` (on systems without the query window, the message file is pointed to). The value can also come from `Find` in a cell's context menu or from a `find` line in any query.
+- The find bar above the grid shows the value being found, `Change…`, which opens the query window again, `Previous`, `Next`, the status and `×`. `Esc` in the grid closes the find bar.
 - Find locates cells whose whole value exactly equals the input. It is case-sensitive and does not match partial values.
 - The comparison target is the full text shown for the cell: the original text for strings, the text of the cell display contract for numbers, times and Boolean, and the same lowercase hexadecimal as the copy text for Binary. Hexadecimal input is case-insensitive. Null cells and `Struct`, `List` and `Map` cells are not find targets.
-- `Enter` and `F3` move to the next match, `Shift+Enter` and `Shift+F3` to the previous one. The order is the row view's row order, then column order within a row. The search starts from the selected cell and wraps around at the end.
+- `F3` and `Next` move to the next match, `Shift+F3` and `Previous` to the previous one. The order is the row view's row order, then column order within a row. The search starts from the selected cell and wraps around at the end.
 - The found cell is selected and scrolled into view. The find bar shows the number of matching cells in the whole row view, and the grid highlights matching cells.
-- The first `Enter` after changing the input reads the file to compute match positions. During the computation, the find bar shows progress, and grid scrolling, cell selection and tab switching keep working.
-- While a filter or sort is being applied, find does not start and the find bar shows a notice. After a tab switch, find results are recomputed for the new tab.
+- `Find` in a cell's context menu puts the cell's full value into the find bar and moves to its next match.
+- The first search for a new value reads the file to compute match positions. During the computation, the find bar shows progress, and grid scrolling, cell selection and tab switching keep working.
+- A find sent together with new conditions runs once they are applied. `F3` while conditions are being applied shows a notice in the find bar. After a tab switch, find results are recomputed for the new tab.
+
+### Context menus
+
+- Right-clicking a column header opens its menu: `Sort Ascending`, `Sort Descending`, `Clear Sort` on the sorted column, `Only Nulls`, `Exclude Nulls`, and `Remove Conditions on This Column` when the column has conditions.
+- Right-clicking a cell selects it and opens its menu once the cell's full value is read. A cell with a value offers conditions comparing the column with that value (`=`, `≠`, and `>`, `≥`, `<`, `≤` where the column type allows them), `Find` and `Copy Value`. A Null cell offers `Only Nulls` and `Exclude Nulls`. Nested values offer no conditions.
+- Condition items act with modifier keys: Shift+click joins the column's conditions with `or`, and Alt+click adds the opposite condition (`≠` for `=`, `≥` for `<`, `≤` for `>`, `Exclude Nulls` for `Only Nulls`). While the menu is open, holding the keys changes the labels to what a click adds, such as `or == "977"` or `!= "977"`, and a note under the items says `Shift: or · Alt: not`. A condition already in the filter is marked `✓`; choosing it changes nothing.
+- Conditions use the full value, not the shortened cell preview. The value text is the copy text of the cell: strings as is, Binary as lowercase hexadecimal, other values as displayed, which parses back to the same value.
+- Choosing an item applies it and closes the menu. Clicking outside or `Esc` closes the menu without an action. Menu labels show values quoted, on one line, shortened after 40 characters.
+- The menu is the `Menu` component of `viewer-ui`: items, items whose label and action follow the modifier keys held, disabled items, notes and separators, drawn above the window at the click position. It has no text input.
 
 ### Filter
 
-- The filter button at the right of a column header opens that column's filter popover. The popover has operator buttons, a value input, `Apply` and `Remove Filter`. `Enter` applies; `Esc` or clicking outside closes it.
-- Each column has one condition. Conditions on several columns keep only rows that satisfy all of them. A new condition starts with `contains` for string columns, and with the first operator in the list otherwise.
+- Conditions come from the context menus and from query text (see below).
+- A filter has the shape of a spreadsheet filter: clauses that must all hold, joined by `and`. A clause is one or more conditions on one column of which at least one must hold, joined by `or` and drawn in parentheses when there are several: `(OBE_ID == "366" or OBE_ID == "977") and id >= 5 and id < 20`. So `or` joins conditions on one column only, and parentheses never nest.
+- Clauses on the same column sit next to each other, in the order their columns first appear, so each column's conditions read together.
+- A condition from a menu is added with `and` after the column's other clauses. With Shift it joins the column's last clause with `or`. An `=` condition on a column that already has an `=` condition joins that clause with `or` without Shift, since two different values joined by `and` match no row.
+- In the filter and sort bar each operator is a small box such as `and ▾`. Clicking it opens the choice of `and` and `or` just below it. Inside parentheses, `and` splits the clause there into two; between two clauses on one column, `or` merges them. Between clauses on different columns `or` is grayed out with the note `or joins conditions on one column only`.
+- Dragging from a condition's text across others sweeps a range of conditions in reading order, across wrapped lines too. The swept chips are highlighted, and the line under the conditions says what releasing does: `Release to join 3 conditions with or`, or, when the range covers another column, red chips and `or joins conditions on one column only`. Releasing over the conditions makes the range exactly one clause, joined by `or` inside and by `and` to the conditions just outside it, so sweeping part of a clause splits it. A range of one condition or of several columns changes nothing. Leaving the conditions shrinks the range back to its start, and releasing elsewhere or pressing `Esc` drops the sweep. The `▾` boxes do the same edits one join at a time.
+- The engine computes each condition as a Boolean per row with Null cells false, folds each clause with `|` and the clauses with `&`. Only columns with conditions are read.
 - Operators depend on the column type:
 
 | Column type | Operators |
@@ -133,18 +149,72 @@ File and folder selection uses GPUI's `App::prompt_for_paths`. [Official API](ht
 | Binary | `=`, `≠`, `null`, `not null` |
 | `Struct`, `List`, `Map` and other types | `null`, `not null` |
 
-- Values of comparison operators are parsed as the column type and compared by value. For example, `= 1.5` on a Decimal column matches `1.50`, and Timestamps are entered in ISO 8601. A value that cannot be parsed is not applied, and the popover shows the error.
+- Values of comparison operators are parsed as the column type and compared by value. For example, `= 1.5` on a Decimal column matches `1.50`. A value that cannot be parsed is not applied, and the filter and sort bar shows the reason.
 - String comparison and `contains` are case-sensitive. String `<` and `>` use UTF-8 byte order. Binary values are entered as hexadecimal.
 - Comparison operators and `contains` never match Null cells. Null cells are selected with the `null` operator.
-- Columns with a filter highlight the filter button in their header.
+- Columns with a filter show their header name in the accent color.
 
 ### Sort
 
-- Each header click cycles ascending, descending, then no sort. The sort key is a single column; clicking another column's header switches to ascending on that column. The header shows the direction with `▲` or `▼`.
+- Each header click cycles ascending, descending, then no sort. The header's context menu sets a direction or clears the sort directly. The sort key is a single column; clicking another column's header switches to ascending on that column. The header shows the direction with `▲` or `▼`.
 - With a filter, only rows that pass the filter are sorted.
 - Null goes last regardless of direction. Rows with equal values keep the source file's order.
 - Strings sort by UTF-8 byte order, and floating-point NaN sorts as the largest value.
 - Columns of `Struct`, `List`, `Map` and types without display support are not sorted. Clicking such a header shows a notice in the filter and sort bar that the column cannot be sorted.
+
+### Query text
+
+A query is the text form of a row view and a find value, one command per line. The filter and sort bar shows conditions in this form, context menus label their items with it, and `Copy Query` writes it.
+
+```text
+find 홍길동
+filter age >= 30 and status == "활성"
+sort -created_at
+```
+
+- `find <value>` finds cells whose whole value equals the value.
+- `filter <expression>` keeps rows for which the expression holds. Conditions are joined with `and`, and conditions on one column also with `or`, in the shape of the filter above. One level joins with one word, so mixing `and` and `or` takes parentheses: `filter (a == 1 or a == 2) and b == 3`. A line of `or` alone needs none: `filter a == 1 or a == 2`. Several `filter` lines combine with `and`.
+- `or` between different columns, `and` inside `or`, and mixing without parentheses are errors that point at the place, such as ``line 1, column 20: `or` joins conditions on one column only; this one is on status, not age``.
+- A written query puts each clause of several conditions in parentheses, as the bar shows it.
+- Conditions are `<column> <op> <value>` with `==`, `!=`, `<`, `<=`, `>`, `>=` or `contains`, or `<column> is null` and `<column> is not null`. `=` is read as `==`. Operators follow the column type as in the filter table above.
+- `sort <column>` sorts ascending and `sort -<column>` descending, by one column. A query has at most one `find` and one `sort` line.
+- Values without spaces are written as is; others are quoted as `"…"` with `\"`, `\\`, `\n`, `\t` and `\r` escapes. Other backslashes stay as written, so Windows paths read back unchanged. Values of string columns are always written quoted.
+- Column names with spaces or symbols are written in backticks, with a backtick inside doubled: `` `운행 일자` ``. Names must match exactly; a name that differs only in case is suggested in the error.
+- Keywords are case-insensitive and blank lines are ignored. A query states the whole view: a missing line means no find, filter or sort, and an empty query clears them.
+- Values are parsed as their column types with the same rules as conditions from the menus. An error names the line and character column and the reason, such as ``line 1, column 8: this `(` is not closed``.
+- Writing a query and reading it back gives the same conditions, sort and find value.
+
+### Query input and log
+
+Queries reach a tab in three ways, all applied the same way and logged the same way.
+
+| Way | For |
+|---|---|
+| Context menus and header clicks | Quick changes with the mouse |
+| Query window (Windows) | A person writing a query, such as `contains` or a value not on screen |
+| Message file | Agents and other programs, and systems without the query window |
+
+- A query text states the whole view of the active tab: its conditions, sort and find value replace the current ones. A text that does not parse changes nothing; the reason, with line and column, is shown on a line of its own in the filter and sort bar and in the query window's status.
+- A find sent with new conditions runs once their row view is applied, since find works on finished row views.
+- The toolbar's `Query` menu has `Write Query…`, `Copy Query`, `Copy Message File Path` and `Open Query Log Folder`. The context menus of headers and cells also have `Write Query…`.
+
+The query window is the `InputWindow` of `viewer-ui`, a small window of the operating system.
+
+- It holds the system's multi-line edit control, so typing, Korean IME composition, clipboard and undo are the system's. It opens over the viewer, owned by it, filled with the active tab's current query; opening it again refills it and brings it to the front.
+- `Ctrl+Enter` or `Apply` applies the text and keeps the window open; `Esc` or `Close` closes it. The status line shows `Applied · 352 of 280,797 rows` once the row view is applied, or the error.
+- The window runs on its own thread with its own message loop, which also gives `Tab` between its controls. The viewer's thread never waits for that thread: showing a window that has an owner sends messages to the owner's thread, so waiting there would never end. Requests made before the window exists, such as a new status, are applied as soon as it does.
+
+The message file is the `Inbox` of `viewer-ui`.
+
+- Each running viewer has its own file, `%LOCALAPPDATA%\TPUI\inbox\<process id>.txt` (`~/.local/state/tpui/inbox/` elsewhere), created empty at start. `Copy Message File Path` copies its path.
+- The file is checked every 0.5 seconds. A change is applied once the file has stayed the same for one more check, which skips the empty file a writer leaves between truncating and writing. A UTF-8 byte order mark is dropped and `\r\n` line ends are read as `\n`.
+- The file is removed when the viewer quits. Files of viewers that ended without quitting are removed when the next viewer starts.
+
+Every applied query goes to the query log, `%LOCALAPPDATA%\TPUI\query-log\<date>.jsonl`, one JSON line per query.
+
+- A line holds the local time, the source file and SQLite table, the origin (`click`, `window` or `file`), the whole query text, and the row count of the resulting row view or the error. A text that does not parse is logged as received, with its error.
+- A query that starts a row view computation is logged when the computation ends. A computation replaced by a newer query before it ends is not logged, and a click that leaves the query unchanged is not logged again.
+- Lines are only appended; the log is never rewritten or trimmed. The log stays in the app's own folder, never next to the data. Queries can contain cell values, so the log can hold personal data from the files viewed; `Open Query Log Folder` shows where it is, and the user deletes it when they want to.
 
 ### File structure
 
@@ -165,6 +235,7 @@ File and folder selection uses GPUI's `App::prompt_for_paths`. [Official API](ht
 ### Theme
 
 - Colors come in a light and a dark set. At startup the app follows the Windows app color setting and keeps following its changes. The toolbar's `Light Mode` / `Dark Mode` button switches the theme, after which the app no longer follows the setting until restart.
+- The viewer uses the default theme of `viewer-ui`. Sizes and colors used only by the viewer's own views, such as grid and tree sizes and the find highlight, live in `viewer-app`.
 
 ## 3. Components and dependencies
 
@@ -172,9 +243,21 @@ The Cargo workspace consists of three crates.
 
 | Crate | Role | Depends on |
 |---|---|---|
-| `viewer-core` | Parquet and SQLite reading, row views, find, file and table structure. No GPUI dependency | arrow-rs, parquet, rusqlite |
-| `viewer-ui` | UI components shared by GPUI apps: light and dark themes, single-line input, tab bar, tables with fixed or wrapping rows, small buttons, line, bar and strip charts, heatmap, route map, number and size formats. No dependency on the data engine | GPUI |
+| `viewer-core` | Parquet and SQLite reading, row views, find, query text, file and table structure. No GPUI dependency | arrow-rs, parquet, rusqlite |
+| `viewer-ui` | UI components shared by GPUI apps: light and dark themes, context menu, query window of the operating system (Windows), message file, tab bar, tables with fixed or wrapping rows, small buttons, line, bar and strip charts, heatmap, route map, number and size formats. No dependency on the data engine | GPUI |
 | `viewer-app` | The Parquet viewer app. Combines the two crates and owns the worker and screen state | `viewer-core`, `viewer-ui`, GPUI |
+
+### Shared theme
+
+`viewer-ui` separates what components do from how they look. Components name the role of each color they draw and the sizes they follow; an app supplies the values.
+
+- `Theme` holds a dark and a light `Palette`, `Metrics` and `Fonts`. Without `theme::install`, the default theme is used.
+- Palette roles: background, surface (panels, bars, table headers), overlay (tooltips, menus, popovers), border, text, muted text, missing (null values and missing bars), error, selection, hover, button, button hover, accent, grid line, chart track, scrollbar track and thumb, drop target.
+- Metrics hold sizes several components follow together: the fixed table row height, the panel header height (including the tab bar), table cell padding, wrapping row padding and button padding. Geometry of one component stays with that component: tab sizes in the tab bar, bar thickness, track thickness and point size as chart options.
+- Fonts: the UI font and the monospace font. The defaults are Segoe UI and Consolas on Windows and DejaVu Sans and DejaVu Sans Mono elsewhere.
+- An app starts from `Theme::default()`, changes the fields it needs and calls `theme::install` once, before anything is drawn. The theme types are `#[non_exhaustive]`, so roles added later do not break an app's theme. Installing after the theme has been read panics, because the default theme is already in use.
+- There is one color mode per process. `theme::mode` and `theme::set_mode` switch between the two palettes, and color functions read the mode on every paint. Colors of an app's own views come from `theme::pick(dark, light)`.
+- A strip chart cannot know what lies behind it, so the ring that separates overlapping points takes its color from `StripChart::background`, by default the surface color.
 
 GPUI apps in other repositories use `viewer-ui` as a git dependency. Such an app depends on the same GPUI fork commit as `viewer-ui`; with a different commit, GPUI is built twice and the types do not match. When GPUI is upgraded, this repository moves first and the apps follow its commit.
 
@@ -213,11 +296,13 @@ flowchart TB
 | `AppController` | Tab list and active tab, issuing `SessionId` and `RequestId`, the active tab's latest `RequestId` per viewport, value and find request, error display, theme following |
 | Tab state | Per tab: path, `SessionId`, file state, grid scroll position, selected cell, schema expansion, applied row view conditions with their `ViewId` and row count, conditions being built |
 | `TabBar` (`viewer-ui`) | Tab titles, active marker, switch, close and reorder input |
-| `FindBar` | Find input, matching cell count and progress, previous and next input |
-| `FilterPopover` | Column being filtered, operator, value input, parse errors |
-| `ViewBar` | The row view's filter and sort conditions, progress and cancel, notices for unsortable columns |
+| `FindBar` | Value being found, matching cell count and progress, previous and next |
+| `Menu` (`viewer-ui`) | Items of an open context menu and their actions |
+| `InputWindow` (`viewer-ui`, Windows) | The query window's thread, edit control, status line and requests from the viewer |
+| `Inbox` (`viewer-ui`) | The message file of the process and the last version delivered |
+| `QueryLog` | The folder of the daily query log files |
+| `ViewBar` | The row view's filter and sort conditions as query text with operator boxes and the parentheses of `or` clauses, sweeping conditions into parentheses, query copy, progress and cancel, notices for unsortable columns |
 | `StructureView` | The active tab's file structure, the selected Row Group and its column information, or the table structure of a SQLite tab |
-| `TextInput` (`viewer-ui`) | Single-line text input: cursor, selection, clipboard, IME composition |
 | `ExplorerView` | Root path, expanded folders and databases, selected file or table, directory and database listing state |
 | `SchemaView` | The active tab's schema nodes and expansion state |
 | `GridView` | The active tab's logical scroll position, visible row and column ranges, cell previews and source row numbers, sort and filter marks in headers, input and rendering |
@@ -281,21 +366,21 @@ TPUI/
     │       ├── worker.rs
     │       ├── cell_preview.rs
     │       ├── value_detail.rs
+    │       ├── query_log.rs
     │       └── ui/
     │           ├── explorer.rs
     │           ├── schema.rs
     │           ├── grid.rs
     │           ├── value.rs
     │           ├── find_bar.rs
-    │           ├── filter_popover.rs
     │           ├── view_bar.rs
-    │           └── structure.rs
+    │           ├── structure.rs
+    │           └── style.rs
     ├── viewer-ui/
     │   ├── Cargo.toml
     │   ├── src/
     │   │   ├── lib.rs
     │   │   ├── theme.rs
-    │   │   ├── text_input.rs
     │   │   ├── tab_bar.rs
     │   │   ├── table.rs
     │   │   ├── widgets.rs
@@ -305,6 +390,10 @@ TPUI/
     │   │   ├── strip.rs
     │   │   ├── heatmap.rs
     │   │   ├── map.rs
+    │   │   ├── menu.rs
+    │   │   ├── input_window.rs
+    │   │   ├── inbox.rs
+    │   │   ├── storage.rs
     │   │   └── format.rs
     └── viewer-core/
         ├── Cargo.toml
@@ -318,6 +407,8 @@ TPUI/
         │   ├── scan.rs
         │   ├── condition.rs
         │   ├── row_view.rs
+        │   ├── query.rs
+        │   ├── filter.rs
         │   ├── sqlite.rs
         │   ├── find.rs
         │   ├── structure.rs
@@ -660,9 +751,11 @@ Without tabs, the app is in the empty state. Each tab's file state transitions `
 | File with no data | `Ready`, showing the schema, headers and a zero-row state |
 | Decoding failure or unsupported codec in a range | Schema kept; `ReadError` and retry shown for that range |
 | Selected value lookup failure | Grid kept; `ReadError` and retry shown in the Value panel |
-| Filter value cannot be parsed as the column type | Not applied; reason shown in the filter popover |
+| Filter value cannot be parsed as the column type | Not applied; reason shown in the filter and sort bar |
+| Query text does not parse | Nothing changes; line, column and reason shown in the filter and sort bar and the query window, and logged |
+| Message file or query log cannot be read or written | Reason shown in the filter and sort bar |
 | Read failure during row view computation | Previous row view kept; reason and `Retry` shown in the filter and sort bar |
-| Read failure during find computation | Reason shown in the find bar; recomputed on the next `Enter` |
+| Read failure during find computation | Reason shown in the find bar; recomputed on the next `F3` |
 | Responses for closed tabs' sessions or earlier requests | Dropped |
 | Tab closed | That session's pending work cancelled; file handle, metadata, index and cache entries released |
 | File size or modification time changed between reads | The tab's cache and grid are invalidated and reopen is offered |
@@ -684,8 +777,8 @@ Each stage uses the results of the previous ones. The path from opening the firs
 | 6. Tabs | Multi-session open/close in the engine, ordered open and close commands, tab list and active tab, drag reordering, per-tab scroll, selection and schema expansion, tab bar and shortcuts | Opening and switching between several files keeps each tab's scroll position and selected cell, and closing a tab releases its session's file handle and metadata |
 | 7. Value detail | `read_value`, holding the selected value, value tree and range nodes, virtualized body lines, raw value copy | Long strings, strings with newlines, large Binary and nested values can be viewed to the end without truncation, and copies equal the reference data |
 | 8. Request and memory control | Latest-request handling, generation checks, bounded result delivery, LRU shared by all tabs, release on tab switch and close | Fast scrolling, cell movement and tab switching never mix in earlier results, and with many tabs open the retained cache stays within the shared budget |
-| 9. Find | `TextInput`, find bar, sequential column scans, batch-by-batch computation tasks, find value parsing, match bitmap and navigation, match highlighting | String, numeric and time values are found with input exactly equal to their display text, and next, previous and wrap-around work. Scrolling and tab switching keep working during computation |
-| 10. Filter | Condition parsing, filtered rows, row view numbers, `read_rows`, source row number display, filter popover and filter and sort bar | Result rows per condition equal the reference data, and in a filtered row view scrolling, selection, value detail and find follow the row view order |
+| 9. Find | Find bar, sequential column scans, batch-by-batch computation tasks, find value parsing, match bitmap and navigation, match highlighting | String, numeric and time values are found with input exactly equal to their display text, and next, previous and wrap-around work. Scrolling and tab switching keep working during computation |
+| 10. Filter | Condition parsing, filtered rows, row view numbers, `read_rows`, source row number display, context menus and filter and sort bar | Result rows per condition equal the reference data, and in a filtered row view scrolling, selection, value detail and find follow the row view order |
 | 11. Sort | Header sort input, sort computation, display order, combination with filters | Ascending, descending, Null placement and source order of equal values match the reference data, and filter and sort work together |
 | 12. File structure | `file_structure` and `row_group_columns`, conversion of statistics to Arrow types, switching between data and file structure, file summary, column and Row Group tables | Per-column size, compression, null count, min and max and per-Row-Group sizes equal the reference metadata, and selecting a Row Group switches to its information |
 | 13. Shared UI crate and charts | `viewer-ui` split, shared table, buttons and input bindings, line/band/rule charts, heatmap, automatic ticks | Prediction intervals, actuals, bias, reliability and heatmaps of real probabilistic forecast data are drawn at the same positions as the source values, and hovered values equal the source |

@@ -1,3 +1,4 @@
+use crate::filter::Filter;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
@@ -129,6 +130,22 @@ impl FilterOp {
     pub fn takes_value(self) -> bool {
         !matches!(self, Self::IsNull | Self::IsNotNull)
     }
+
+    /// The opposite operator: `==` and `!=`, `<` and `>=`, `<=` and `>`, `is null` and `is not null`. `contains`
+    /// has none.
+    pub fn opposite(self) -> Option<Self> {
+        Some(match self {
+            Self::Eq => Self::NotEq,
+            Self::NotEq => Self::Eq,
+            Self::Lt => Self::GtEq,
+            Self::GtEq => Self::Lt,
+            Self::LtEq => Self::Gt,
+            Self::Gt => Self::LtEq,
+            Self::IsNull => Self::IsNotNull,
+            Self::IsNotNull => Self::IsNull,
+            Self::Contains => return None,
+        })
+    }
 }
 
 /// Filter condition on one column. `value` is the text the user typed, parsed as the column type.
@@ -146,17 +163,17 @@ pub struct SortKey {
     pub descending: bool,
 }
 
-/// Conditions deciding which rows the grid shows and in what order. One filter per column; all must hold.
+/// Conditions deciding which rows the grid shows and in what order: rows for which the filter holds, sorted.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct ViewSpec {
-    pub filters: Vec<FilterCondition>,
+    pub filter: Filter,
     pub sort: Option<SortKey>,
 }
 
 impl ViewSpec {
     /// Whether there is no filter or sort, so rows keep source order.
     pub fn is_identity(&self) -> bool {
-        self.filters.is_empty() && self.sort.is_none()
+        self.filter.is_empty() && self.sort.is_none()
     }
 }
 

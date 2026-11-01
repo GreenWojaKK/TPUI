@@ -20,7 +20,7 @@ use viewer_core::{
 };
 
 use crate::cell_preview::{CellPreview, preview_column};
-use crate::value_detail::{self, ValueBody, ValueDetail, ValueNode};
+use crate::value_detail::{self, CellValue, ValueBody, ValueDetail, ValueNode};
 
 /// Maximum number of messages queued in the result channel.
 const RESULT_CHANNEL_CAPACITY: usize = 2;
@@ -74,6 +74,12 @@ pub enum WorkerEvent {
         session: SessionId,
         request: RequestId,
         text: String,
+    },
+    /// The selected value as filter and find input.
+    ValueCell {
+        session: SessionId,
+        request: RequestId,
+        value: CellValue,
     },
     ValueFailed {
         session: SessionId,
@@ -152,9 +158,13 @@ pub struct ValueOp {
 }
 
 pub enum ValueOpKind {
-    Children { range: Range<usize> },
+    Children {
+        range: Range<usize>,
+    },
     Body,
     Copy,
+    /// The value as filter and find input.
+    Cell,
 }
 
 /// Cell previews of some rows of the visible range. `previews[c][r]` is column `columns[c]` at row view position
@@ -1134,6 +1144,11 @@ fn value_op_event(slice: &ValueSlice, op: ValueOp) -> Option<WorkerEvent> {
             session,
             request,
             text: value_detail::copy_text(&array, row),
+        },
+        ValueOpKind::Cell => WorkerEvent::ValueCell {
+            session,
+            request,
+            value: value_detail::cell_value(&array, row),
         },
     })
 }

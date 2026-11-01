@@ -1,11 +1,17 @@
-//! Fonts, colors and fixed sizes shared across the app.
+//! Colors, fonts and sizes of the shared components.
 //!
-//! Colors come in a dark and a light set. There is one mode per process, dark by default.
-//! Color functions read the current mode on every paint, so redrawing the window after [`set_mode`] applies it at once.
+//! Components read colors by role (background, surface, border, text and so on) and never hold color values
+//! themselves. The values live in a [`Theme`]: a dark and a light [`Palette`], [`Metrics`] and [`Fonts`]. An app
+//! that wants its own look starts from [`Theme::default`], changes the fields it needs and passes the result to
+//! [`install`] once, before anything is drawn. Without [`install`], the default theme is used.
+//!
+//! There is one color mode per process, dark by default. Color functions read the current mode on every paint, so
+//! redrawing the window after [`set_mode`] applies it at once.
 
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use gpui::{Pixels, Rgba, WindowAppearance, px, rgb};
+use gpui::{Pixels, Rgba, SharedString, WindowAppearance, px, rgb};
 
 /// Color mode of the UI.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -33,7 +39,192 @@ impl Mode {
     }
 }
 
+/// Colors of one mode, by role.
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub struct Palette {
+    /// Window background.
+    pub background: Rgba,
+    /// Panels, bars and table headers on the background.
+    pub surface: Rgba,
+    /// Surfaces floating above the window: tooltips, menus and popovers.
+    pub overlay: Rgba,
+    pub border: Rgba,
+    pub text: Rgba,
+    /// Secondary text: labels, captions, axis ticks.
+    pub text_muted: Rgba,
+    /// Places without a value: null values and missing bars.
+    pub missing: Rgba,
+    pub error: Rgba,
+    pub selection: Rgba,
+    pub hover: Rgba,
+    pub button: Rgba,
+    pub button_hover: Rgba,
+    /// Marks that call attention, such as the filter and sort markers.
+    pub accent: Rgba,
+    pub grid_line: Rgba,
+    /// Background of bar and strip chart tracks.
+    pub track: Rgba,
+    pub scrollbar_track: Rgba,
+    pub scrollbar_thumb: Rgba,
+    /// Drop position for a dragged tab.
+    pub drop_target: Rgba,
+}
+
+impl Palette {
+    fn default_dark() -> Self {
+        Self {
+            background: rgb(0x1e1f22),
+            surface: rgb(0x2b2d30),
+            overlay: rgb(0x313338),
+            border: rgb(0x393b40),
+            text: rgb(0xdfe1e5),
+            text_muted: rgb(0x8c8f94),
+            missing: rgb(0x7f8ea3),
+            error: rgb(0xf27c7c),
+            selection: rgb(0x2e436e),
+            hover: rgb(0x2a2c30),
+            button: rgb(0x3c3f45),
+            button_hover: rgb(0x4a4e55),
+            accent: rgb(0x6ea2ff),
+            grid_line: rgb(0x2f3135),
+            track: rgb(0x3a3d43),
+            scrollbar_track: rgb(0x232427),
+            scrollbar_thumb: rgb(0x4a4e55),
+            drop_target: rgb(0x2e436e),
+        }
+    }
+
+    fn default_light() -> Self {
+        Self {
+            background: rgb(0xf5f6f8),
+            surface: rgb(0xffffff),
+            overlay: rgb(0xffffff),
+            border: rgb(0xd9dce1),
+            text: rgb(0x1f2328),
+            text_muted: rgb(0x646a73),
+            missing: rgb(0x6b7a90),
+            error: rgb(0xc62828),
+            selection: rgb(0xd3e1fb),
+            hover: rgb(0xeceef1),
+            button: rgb(0xe6e8eb),
+            button_hover: rgb(0xd6d9de),
+            accent: rgb(0x2f6fde),
+            grid_line: rgb(0xe5e7ea),
+            track: rgb(0xe5e7ea),
+            scrollbar_track: rgb(0xeef0f2),
+            scrollbar_thumb: rgb(0xc3c7cd),
+            drop_target: rgb(0xd3e1fb),
+        }
+    }
+}
+
+/// Sizes that several components follow together, setting how dense the UI is.
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub struct Metrics {
+    /// Height of fixed table rows and table headers.
+    pub list_row_height: Pixels,
+    /// Height of panel headers, including the tab bar.
+    pub panel_header_height: Pixels,
+    /// Horizontal padding of table cells.
+    pub cell_padding_x: Pixels,
+    /// Vertical padding of wrapping table rows.
+    pub wrapped_row_padding_y: Pixels,
+    pub button_padding_x: Pixels,
+    pub button_padding_y: Pixels,
+}
+
+impl Default for Metrics {
+    fn default() -> Self {
+        Self {
+            list_row_height: px(24.),
+            panel_header_height: px(28.),
+            cell_padding_x: px(8.),
+            wrapped_row_padding_y: px(3.),
+            button_padding_x: px(8.),
+            button_padding_y: px(2.),
+        }
+    }
+}
+
+/// Font families.
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub struct Fonts {
+    /// Font of the UI. On Windows this is Segoe UI, set explicitly because the system UI font of Korean Windows
+    /// (Malgun Gothic) draws `\` as `₩`; Hangul falls back to the Windows fallback font.
+    pub ui: SharedString,
+    /// Monospace font, such as for value detail bodies.
+    pub mono: SharedString,
+}
+
+impl Default for Fonts {
+    #[cfg(target_os = "windows")]
+    fn default() -> Self {
+        Self {
+            ui: SharedString::new_static("Segoe UI"),
+            mono: SharedString::new_static("Consolas"),
+        }
+    }
+
+    // Other systems have no common UI font; DejaVu ships with most Linux distributions.
+    #[cfg(not(target_os = "windows"))]
+    fn default() -> Self {
+        Self {
+            ui: SharedString::new_static("DejaVu Sans"),
+            mono: SharedString::new_static("DejaVu Sans Mono"),
+        }
+    }
+}
+
+/// Everything an app can change about how the shared components look.
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub struct Theme {
+    pub dark: Palette,
+    pub light: Palette,
+    pub metrics: Metrics,
+    pub fonts: Fonts,
+}
+
+impl Default for Theme {
+    fn default() -> Self {
+        Self {
+            dark: Palette::default_dark(),
+            light: Palette::default_light(),
+            metrics: Metrics::default(),
+            fonts: Fonts::default(),
+        }
+    }
+}
+
+static THEME: OnceLock<Theme> = OnceLock::new();
 static LIGHT: AtomicBool = AtomicBool::new(false);
+
+/// Sets the theme of this process. Call it once, before anything is drawn.
+///
+/// # Panics
+///
+/// If a theme is already installed or has been read: the default theme is then in use, and replacing it partway
+/// would mix two looks.
+pub fn install(theme: Theme) {
+    if THEME.set(theme).is_err() {
+        panic!("theme::install must run once, before anything reads the theme");
+    }
+}
+
+fn current() -> &'static Theme {
+    THEME.get_or_init(Theme::default)
+}
+
+fn palette() -> &'static Palette {
+    let theme = current();
+    match mode() {
+        Mode::Dark => &theme.dark,
+        Mode::Light => &theme.light,
+    }
+}
 
 /// Current color mode.
 pub fn mode() -> Mode {
@@ -49,7 +240,7 @@ pub fn set_mode(mode: Mode) {
     LIGHT.store(mode == Mode::Light, Ordering::Relaxed);
 }
 
-/// Color for the current mode. Apps also use it to define their own colors in two sets.
+/// Color for the current mode. Apps use it for colors of their own that are not roles of the theme.
 pub fn pick(dark: u32, light: u32) -> Rgba {
     rgb(match mode() {
         Mode::Dark => dark,
@@ -57,135 +248,109 @@ pub fn pick(dark: u32, light: u32) -> Rgba {
     })
 }
 
-/// App-wide font. The system UI font of Korean Windows (Malgun Gothic) draws `\` as `₩`, so
-/// Segoe UI is set explicitly. Hangul falls back to the Windows fallback font.
-pub const UI_FONT: &str = "Segoe UI";
-/// Monospace font of the value detail body.
-pub const MONO_FONT: &str = "Consolas";
+pub fn metrics() -> &'static Metrics {
+    &current().metrics
+}
 
-pub const TOOLBAR_HEIGHT: Pixels = px(36.);
-pub const STATUS_BAR_HEIGHT: Pixels = px(24.);
-pub const PANEL_HEADER_HEIGHT: Pixels = px(28.);
-pub const EXPLORER_WIDTH: Pixels = px(240.);
-pub const SIDE_PANEL_WIDTH: Pixels = px(320.);
-pub const LIST_ROW_HEIGHT: Pixels = px(24.);
-pub const SCHEMA_TYPE_MAX_WIDTH: Pixels = px(140.);
-pub const SCHEMA_NULLABLE_WIDTH: Pixels = px(52.);
-pub const TAB_MAX_WIDTH: Pixels = px(220.);
-pub const TAB_MIN_WIDTH: Pixels = px(120.);
-pub const TAB_SCROLL_INDICATOR_HEIGHT: Pixels = px(3.);
-pub const TAB_SCROLL_INDICATOR_MIN_WIDTH: Pixels = px(24.);
-pub const TAB_CLOSE_SIZE: Pixels = px(18.);
-/// Holding a dragged tab within this width of either end of the tab bar scrolls the bar that way.
-pub const TAB_DRAG_EDGE: Pixels = px(40.);
-/// Maximum scroll per frame while a dragged tab is held at an end of the bar.
-pub const TAB_DRAG_SCROLL_STEP: Pixels = px(12.);
-/// Height of a single-line input.
-pub const INPUT_HEIGHT: Pixels = px(24.);
-/// Width of the filter button at the right of a header.
-pub const GRID_FILTER_BUTTON_WIDTH: Pixels = px(20.);
-/// Width of the sort direction marker.
-pub const GRID_SORT_MARK_WIDTH: Pixels = px(14.);
-/// Width of the filter popover.
-pub const FILTER_POPOVER_WIDTH: Pixels = px(300.);
-pub const TREE_INDENT: Pixels = px(14.);
-pub const TREE_ROW_PADDING: Pixels = px(8.);
-pub const TREE_CHEVRON_WIDTH: Pixels = px(12.);
-pub const GRID_ROW_HEIGHT: Pixels = px(24.);
-pub const GRID_HEADER_HEIGHT: Pixels = px(28.);
-pub const GRID_COLUMN_WIDTH: Pixels = px(160.);
-pub const GRID_CELL_PADDING: Pixels = px(8.);
-pub const GRID_MIN_ROW_NUMBER_WIDTH: Pixels = px(48.);
-pub const GRID_SCROLLBAR_SIZE: Pixels = px(12.);
-pub const GRID_SCROLLBAR_MIN_THUMB: Pixels = px(24.);
-pub const VALUE_LINE_HEIGHT: Pixels = px(20.);
+pub fn ui_font() -> SharedString {
+    current().fonts.ui.clone()
+}
+
+pub fn mono_font() -> SharedString {
+    current().fonts.mono.clone()
+}
 
 pub fn background() -> Rgba {
-    pick(0x1e1f22, 0xf5f6f8)
+    palette().background
 }
 
 pub fn surface() -> Rgba {
-    pick(0x2b2d30, 0xffffff)
+    palette().surface
+}
+
+pub fn overlay() -> Rgba {
+    palette().overlay
 }
 
 pub fn border() -> Rgba {
-    pick(0x393b40, 0xd9dce1)
+    palette().border
 }
 
 pub fn text() -> Rgba {
-    pick(0xdfe1e5, 0x1f2328)
+    palette().text
 }
 
 pub fn text_muted() -> Rgba {
-    pick(0x8c8f94, 0x646a73)
+    palette().text_muted
+}
+
+pub fn missing() -> Rgba {
+    palette().missing
 }
 
 pub fn error() -> Rgba {
-    pick(0xf27c7c, 0xc62828)
+    palette().error
 }
 
 pub fn selection() -> Rgba {
-    pick(0x2e436e, 0xd3e1fb)
+    palette().selection
 }
 
 pub fn hover() -> Rgba {
-    pick(0x2a2c30, 0xeceef1)
-}
-
-pub fn scrollbar_track() -> Rgba {
-    pick(0x232427, 0xeef0f2)
-}
-
-pub fn scrollbar_thumb() -> Rgba {
-    pick(0x4a4e55, 0xc3c7cd)
-}
-
-pub fn grid_line() -> Rgba {
-    pick(0x2f3135, 0xe5e7ea)
-}
-
-/// Background of bar and strip chart tracks.
-pub fn track() -> Rgba {
-    pick(0x3a3d43, 0xe5e7ea)
-}
-
-pub fn null_text() -> Rgba {
-    pick(0x7f8ea3, 0x6b7a90)
-}
-
-pub fn summary_text() -> Rgba {
-    pick(0xb4a7d6, 0x6a55a3)
+    palette().hover
 }
 
 pub fn button() -> Rgba {
-    pick(0x3c3f45, 0xe6e8eb)
+    palette().button
 }
 
 pub fn button_hover() -> Rgba {
-    pick(0x4a4e55, 0xd6d9de)
+    palette().button_hover
 }
 
-/// Drop position for the dragged tab.
-pub fn drop_target() -> Rgba {
-    pick(0x2e436e, 0xd3e1fb)
-}
-
-/// Border of a focused input.
-pub fn focus_border() -> Rgba {
-    pick(0x3574f0, 0x3574f0)
-}
-
-/// Background of cells matching the find input.
-pub fn find_match() -> Rgba {
-    pick(0x5c4a1e, 0xffe7a0)
-}
-
-/// Filter button of filtered columns and the sort direction marker.
 pub fn accent() -> Rgba {
-    pick(0x6ea2ff, 0x2f6fde)
+    palette().accent
 }
 
-/// Background of floating windows.
-pub fn popover() -> Rgba {
-    pick(0x313338, 0xffffff)
+pub fn grid_line() -> Rgba {
+    palette().grid_line
+}
+
+pub fn track() -> Rgba {
+    palette().track
+}
+
+pub fn scrollbar_track() -> Rgba {
+    palette().scrollbar_track
+}
+
+pub fn scrollbar_thumb() -> Rgba {
+    palette().scrollbar_thumb
+}
+
+pub fn drop_target() -> Rgba {
+    palette().drop_target
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[should_panic(expected = "theme::install")]
+    fn refuses_a_theme_installed_after_use() {
+        let _ = background();
+        install(Theme::default());
+    }
+
+    #[test]
+    fn apps_change_only_the_fields_they_need() {
+        let mut theme = Theme::default();
+        theme.light.text = rgb(0x345575);
+        theme.metrics.list_row_height = px(32.);
+        assert_eq!(theme.light.text, rgb(0x345575));
+        assert_eq!(theme.light.background, Palette::default_light().background);
+        assert_eq!(theme.dark.text, Palette::default_dark().text);
+        assert_eq!(theme.metrics.panel_header_height, px(28.));
+    }
 }

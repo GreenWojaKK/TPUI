@@ -14,6 +14,16 @@ use gpui::{
 
 use crate::theme;
 
+const TAB_MAX_WIDTH: Pixels = px(220.);
+const TAB_MIN_WIDTH: Pixels = px(120.);
+const TAB_SCROLL_INDICATOR_HEIGHT: Pixels = px(3.);
+const TAB_SCROLL_INDICATOR_MIN_WIDTH: Pixels = px(24.);
+const TAB_CLOSE_SIZE: Pixels = px(18.);
+/// Holding a dragged tab within this width of either end of the tab bar scrolls the bar that way.
+const TAB_DRAG_EDGE: Pixels = px(40.);
+/// Maximum scroll per frame while a dragged tab is held at an end of the bar.
+const TAB_DRAG_SCROLL_STEP: Pixels = px(12.);
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum TabStatus {
     Opening,
@@ -62,8 +72,8 @@ struct DraggedTab {
 impl Render for DraggedTab {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         div()
-            .w(theme::TAB_MAX_WIDTH)
-            .h(theme::PANEL_HEADER_HEIGHT)
+            .w(TAB_MAX_WIDTH)
+            .h(theme::metrics().panel_header_height)
             .px_3()
             .flex()
             .items_center()
@@ -72,7 +82,7 @@ impl Render for DraggedTab {
             .border_color(theme::scrollbar_thumb())
             .text_xs()
             .text_color(theme::text())
-            .font_family(theme::UI_FONT)
+            .font_family(theme::ui_font())
             .child(div().min_w_0().truncate().child(self.title.clone()))
     }
 }
@@ -90,7 +100,7 @@ impl Render for TabTooltip {
             .border_color(theme::border())
             .text_xs()
             .text_color(theme::text())
-            .font_family(theme::UI_FONT)
+            .font_family(theme::ui_font())
             .child(self.0.clone())
     }
 }
@@ -158,8 +168,8 @@ impl RenderOnce for TabBar {
             div()
                 .id(("tab", ix))
                 .flex_1()
-                .min_w(theme::TAB_MIN_WIDTH)
-                .max_w(theme::TAB_MAX_WIDTH)
+                .min_w(TAB_MIN_WIDTH)
+                .max_w(TAB_MAX_WIDTH)
                 .h_full()
                 .pl_3()
                 .pr_1()
@@ -199,8 +209,8 @@ impl RenderOnce for TabBar {
                     div()
                         .id(("tab-close", ix))
                         .flex_none()
-                        .w(theme::TAB_CLOSE_SIZE)
-                        .h(theme::TAB_CLOSE_SIZE)
+                        .w(TAB_CLOSE_SIZE)
+                        .h(TAB_CLOSE_SIZE)
                         .flex()
                         .items_center()
                         .justify_center()
@@ -230,13 +240,13 @@ impl RenderOnce for TabBar {
         .left_0()
         .bottom_0()
         .w_full()
-        .h(theme::TAB_SCROLL_INDICATOR_HEIGHT);
+        .h(TAB_SCROLL_INDICATOR_HEIGHT);
         let edge = self.state.edge_scroll.clone();
         let on_move = self.on_move.clone();
         div()
             .flex_none()
             .relative()
-            .h(theme::PANEL_HEADER_HEIGHT)
+            .h(theme::metrics().panel_header_height)
             .bg(theme::surface())
             .border_b_1()
             .border_color(theme::border())
@@ -267,7 +277,7 @@ fn edge_scroll_speed(bounds: gpui::Bounds<Pixels>, position: Point<Pixels>) -> P
     if position.y < bounds.top() || position.y > bounds.bottom() {
         return px(0.);
     }
-    let edge = theme::TAB_DRAG_EDGE;
+    let edge = TAB_DRAG_EDGE;
     let left = bounds.left() + edge - position.x;
     let right = position.x - (bounds.right() - edge);
     let depth = if left > px(0.) {
@@ -278,7 +288,7 @@ fn edge_scroll_speed(bounds: gpui::Bounds<Pixels>, position: Point<Pixels>) -> P
         return px(0.);
     };
     // A more negative offset shows more of the right side, so the right end decreases the offset.
-    -theme::TAB_DRAG_SCROLL_STEP * (depth / edge)
+    -TAB_DRAG_SCROLL_STEP * (depth / edge)
 }
 
 /// Left position and width of the scroll indicator when tabs overflow the bar. `None` if they fit.
@@ -288,7 +298,7 @@ fn scroll_indicator(scroll: &ScrollHandle) -> Option<(Pixels, Pixels)> {
     if view <= px(0.) || hidden <= px(0.) {
         return None;
     }
-    let width = (view * (view / (view + hidden))).max(theme::TAB_SCROLL_INDICATOR_MIN_WIDTH);
+    let width = (view * (view / (view + hidden))).max(TAB_SCROLL_INDICATOR_MIN_WIDTH);
     let ratio = (-scroll.offset().x / hidden).clamp(0., 1.);
     Some(((view - width) * ratio, width))
 }
@@ -313,16 +323,16 @@ mod tests {
     fn left_edge_reveals_left_tabs_and_right_edge_reveals_right_tabs() {
         // A larger offset (closer to 0) reveals tabs on the left.
         let left = edge_scroll_speed(bar(), point(px(100.), px(60.)));
-        assert_eq!(left, theme::TAB_DRAG_SCROLL_STEP);
+        assert_eq!(left, TAB_DRAG_SCROLL_STEP);
         let right = edge_scroll_speed(bar(), point(px(700.), px(60.)));
-        assert_eq!(right, -theme::TAB_DRAG_SCROLL_STEP);
+        assert_eq!(right, -TAB_DRAG_SCROLL_STEP);
         let half = edge_scroll_speed(bar(), point(px(680.), px(60.)));
-        assert_eq!(half, -theme::TAB_DRAG_SCROLL_STEP * 0.5);
+        assert_eq!(half, -TAB_DRAG_SCROLL_STEP * 0.5);
     }
 
     #[test]
     fn caps_speed_when_the_pointer_leaves_the_bar_sideways() {
         let outside = edge_scroll_speed(bar(), point(px(0.), px(60.)));
-        assert_eq!(outside, theme::TAB_DRAG_SCROLL_STEP);
+        assert_eq!(outside, TAB_DRAG_SCROLL_STEP);
     }
 }

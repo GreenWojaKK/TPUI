@@ -7,11 +7,15 @@ pub mod bars;
 pub mod chart;
 pub mod format;
 pub mod heatmap;
+pub mod inbox;
+#[cfg(target_os = "windows")]
+pub mod input_window;
 pub mod map;
+pub mod menu;
+pub mod storage;
 pub mod strip;
 pub mod tab_bar;
 pub mod table;
-pub mod text_input;
 pub mod theme;
 pub mod widgets;
 pub mod wrap;

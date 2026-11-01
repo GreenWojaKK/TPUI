@@ -142,7 +142,7 @@ impl RowViewTask {
                 )));
             }
         }
-        let phases = u32::from(!spec.filters.is_empty()) + u32::from(spec.sort.is_some());
+        let phases = u32::from(!spec.filter.is_empty()) + u32::from(spec.sort.is_some());
         let mut task = Self {
             session,
             total_rows,
@@ -151,8 +151,8 @@ impl RowViewTask {
             phase_ix: 0,
             phase: Phase::Done(RowView::identity(total_rows)),
         };
-        if !spec.filters.is_empty() {
-            let filter = CompiledFilter::new(&schema, &spec.filters)?;
+        if !spec.filter.is_empty() {
+            let filter = CompiledFilter::new(&schema, &spec.filter)?;
             let scan = engine.scan(session, filter.columns(), None)?;
             task.phase = Phase::Filter {
                 scan,

@@ -11,7 +11,7 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use parquet::arrow::ArrowWriter;
 use parquet::file::properties::WriterProperties;
 use viewer_core::{
-    ColumnId, FilterCondition, FilterOp, FindQuery, FindTask, RowIds, RowView, RowViewTask,
+    ColumnId, Filter, FilterCondition, FilterOp, FindQuery, FindTask, RowIds, RowView, RowViewTask,
     SessionId, SortKey, TaskStep, ViewSpec, ViewerEngine, ViewerError,
 };
 
@@ -139,10 +139,10 @@ fn reads_rows_in_the_requested_order() {
 fn filters_rows_with_every_condition() {
     let (_dir, engine) = open();
     let spec = ViewSpec {
-        filters: vec![
+        filter: Filter::all(vec![
             condition(1, FilterOp::Eq, "3"),
             condition(2, FilterOp::Contains, "row-1"),
-        ],
+        ]),
         sort: None,
     };
     let view = build_view(&engine, &spec).unwrap();
@@ -156,10 +156,42 @@ fn filters_rows_with_every_condition() {
 }
 
 #[test]
+fn combines_conditions_on_one_column_with_or() {
+    let (_dir, engine) = open();
+    // (group == 3 or group is null) and (id < 100 or id >= 2400) and name contains "row-1"
+    let spec = ViewSpec {
+        filter: Filter::from_clauses(vec![
+            vec![
+                condition(1, FilterOp::Eq, "3"),
+                condition(1, FilterOp::IsNull, ""),
+            ],
+            vec![
+                condition(0, FilterOp::Lt, "100"),
+                condition(0, FilterOp::GtEq, "2400"),
+            ],
+            vec![condition(2, FilterOp::Contains, "row-1")],
+        ]),
+        sort: None,
+    };
+    let view = build_view(&engine, &spec).unwrap();
+    let expected: Vec<u64> = (0..ROWS)
+        .filter(|id| {
+            let group = id % 5 == 0 || id % 7 == 3;
+            let range = *id < 100 || *id >= 2400;
+            let name = id % 3 != 0 && format!("row-{}", id % 11).contains("row-1");
+            group && range && name
+        })
+        .map(|id| id as u64)
+        .collect();
+    assert!(!expected.is_empty() && expected.len() < ROWS as usize);
+    assert_eq!(ids_of(&view), expected);
+}
+
+#[test]
 fn sorts_filtered_rows_with_nulls_last_and_stable_ties() {
     let (_dir, engine) = open();
     let spec = ViewSpec {
-        filters: vec![condition(0, FilterOp::Lt, "40")],
+        filter: Filter::all(vec![condition(0, FilterOp::Lt, "40")]),
         sort: Some(SortKey {
             column: ColumnId(1),
             descending: true,
@@ -182,7 +214,7 @@ fn sorts_filtered_rows_with_nulls_last_and_stable_ties() {
 fn rejects_values_that_do_not_fit_the_column() {
     let (_dir, engine) = open();
     let spec = ViewSpec {
-        filters: vec![condition(0, FilterOp::Eq, "abc")],
+        filter: Filter::all(vec![condition(0, FilterOp::Eq, "abc")]),
         sort: None,
     };
     assert!(matches!(
@@ -196,7 +228,7 @@ fn finds_cells_in_view_order_and_wraps_around() {
     let (_dir, mut engine) = open();
     let schema = engine.schema(SessionId(1)).unwrap();
     let spec = ViewSpec {
-        filters: vec![condition(0, FilterOp::GtEq, "1000")],
+        filter: Filter::all(vec![condition(0, FilterOp::GtEq, "1000")]),
         sort: Some(SortKey {
             column: ColumnId(0),
             descending: true,

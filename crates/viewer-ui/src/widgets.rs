@@ -1,6 +1,6 @@
 //! Small components shared by several views.
 
-use gpui::{Div, ElementId, SharedString, Stateful, div, prelude::*, px};
+use gpui::{Div, ElementId, SharedString, Stateful, div, prelude::*};
 
 use crate::theme;
 
@@ -9,8 +9,8 @@ pub fn small_button(id: impl Into<ElementId>, label: impl Into<SharedString>) ->
     div()
         .id(id)
         .flex_none()
-        .px_2()
-        .py(px(2.))
+        .px(theme::metrics().button_padding_x)
+        .py(theme::metrics().button_padding_y)
         .rounded_sm()
         .bg(theme::button())
         .hover(|style| style.bg(theme::button_hover()))
@@ -27,8 +27,8 @@ pub fn toggle_button(
     div()
         .id(id)
         .flex_none()
-        .px_2()
-        .py(px(2.))
+        .px(theme::metrics().button_padding_x)
+        .py(theme::metrics().button_padding_y)
         .rounded_sm()
         .cursor_pointer()
         .bg(if selected {
