@@ -17,9 +17,9 @@ use gpui::{
 use viewer_core::ColumnId;
 
 use crate::cell_preview::{CellKind, CellPreview};
-use crate::ui::theme;
 use crate::ui::value::CopyValue;
 use crate::worker::WindowCells;
+use viewer_ui::theme;
 
 actions!(
     grid,

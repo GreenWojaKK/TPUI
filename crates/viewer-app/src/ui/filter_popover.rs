@@ -9,9 +9,9 @@ use viewer_core::{
     ColumnId, FilterCondition, FilterOp, ValueClass, check_condition, filter_ops, value_class,
 };
 
-use crate::ui::find_bar::bar_button;
-use crate::ui::text_input::{TextInput, TextInputEvent};
-use crate::ui::theme;
+use viewer_ui::text_input::{TextInput, TextInputEvent};
+use viewer_ui::theme;
+use viewer_ui::widgets::small_button;
 
 pub enum FilterPopoverEvent {
     Apply(FilterCondition),
@@ -230,7 +230,7 @@ impl Render for FilterPopover {
                     .gap_2()
                     .when(self.has_condition, |row| {
                         row.child(
-                            bar_button("filter-remove", "필터 해제").on_click(cx.listener(
+                            small_button("filter-remove", "필터 해제").on_click(cx.listener(
                                 |this, _: &ClickEvent, _, cx| {
                                     cx.emit(FilterPopoverEvent::Remove(this.column))
                                 },
@@ -239,7 +239,7 @@ impl Render for FilterPopover {
                     })
                     .child(div().flex_1())
                     .child(
-                        bar_button("filter-apply", "적용")
+                        small_button("filter-apply", "적용")
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.apply(cx))),
                     ),
             )

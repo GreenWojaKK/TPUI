@@ -11,7 +11,7 @@ use gpui::{
     div, prelude::*, uniform_list,
 };
 
-use crate::ui::theme;
+use viewer_ui::theme;
 
 actions!(explorer, [OpenSelected]);
 

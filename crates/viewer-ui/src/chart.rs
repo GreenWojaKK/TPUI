@@ -10,11 +10,11 @@ use std::rc::Rc;
 use gpui::{
     App, BorderStyle, Bounds, ContentMask, Corners, DispatchPhase, Element, ElementId,
     GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId,
-    MouseMoveEvent, PathBuilder, Pixels, Point, SharedString, ShapedLine, Style, TextAlign,
+    MouseMoveEvent, PathBuilder, Pixels, Point, ShapedLine, SharedString, Style, TextAlign,
     TextRun, Window, fill, outline, point, px, relative, size,
 };
 
-use crate::ui::theme;
+use crate::theme;
 
 /// 눈금 하나와 그 표시.
 pub type Tick = (f64, SharedString);
@@ -31,7 +31,11 @@ pub struct Axis {
 impl Axis {
     /// `[min, max]` 범위의 축. 범위가 비면 1만큼 넓힌다.
     pub fn new(min: f64, max: f64) -> Self {
-        let (min, max) = if max > min { (min, max) } else { (min, min + 1.) };
+        let (min, max) = if max > min {
+            (min, max)
+        } else {
+            (min, min + 1.)
+        };
         Self {
             min,
             max,
@@ -45,11 +49,25 @@ impl Axis {
         self
     }
 
-    /// 범위 안에 1·2·2.5·5×10ⁿ 간격의 눈금을 `count`개 안팎으로 둔다.
-    pub fn nice_ticks(mut self, count: usize, format: impl Fn(f64) -> String) -> Self {
-        self.ticks = nice_ticks(self.min, self.max, count)
+    /// 범위 안에 1·2·2.5·5×10ⁿ 간격의 눈금을 `count`개 안팎으로 둔다. 표시는 간격을 나타낼 수
+    /// 있는 가장 적은 소수 자릿수로 한다. 예를 들어 간격이 0.25면 소수 둘째 자리까지 쓴다.
+    pub fn nice_ticks(self, count: usize) -> Self {
+        self.nice_ticks_with(count, |value, decimals| format!("{value:.decimals$}"))
+    }
+
+    /// [`Self::nice_ticks`]와 같은 눈금을 `format(값, 소수 자릿수)`로 표시한다. 단위나 부호를
+    /// 붙일 때 쓴다.
+    pub fn nice_ticks_with(mut self, count: usize, format: impl Fn(f64, usize) -> String) -> Self {
+        let ticks = nice_ticks(self.min, self.max, count);
+        let decimals = match ticks.as_slice() {
+            [first, second, ..] => step_decimals(second - first),
+            [only] => step_decimals(only.abs()),
+            [] => 0,
+        };
+        self.ticks = ticks
             .into_iter()
-            .map(|value| (value, format(value).into()))
+            // -0.0이 "-0"으로 보이지 않도록 0을 더한다.
+            .map(|value| (value, format(value + 0., decimals).into()))
             .collect();
         self
     }
@@ -584,6 +602,19 @@ pub(crate) fn nearest(positions: &[f64], value: f64) -> Option<usize> {
         .map(|(ix, _)| ix)
 }
 
+/// 간격 `step`의 배수를 빠짐없이 나타내는 가장 적은 소수 자릿수.
+pub fn step_decimals(step: f64) -> usize {
+    if !step.is_finite() || step == 0. {
+        return 0;
+    }
+    (0..=12)
+        .find(|decimals| {
+            let scaled = step.abs() * 10f64.powi(*decimals as i32);
+            (scaled - scaled.round()).abs() < 1e-6 * scaled.max(1.)
+        })
+        .unwrap_or(12)
+}
+
 /// `[min, max]` 안에서 1·2·2.5·5×10ⁿ 간격으로 `count`개 안팎의 눈금 값.
 pub fn nice_ticks(min: f64, max: f64, count: usize) -> Vec<f64> {
     if !(min.is_finite() && max.is_finite()) || max <= min || count == 0 {
@@ -614,7 +645,10 @@ mod tests {
     #[test]
     fn splits_runs_at_missing_values() {
         let values = [Some(1), None, Some(2), Some(3), None];
-        assert_eq!(runs(values.len(), |ix| values[ix].is_some()), vec![0..1, 2..4]);
+        assert_eq!(
+            runs(values.len(), |ix| values[ix].is_some()),
+            vec![0..1, 2..4]
+        );
         assert!(runs(3, |_| false).is_empty());
         assert_eq!(runs(3, |_| true), vec![0..3]);
     }
@@ -633,6 +667,21 @@ mod tests {
         assert_eq!(nice_ticks(0., 1., 4), vec![0., 0.25, 0.5, 0.75, 1.]);
         assert_eq!(nice_ticks(-3., 3., 6), vec![-3., -2., -1., 0., 1., 2., 3.]);
         assert!(nice_ticks(1., 1., 4).is_empty());
+    }
+
+    #[test]
+    fn labels_ticks_with_enough_decimals() {
+        assert_eq!(step_decimals(0.25), 2);
+        assert_eq!(step_decimals(0.2), 1);
+        assert_eq!(step_decimals(5.), 0);
+        assert_eq!(step_decimals(2.5), 1);
+        let labels: Vec<String> = Axis::new(-0.415, 0.415)
+            .nice_ticks(4)
+            .ticks
+            .into_iter()
+            .map(|(_, label)| label.to_string())
+            .collect();
+        assert_eq!(labels, ["-0.25", "0.00", "0.25"]);
     }
 
     #[test]

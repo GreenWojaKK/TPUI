@@ -8,7 +8,7 @@ use gpui::{
     ClickEvent, Context, Div, SharedString, Stateful, Window, div, prelude::*, uniform_list,
 };
 
-use crate::ui::theme;
+use viewer_ui::theme;
 
 /// 스키마 필드 하나와 그 자식 필드.
 #[derive(Debug, PartialEq, Eq)]

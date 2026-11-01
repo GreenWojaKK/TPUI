@@ -5,8 +5,8 @@ use std::rc::Rc;
 use gpui::{App, ClickEvent, SharedString, Window, div, prelude::*, px};
 use viewer_core::ColumnId;
 
-use crate::ui::find_bar::bar_button;
-use crate::ui::theme;
+use viewer_ui::theme;
+use viewer_ui::widgets::small_button;
 
 #[derive(Clone, Copy, Debug)]
 pub enum ViewBarAction {
@@ -79,7 +79,7 @@ impl RenderOnce for ViewBar {
         let on_action = self.on_action.clone();
         let button = move |id: &'static str, label: &'static str, action: ViewBarAction| {
             let on_action = on_action.clone();
-            bar_button(id, label)
+            small_button(id, label)
                 .on_click(move |_: &ClickEvent, window, cx| on_action(action, window, cx))
         };
         let has_conditions = !self.filters.is_empty() || self.sort.is_some();

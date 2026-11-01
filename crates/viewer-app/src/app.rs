@@ -12,20 +12,21 @@ use viewer_core::{
     ViewerError, WindowRequest, is_sortable,
 };
 
-use crate::format::{format_bytes, format_count};
 use crate::ui::explorer::{ExplorerEvent, ExplorerView};
 use crate::ui::filter_popover::{FilterPopover, FilterPopoverEvent, op_label};
 use crate::ui::find_bar::{FindBar, FindBarEvent, FindStatus};
 use crate::ui::grid::{GridEvent, GridLoadState, GridPosition, GridRows, GridView, HeaderMarks};
 use crate::ui::schema::SchemaView;
 use crate::ui::structure::{StructureEvent, StructureView};
-use crate::ui::tab_bar::{TabBar, TabBarState, TabLabel, TabStatus};
-use crate::ui::theme;
 use crate::ui::value::{ValueEvent, ValueView};
 use crate::ui::view_bar::{ViewBar, ViewBarAction};
 use crate::worker::{
     FindRequest, StructureRequest, ValueOp, ValueOpKind, ViewId, ViewerWorker, WorkerEvent,
 };
+use viewer_ui::format::{format_bytes, format_count};
+use viewer_ui::tab_bar::{TabBar, TabBarState, TabLabel, TabStatus};
+use viewer_ui::theme;
+use viewer_ui::widgets::toggle_button;
 
 actions!(
     viewer,
@@ -1243,24 +1244,8 @@ impl AppController {
         .then(|| self.find_bar.clone());
         let mode = tab.mode;
         let mode_button = |id: &'static str, label: &'static str, target: CenterMode| {
-            let selected = mode == target;
-            div()
-                .id(id)
-                .flex_none()
-                .px_2()
-                .py(gpui::px(2.))
-                .rounded_sm()
-                .cursor_pointer()
+            toggle_button(id, label, mode == target)
                 .text_xs()
-                .bg(if selected {
-                    theme::selection()
-                } else {
-                    theme::button()
-                })
-                .when(!selected, |button| {
-                    button.hover(|style| style.bg(theme::button_hover()))
-                })
-                .child(label)
                 .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.set_mode(target, cx)))
         };
         let mode_toggle = matches!(tab.state, TabState::Ready(_)).then(|| {

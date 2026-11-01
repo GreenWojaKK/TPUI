@@ -6,13 +6,14 @@
 use std::ops::Range;
 
 use gpui::{
-    AnyView, ClickEvent, Context, Div, EventEmitter, SharedString, Stateful, Window, div,
-    prelude::*, px, relative, uniform_list,
+    ClickEvent, Context, Div, EventEmitter, SharedString, Stateful, Window, div, prelude::*, px,
+    relative, uniform_list,
 };
 use viewer_core::{ColumnChunkInfo, FileStructure, StatValue};
 
-use crate::format::{format_bytes, format_count, format_ratio};
-use crate::ui::theme;
+use viewer_ui::format::{format_bytes, format_count, format_ratio};
+use viewer_ui::table::{self, Cell, ColumnSpec};
+use viewer_ui::theme;
 
 pub enum StructureEvent {
     /// 컬럼 표에 보일 Row Group을 고른다. `None`은 전체다.
@@ -37,7 +38,7 @@ pub struct StructureView {
 impl EventEmitter<StructureEvent> for StructureView {}
 
 /// 컬럼 표의 칸 이름과 너비 비율.
-const COLUMN_TABLE: [(&str, f32); 10] = [
+const COLUMN_TABLE: [ColumnSpec; 10] = [
     ("컬럼", 3.0),
     ("타입", 2.4),
     ("압축", 1.4),
@@ -51,7 +52,7 @@ const COLUMN_TABLE: [(&str, f32); 10] = [
 ];
 
 /// Row Group 표의 칸 이름과 너비 비율.
-const GROUP_TABLE: [(&str, f32); 5] = [
+const GROUP_TABLE: [ColumnSpec; 5] = [
     ("Row Group", 1.5),
     ("행 수", 1.5),
     ("압축 후", 1.5),
@@ -186,7 +187,7 @@ impl StructureView {
             .child(line("key-value 메타데이터", keys))
     }
 
-    fn render_column_row(&self, ix: usize, cx: &mut Context<Self>) -> Stateful<Div> {
+    fn render_column_row(&self, ix: usize) -> Stateful<Div> {
         let column = &self.columns().expect("컬럼 표를 그릴 때만 부른다")[ix];
         let type_label: SharedString = match &column.logical_type {
             Some(logical) => format!("{} · {logical}", column.physical_type).into(),
@@ -198,35 +199,22 @@ impl StructureView {
             (false, true) => "Bloom",
             (false, false) => "-",
         };
-        let cells: [(SharedString, Option<SharedString>, bool); 10] = [
-            (
-                column.path.clone().into(),
-                Some(column.path.clone().into()),
-                false,
-            ),
-            (
-                type_label.clone(),
-                Some(format!("{type_label}\n인코딩: {}", column.encodings.join(", ")).into()),
-                false,
-            ),
-            (column.codecs.join(", ").into(), None, false),
-            (format_bytes(column.compressed).into(), None, true),
-            (format_bytes(column.uncompressed).into(), None, true),
-            (
-                format_ratio(column.uncompressed, column.compressed).into(),
-                None,
-                true,
-            ),
-            (
-                column.nulls.map_or("-".into(), format_count).into(),
-                None,
-                true,
-            ),
+        let cells = vec![
+            Cell::new(column.path.clone()).tooltip(column.path.clone()),
+            Cell::new(type_label.clone()).tooltip(format!(
+                "{type_label}\n인코딩: {}",
+                column.encodings.join(", ")
+            )),
+            Cell::new(column.codecs.join(", ")),
+            Cell::new(format_bytes(column.compressed)).right(),
+            Cell::new(format_bytes(column.uncompressed)).right(),
+            Cell::new(format_ratio(column.uncompressed, column.compressed)).right(),
+            Cell::new(column.nulls.map_or("-".into(), format_count)).right(),
             stat_cell(column.min.as_ref()),
             stat_cell(column.max.as_ref()),
-            (index.into(), None, false),
+            Cell::new(index),
         ];
-        table_row(("structure-column", ix), &COLUMN_TABLE, cells, cx)
+        table::row("structure-column", ix, &COLUMN_TABLE, cells)
     }
 
     fn render_group_row(&self, ix: usize, cx: &mut Context<Self>) -> Stateful<Div> {
@@ -260,15 +248,15 @@ impl StructureView {
                 )
             }
         };
-        let cells: [(SharedString, Option<SharedString>, bool); 5] = [
-            (label, None, false),
-            (format_count(rows).into(), None, true),
-            (format_bytes(compressed).into(), None, true),
-            (format_bytes(uncompressed).into(), None, true),
-            (format_ratio(uncompressed, compressed).into(), None, true),
+        let cells = vec![
+            Cell::new(label),
+            Cell::new(format_count(rows)).right(),
+            Cell::new(format_bytes(compressed)).right(),
+            Cell::new(format_bytes(uncompressed)).right(),
+            Cell::new(format_ratio(uncompressed, compressed)).right(),
         ];
         let selected = self.selected == row_group;
-        table_row(("structure-group", ix), &GROUP_TABLE, cells, cx)
+        table::row("structure-group", ix, &GROUP_TABLE, cells)
             .cursor_pointer()
             .when(selected, |row| row.bg(theme::selection()))
             .when(!selected, |row| row.hover(|style| style.bg(theme::hover())))
@@ -277,99 +265,12 @@ impl StructureView {
 }
 
 /// 통계 값 칸. 파일에 잘라 적힌 근삿값은 `≈`를 붙인다.
-fn stat_cell(value: Option<&StatValue>) -> (SharedString, Option<SharedString>, bool) {
+fn stat_cell(value: Option<&StatValue>) -> Cell {
     match value {
-        None => ("-".into(), None, false),
-        Some(value) if value.exact => (
-            value.text.clone().into(),
-            Some(value.text.clone().into()),
-            false,
-        ),
-        Some(value) => (
-            format!("≈ {}", value.text).into(),
-            Some(format!("{}\n파일에 잘라 적힌 근삿값입니다.", value.text).into()),
-            false,
-        ),
-    }
-}
-
-/// 표의 머리글 행.
-fn table_header(columns: &[(&'static str, f32)]) -> Div {
-    let total: f32 = columns.iter().map(|(_, weight)| weight).sum();
-    div()
-        .flex_none()
-        .h(theme::LIST_ROW_HEIGHT)
-        .px_2()
-        .flex()
-        .items_center()
-        .bg(theme::surface())
-        .border_b_1()
-        .border_color(theme::border())
-        .text_color(theme::text_muted())
-        .children(columns.iter().map(|(label, weight)| {
-            div()
-                .w(relative(weight / total))
-                .min_w_0()
-                .pr_2()
-                .truncate()
-                .child(*label)
-        }))
-}
-
-/// 표의 한 행. 칸마다 (표시, 툴팁, 오른쪽 정렬)을 받는다.
-fn table_row<const N: usize>(
-    id: (&'static str, usize),
-    columns: &[(&'static str, f32); N],
-    cells: [(SharedString, Option<SharedString>, bool); N],
-    _cx: &mut Context<StructureView>,
-) -> Stateful<Div> {
-    let total: f32 = columns.iter().map(|(_, weight)| weight).sum();
-    let (name, row) = id;
-    div()
-        .id((name, row))
-        .w_full()
-        .h(theme::LIST_ROW_HEIGHT)
-        .px_2()
-        .flex()
-        .items_center()
-        .border_b_1()
-        .border_color(theme::grid_line())
-        .children(cells.into_iter().zip(columns).enumerate().map(
-            |(col, ((text, tooltip, right), (_, weight)))| {
-                div()
-                    .id(SharedString::from(format!("{name}-{row}-{col}")))
-                    .w(relative(weight / total))
-                    .min_w_0()
-                    .pr_2()
-                    .truncate()
-                    .when(right, |cell| cell.flex().justify_end())
-                    .when_some(tooltip, |cell, tooltip| {
-                        cell.tooltip(move |_, cx| -> AnyView {
-                            cx.new(|_| CellTooltip(tooltip.clone())).into()
-                        })
-                    })
-                    .child(text)
-            },
-        ))
-}
-
-struct CellTooltip(SharedString);
-
-impl Render for CellTooltip {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .max_w(px(480.))
-            .px_2()
-            .py_1()
-            .rounded_md()
-            .bg(theme::surface())
-            .border_1()
-            .border_color(theme::border())
-            .text_xs()
-            .text_color(theme::text())
-            .font_family(theme::UI_FONT)
-            .whitespace_normal()
-            .children(self.0.split('\n').map(|line| div().child(line.to_string())))
+        None => Cell::new("-"),
+        Some(value) if value.exact => Cell::new(value.text.clone()).tooltip(value.text.clone()),
+        Some(value) => Cell::new(format!("≈ {}", value.text))
+            .tooltip(format!("{}\n파일에 잘라 적힌 근삿값입니다.", value.text)),
     }
 }
 
@@ -417,8 +318,8 @@ impl Render for StructureView {
             uniform_list(
                 "structure-columns",
                 column_count,
-                cx.processor(|this, range: Range<usize>, _window, cx| {
-                    range.map(|ix| this.render_column_row(ix, cx)).collect()
+                cx.processor(|this, range: Range<usize>, _window, _cx| {
+                    range.map(|ix| this.render_column_row(ix)).collect()
                 }),
             )
             .flex_1()
@@ -435,7 +336,7 @@ impl Render for StructureView {
             .text_xs()
             .child(Self::render_summary(structure))
             .child(section(column_title))
-            .child(table_header(&COLUMN_TABLE))
+            .child(table::header(&COLUMN_TABLE))
             .child(
                 div()
                     .flex_1()
@@ -455,7 +356,7 @@ impl Render for StructureView {
                     .child(section(
                         format!("Row Group {}개", structure.row_groups.len()).into(),
                     ))
-                    .child(table_header(&GROUP_TABLE))
+                    .child(table::header(&GROUP_TABLE))
                     .child(
                         uniform_list(
                             "structure-groups",

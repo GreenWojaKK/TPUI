@@ -7,13 +7,12 @@ use std::rc::Rc;
 
 use gpui::{
     App, BorderStyle, Bounds, DispatchPhase, Element, ElementId, GlobalElementId, Hitbox,
-    HitboxBehavior, InspectorElementId, IntoElement, LayoutId, MouseMoveEvent, Pixels, Point,
-    Rgba, SharedString, ShapedLine, Style, TextAlign, Window, fill, outline, point, px, relative,
-    size,
+    HitboxBehavior, InspectorElementId, IntoElement, LayoutId, MouseMoveEvent, Pixels, Point, Rgba,
+    ShapedLine, SharedString, Style, TextAlign, Window, fill, outline, point, px, relative, size,
 };
 
-use crate::ui::chart::TextShaper;
-use crate::ui::theme;
+use crate::chart::TextShaper;
+use crate::theme;
 
 /// 0을 가운데로 둔 발산 색 척도. `bound` 이상의 크기는 끝 색으로 칠한다.
 #[derive(Clone, Copy, Debug)]
@@ -156,7 +155,11 @@ impl Element for Heatmap {
     ) -> Self::PrepaintState {
         let text = TextShaper::new(window);
         let gap = px(6.);
-        let row_labels: Vec<_> = self.rows.iter().map(|row| text.shape(row.clone())).collect();
+        let row_labels: Vec<_> = self
+            .rows
+            .iter()
+            .map(|row| text.shape(row.clone()))
+            .collect();
         let bound = self.scale.bound;
         let legend_labels: Vec<_> = [bound, 0., -bound]
             .into_iter()
@@ -233,7 +236,10 @@ impl Element for Heatmap {
             let width = grid.size.width / columns as f32;
             let height = grid.size.height / rows as f32;
             Bounds::new(
-                point(grid.left() + width * column as f32, grid.top() + height * row as f32),
+                point(
+                    grid.left() + width * column as f32,
+                    grid.top() + height * row as f32,
+                ),
                 size(width, height),
             )
         };
@@ -246,7 +252,11 @@ impl Element for Heatmap {
         }
         window.paint_quad(outline(grid, theme::border(), BorderStyle::Solid));
         if let Some((Some((row, column)), _)) = &self.hover {
-            window.paint_quad(outline(cell(*row, *column), theme::text(), BorderStyle::Solid));
+            window.paint_quad(outline(
+                cell(*row, *column),
+                theme::text(),
+                BorderStyle::Solid,
+            ));
         }
 
         // 위가 +bound, 아래가 -bound인 색 척도 막대.
@@ -265,7 +275,14 @@ impl Element for Heatmap {
         window.paint_quad(outline(legend, theme::border(), BorderStyle::Solid));
 
         for (line, origin) in &layout.labels {
-            let _ = line.paint(*origin, layout.line_height, TextAlign::Left, None, window, cx);
+            let _ = line.paint(
+                *origin,
+                layout.line_height,
+                TextAlign::Left,
+                None,
+                window,
+                cx,
+            );
         }
 
         if let Some((_, handler)) = &self.hover {

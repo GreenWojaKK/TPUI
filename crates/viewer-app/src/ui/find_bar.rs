@@ -4,9 +4,10 @@ use gpui::{
     ClickEvent, Context, Entity, EventEmitter, SharedString, Subscription, Window, div, prelude::*,
 };
 
-use crate::format::format_count;
-use crate::ui::text_input::{TextInput, TextInputEvent};
-use crate::ui::theme;
+use viewer_ui::format::format_count;
+use viewer_ui::text_input::{TextInput, TextInputEvent};
+use viewer_ui::theme;
+use viewer_ui::widgets::small_button;
 
 pub enum FindBarEvent {
     /// 다음(backward = false) 또는 이전 일치를 찾는다.
@@ -114,10 +115,10 @@ impl Render for FindBar {
                     .w(gpui::px(280.))
                     .child(self.input.clone()),
             )
-            .child(bar_button("find-previous", "이전").on_click(cx.listener(
+            .child(small_button("find-previous", "이전").on_click(cx.listener(
                 |_, _: &ClickEvent, _, cx| cx.emit(FindBarEvent::Search { backward: true }),
             )))
-            .child(bar_button("find-next", "다음").on_click(cx.listener(
+            .child(small_button("find-next", "다음").on_click(cx.listener(
                 |_, _: &ClickEvent, _, cx| cx.emit(FindBarEvent::Search { backward: false }),
             )))
             .child(
@@ -133,7 +134,7 @@ impl Render for FindBar {
                     .child(status),
             )
             .child(
-                bar_button("find-close", "×")
+                small_button("find-close", "×")
                     .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(FindBarEvent::Close))),
             )
     }
@@ -141,18 +142,4 @@ impl Render for FindBar {
 
 fn px_4() -> gpui::Pixels {
     gpui::px(4.)
-}
-
-/// 막대 안의 작은 버튼.
-pub fn bar_button(id: &'static str, label: &'static str) -> gpui::Stateful<gpui::Div> {
-    div()
-        .id(id)
-        .flex_none()
-        .px_2()
-        .py(gpui::px(2.))
-        .rounded_sm()
-        .bg(theme::button())
-        .hover(|style| style.bg(theme::button_hover()))
-        .cursor_pointer()
-        .child(label)
 }

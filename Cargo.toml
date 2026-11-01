@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/viewer-app", "crates/viewer-core"]
+members = ["crates/viewer-app", "crates/viewer-core", "crates/viewer-ui"]
 
 [workspace.package]
 version = "0.1.0"
@@ -9,6 +9,7 @@ publish = false
 
 [workspace.dependencies]
 viewer-core = { path = "crates/viewer-core" }
+viewer-ui = { path = "crates/viewer-ui" }
 
 # parquet와 직접 사용하는 Arrow crate는 같은 arrow-rs 릴리스로 맞춘다.
 parquet = "60.1.0"
@@ -21,6 +22,7 @@ arrow-schema = "60.1.0"
 arrow-select = "60.1.0"
 
 async-channel = "2.5.0"
+serde_json = "1.0.154"
 tempfile = "3.27.0"
 thiserror = "2.0.21"
 unicode-segmentation = "1.13.3"

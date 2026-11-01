@@ -7,14 +7,14 @@ use std::ops::Range;
 
 use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, ElementId, ElementInputHandler, Entity,
-    EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId, LayoutId,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point,
+    EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId, KeyBinding,
+    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point,
     ShapedLine, SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window, actions, div,
     fill, point, prelude::*, px, relative, size,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::ui::theme;
+use crate::theme;
 
 actions!(
     text_input,
@@ -38,6 +38,30 @@ actions!(
         Cancel,
     ]
 );
+
+/// 한 줄 입력의 단축키를 등록한다. 앱 시작 때 한 번 부른다.
+pub fn bind_keys(cx: &mut App) {
+    let input = Some("TextInput");
+    cx.bind_keys([
+        KeyBinding::new("backspace", Backspace, input),
+        KeyBinding::new("delete", Delete, input),
+        KeyBinding::new("left", Left, input),
+        KeyBinding::new("right", Right, input),
+        KeyBinding::new("shift-left", SelectLeft, input),
+        KeyBinding::new("shift-right", SelectRight, input),
+        KeyBinding::new("home", Home, input),
+        KeyBinding::new("end", End, input),
+        KeyBinding::new("shift-home", SelectToHome, input),
+        KeyBinding::new("shift-end", SelectToEnd, input),
+        KeyBinding::new("ctrl-a", SelectAll, input),
+        KeyBinding::new("ctrl-v", Paste, input),
+        KeyBinding::new("ctrl-c", Copy, input),
+        KeyBinding::new("ctrl-x", Cut, input),
+        KeyBinding::new("enter", Submit, input),
+        KeyBinding::new("shift-enter", SubmitBackward, input),
+        KeyBinding::new("escape", Cancel, input),
+    ]);
+}
 
 pub enum TextInputEvent {
     /// 내용이 바뀌었다.

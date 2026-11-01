@@ -2,20 +2,14 @@
 
 mod app;
 mod cell_preview;
-mod format;
 mod value_detail;
 mod ui {
-    pub mod chart;
     pub mod explorer;
     pub mod filter_popover;
     pub mod find_bar;
     pub mod grid;
-    pub mod heatmap;
     pub mod schema;
     pub mod structure;
-    pub mod tab_bar;
-    pub mod text_input;
-    pub mod theme;
     pub mod value;
     pub mod view_bar;
 }
@@ -33,7 +27,6 @@ use crate::ui::explorer::OpenSelected;
 use crate::ui::grid::{
     MoveDown, MoveLeft, MoveRight, MoveToFirstRow, MoveToLastRow, MoveUp, PageDown, PageUp,
 };
-use crate::ui::text_input;
 use crate::ui::value::CopyValue;
 
 fn main() {
@@ -58,26 +51,7 @@ fn main() {
             KeyBinding::new("ctrl-c", CopyValue, Some("Grid")),
             KeyBinding::new("ctrl-c", CopyValue, Some("ValuePanel")),
         ]);
-        let input = Some("TextInput");
-        cx.bind_keys([
-            KeyBinding::new("backspace", text_input::Backspace, input),
-            KeyBinding::new("delete", text_input::Delete, input),
-            KeyBinding::new("left", text_input::Left, input),
-            KeyBinding::new("right", text_input::Right, input),
-            KeyBinding::new("shift-left", text_input::SelectLeft, input),
-            KeyBinding::new("shift-right", text_input::SelectRight, input),
-            KeyBinding::new("home", text_input::Home, input),
-            KeyBinding::new("end", text_input::End, input),
-            KeyBinding::new("shift-home", text_input::SelectToHome, input),
-            KeyBinding::new("shift-end", text_input::SelectToEnd, input),
-            KeyBinding::new("ctrl-a", text_input::SelectAll, input),
-            KeyBinding::new("ctrl-v", text_input::Paste, input),
-            KeyBinding::new("ctrl-c", text_input::Copy, input),
-            KeyBinding::new("ctrl-x", text_input::Cut, input),
-            KeyBinding::new("enter", text_input::Submit, input),
-            KeyBinding::new("shift-enter", text_input::SubmitBackward, input),
-            KeyBinding::new("escape", text_input::Cancel, input),
-        ]);
+        viewer_ui::text_input::bind_keys(cx);
 
         // 단일 창 앱이므로 창이 닫히면 앱을 종료한다.
         cx.on_window_closed(|cx, _| {

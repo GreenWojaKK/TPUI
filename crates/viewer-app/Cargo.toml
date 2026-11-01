@@ -11,9 +11,9 @@ arrow-schema.workspace = true
 async-channel.workspace = true
 gpui.workspace = true
 gpui_platform.workspace = true
-unicode-segmentation.workspace = true
 unicode-width.workspace = true
 viewer-core.workspace = true
+viewer-ui.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

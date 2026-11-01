@@ -155,7 +155,15 @@ GPUI의 `App::prompt_for_paths`를 파일·폴더 선택에 사용한다. [공�
 
 ## 3. 구성 요소와 의존성
 
-Cargo workspace는 `viewer-app`과 `viewer-core` 두 crate로 구성한다.
+Cargo workspace는 세 crate로 구성한다.
+
+| crate | 역할 | 의존 |
+|---|---|---|
+| `viewer-core` | Parquet 읽기, 행 보기, 찾기, 파일 구조. GPUI에 의존하지 않는다 | arrow-rs, parquet |
+| `viewer-ui` | GPUI 앱이 함께 쓰는 화면 부품. 테마, 한 줄 입력, 탭 막대, 표, 작은 버튼, 차트, 히트맵, 수·크기 표시 형식. 데이터 엔진에 의존하지 않는다 | GPUI |
+| `viewer-app` | Parquet 뷰어 앱. 두 crate를 조합하고 worker와 화면 상태를 소유한다 | `viewer-core`, `viewer-ui`, GPUI |
+
+`viewer-ui`는 다른 저장소의 GPUI 앱이 git 의존성으로 가져다 쓴다. 쓰는 앱은 `viewer-ui`와 같은 GPUI fork 커밋을 의존성으로 지정한다. 커밋이 다르면 GPUI가 두 벌 빌드되어 타입이 맞지 않는다. GPUI를 올릴 때는 이 저장소를 먼저 올리고 쓰는 앱이 그 커밋을 따른다.
 
 ```mermaid
 flowchart TB
@@ -188,12 +196,12 @@ flowchart TB
 |---|---|
 | `AppController` | 탭 목록과 활성 탭, `SessionId`·`RequestId` 발급, 활성 탭의 viewport·값·찾기 요청별 최신 `RequestId`, 오류 표시 |
 | 탭 상태 | 탭마다 경로, `SessionId`, 파일 상태, 그리드 스크롤 위치, 선택 셀, 스키마 펼침 상태, 적용한 행 보기 조건과 그 `ViewId`·행 수, 만드는 중인 조건 |
-| `TabBar` | 탭 이름, 활성 표시, 전환·닫기·순서 이동 입력 |
+| `TabBar` (`viewer-ui`) | 탭 이름, 활성 표시, 전환·닫기·순서 이동 입력 |
 | `FindBar` | 찾기 입력, 일치 셀 수와 진행률, 이전·다음 입력 |
 | `FilterPopover` | 필터를 거는 컬럼, 연산자, 값 입력, 해석 오류 |
 | `ViewBar` | 행 보기의 필터·정렬 조건 목록, 진행률과 취소, 정렬할 수 없는 컬럼 안내 |
 | `StructureView` | 활성 탭의 파일 구조, 고른 Row Group과 그 컬럼 정보 |
-| `TextInput` | 한 줄 텍스트 입력. 커서·선택·클립보드·IME 조합 입력 |
+| `TextInput` (`viewer-ui`) | 한 줄 텍스트 입력. 커서·선택·클립보드·IME 조합 입력 |
 | `ExplorerView` | 루트 경로, 펼쳐진 폴더, 선택한 파일, 디렉터리 조회 상태 |
 | `SchemaView` | 활성 탭의 스키마 노드와 펼침 상태 |
 | `GridView` | 활성 탭의 논리 스크롤 위치, 보이는 행·열 범위, 셀 미리보기와 원본 행 번호, 헤더의 정렬·필터 표시, 입력·렌더링 |
@@ -205,7 +213,22 @@ flowchart TB
 
 데이터 엔진의 실행 주체는 `ViewerWorker`다. 탐색기의 디렉터리 조회는 별도의 GPUI background task로 실행하며, 동일 폴더의 진행 중 요청은 합친다. 탐색기 루트가 바뀌면 이전 루트의 응답을 폐기한다.
 
-### 구현 시 생성할 디렉터리
+### 차트와 히트맵
+
+`viewer-ui`의 차트는 GPUI custom `Element`로 직접 그린다. 차트 라이브러리는 쓰지 않는다.
+
+- `LineChart`는 x·y 축과 층 목록을 받는다. 층은 띠(`Band`), 선(`Line`), 기준선(`Rule`)이며 넣은 순서대로 그린다. 예측구간은 띠 여러 겹, 중앙값·실적은 선, 명목값·대각선은 기준선으로 표현한다.
+- `Heatmap`은 행·열 칸의 값을 0을 가운데로 둔 발산 색 척도로 칠하고, 오른쪽에 색 척도 막대와 경계값을 표시한다.
+- 사각형으로 끝나는 그래프 틀, 눈금선, 안내선, 점 표시, 히트맵 칸, 색 척도는 `paint_quad`로 그린다. 띠는 `PathBuilder::fill`로 위 경계를 앞으로, 아래 경계를 거꾸로 이어 닫고, 선과 기준선은 `PathBuilder::stroke`로 그린다. 점선은 `dash_array`로 만든다.
+- 값이 없는 점에서 띠와 선을 끊는다. 이웃이 없는 점은 원으로 그린다.
+- 축 눈금은 호출한 쪽이 직접 주거나, 범위 안에 1·2·2.5·5×10ⁿ 간격으로 자동으로 둔다. 자동 눈금의 표시는 간격을 나타낼 수 있는 가장 적은 소수 자릿수로 한다.
+- 글자는 `shape_line`으로 그리고, 그래프 영역은 content mask로 잘라 층이 틀 밖으로 나가지 않게 한다.
+- 마우스를 올리면 차트는 가장 가까운 점의 순번을, 히트맵은 칸의 행·열을 호출한 쪽에 알린다. 호출한 쪽이 상태를 바꾸고 안내선이나 강조할 위치를 다시 넘긴다.
+- 차트는 값을 계산하지 않는다. 호출한 쪽이 이미 계산된 값을 넘긴다.
+
+`viewer-ui/examples/forecast_charts.rs`는 확률예측 explorer 데이터(`explorer-data.json`)로 날짜별 24시간 예측구간, 계절별 편향, 분위수 신뢰도, 계절 × 시간대 편향 히트맵을 그리는 예제다.
+
+### 디렉터리
 
 ```text
 TPUI/
@@ -216,25 +239,40 @@ TPUI/
 └── crates/
     ├── viewer-app/
     │   ├── Cargo.toml
+    │   ├── build.rs
+    │   ├── app.rc
+    │   ├── assets/
+    │   │   ├── app.ico
+    │   │   └── logo.png
     │   └── src/
     │       ├── main.rs
     │       ├── app.rs
     │       ├── worker.rs
     │       ├── cell_preview.rs
     │       ├── value_detail.rs
-    │       ├── format.rs
     │       └── ui/
     │           ├── explorer.rs
-    │           ├── tab_bar.rs
     │           ├── schema.rs
     │           ├── grid.rs
     │           ├── value.rs
-    │           ├── text_input.rs
     │           ├── find_bar.rs
     │           ├── filter_popover.rs
     │           ├── view_bar.rs
-    │           ├── structure.rs
-    │           └── theme.rs
+    │           └── structure.rs
+    ├── viewer-ui/
+    │   ├── Cargo.toml
+    │   ├── src/
+    │   │   ├── lib.rs
+    │   │   ├── theme.rs
+    │   │   ├── text_input.rs
+    │   │   ├── tab_bar.rs
+    │   │   ├── table.rs
+    │   │   ├── widgets.rs
+    │   │   ├── chart.rs
+    │   │   ├── heatmap.rs
+    │   │   └── format.rs
+    │   └── examples/
+    │       └── forecast_charts.rs
     └── viewer-core/
         ├── Cargo.toml
         ├── src/
@@ -251,7 +289,8 @@ TPUI/
         │   ├── structure.rs
         │   └── error.rs
         └── tests/
-            └── reader_contract.rs
+            ├── reader_contract.rs
+            └── view_contract.rs
 ```
 
 ## 4. 엔진 API와 데이터 계약
@@ -600,6 +639,7 @@ Parquet는 값 하나를 부분적으로 디코딩하지 않으므로, 선택 �
 | 10. 필터 | 조건 해석, 필터 행 목록, 행 보기 번호, `read_rows`, 원본 행 번호 표시, 필터 창과 필터·정렬 막대 | 조건별 결과 행이 기준 데이터와 같고, 필터한 행 보기에서 스크롤·선택·값 상세·찾기가 행 보기 순서를 따름 |
 | 11. 정렬 | 헤더 정렬 입력, 정렬 계산, 표시 순서 목록, 필터와의 결합 | 오름차순·내림차순·Null 위치·같은 값의 원본 순서가 기준 데이터와 같고, 필터와 정렬을 함께 쓸 수 있음 |
 | 12. 파일 구조 | `file_structure`·`row_group_columns`, 통계의 Arrow 타입 변환, 데이터·파일 구조 전환, 파일 요약·컬럼·Row Group 표 | 컬럼별 크기·압축·null 수·최솟값·최댓값과 Row Group별 크기가 기준 메타데이터와 같고, Row Group을 고르면 그 Row Group의 정보로 바뀜 |
+| 13. 공용 UI crate와 차트 | `viewer-ui` 분리, 표·버튼·입력 단축키 공용화, 선·띠·기준선 차트, 히트맵, 자동 눈금, 예제 | 예제가 실제 확률예측 데이터의 예측구간·실적·편향·신뢰도·히트맵을 원본 값과 같은 위치에 그리고, 마우스 위치의 값이 원본과 같음 |
 
 ### MVP 판정에 필요한 검증
 

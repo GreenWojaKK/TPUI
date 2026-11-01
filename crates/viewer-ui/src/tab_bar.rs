@@ -12,7 +12,7 @@ use gpui::{
     Window, canvas, div, fill, point, prelude::*, px, size,
 };
 
-use crate::ui::theme;
+use crate::theme;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum TabStatus {
