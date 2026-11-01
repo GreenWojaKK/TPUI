@@ -6,6 +6,7 @@ members = ["crates/viewer-app", "crates/viewer-core", "crates/viewer-ui"]
 version = "0.1.0"
 edition = "2024"
 publish = false
+license = "MIT"
 
 [workspace.dependencies]
 viewer-core = { path = "crates/viewer-core" }
