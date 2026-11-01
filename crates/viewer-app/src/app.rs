@@ -147,6 +147,8 @@ pub struct AppController {
     structure: Entity<StructureView>,
     /// 파일 구조 화면에 반영할 수 있는 최신 요청.
     latest_structure: Option<RequestId>,
+    /// 운영체제의 앱 색상 설정을 따르는지. 화면 전환 버튼을 누르면 그 뒤로는 따르지 않는다.
+    follow_system: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -154,6 +156,15 @@ impl AppController {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
+
+        theme::set_mode(theme::Mode::from_appearance(window.appearance()));
+        let appearance_events = cx.observe_window_appearance(window, |this, window, cx| {
+            if this.follow_system {
+                theme::set_mode(theme::Mode::from_appearance(window.appearance()));
+                window.refresh();
+                cx.notify();
+            }
+        });
 
         // 탐색기의 파일 열기는 Open File과 같은 열기 경로를 쓴다.
         let explorer = cx.new(ExplorerView::new);
@@ -252,7 +263,9 @@ impl AppController {
             notice: None,
             structure,
             latest_structure: None,
+            follow_system: true,
             _subscriptions: vec![
+                appearance_events,
                 explorer_events,
                 grid_events,
                 value_events,
@@ -1169,6 +1182,22 @@ impl AppController {
             )
             .child(div().flex_1())
             .child(div().min_w_0().truncate().child(title))
+            .child(
+                toolbar_button(
+                    "theme-mode",
+                    match theme::mode() {
+                        theme::Mode::Dark => "Light Mode",
+                        theme::Mode::Light => "Dark Mode",
+                    },
+                )
+                .flex_none()
+                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                    this.follow_system = false;
+                    theme::set_mode(theme::mode().toggled());
+                    window.refresh();
+                    cx.notify();
+                })),
+            )
     }
 
     /// 탭이 있으면 탭 막대와 활성 탭의 그리드를, 없으면 빈 상태를 그린다.
