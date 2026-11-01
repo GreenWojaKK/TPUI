@@ -1,0 +1,33 @@
+[workspace]
+resolver = "3"
+members = ["crates/viewer-app", "crates/viewer-core"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+viewer-core = { path = "crates/viewer-core" }
+
+# parquet와 직접 사용하는 Arrow crate는 같은 arrow-rs 릴리스로 맞춘다.
+parquet = "60.1.0"
+# chrono-tz: Timestamp의 timezone 이름(예: Asia/Seoul)을 해석해 표시한다.
+arrow-array = { version = "60.1.0", features = ["chrono-tz"] }
+arrow-buffer = "60.1.0"
+arrow-cast = "60.1.0"
+arrow-ord = "60.1.0"
+arrow-schema = "60.1.0"
+arrow-select = "60.1.0"
+
+async-channel = "2.5.0"
+tempfile = "3.27.0"
+thiserror = "2.0.21"
+unicode-segmentation = "1.13.3"
+unicode-width = "0.2"
+embed-resource = "3.0.12"
+
+# GPUI는 Zed 릴리스 v1.26.2에 image 코덱 축소 커밋 하나를 얹은 fork의 커밋으로 고정한다.
+# fork 브랜치: GreenWojaKK/zed tpui/v1.26.2-slim-image
+gpui = { git = "https://github.com/GreenWojaKK/zed", rev = "707d17a3ebb84de27df28429cb8cb5c351e9c4f7" }
+gpui_platform = { git = "https://github.com/GreenWojaKK/zed", rev = "707d17a3ebb84de27df28429cb8cb5c351e9c4f7" }
