@@ -60,6 +60,6 @@ Starting from the Zed v1.26.2 release (`c4273271`), the fork only narrows the `i
 
 ## License
 
-The code in this repository is licensed under the [MIT License](LICENSE).
+The code in this repository is licensed under the [Apache License 2.0](LICENSE).
 
 Dependencies follow their own licenses. GPUI and arrow-rs are Apache License 2.0; rusqlite is MIT, and the bundled SQLite is in the public domain. When distributing a built executable, include the license notices of these dependencies.
