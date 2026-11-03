@@ -46,6 +46,18 @@ pub enum ViewerError {
     #[error("database error: {0}")]
     Database(String),
 
+    /// A Markdown or JSON file is not UTF-8. `offset` is the first byte that is not.
+    #[error("not UTF-8 text (byte {offset})")]
+    InvalidText { offset: usize },
+
+    /// A JSON file does not parse. Line and character column are one-based.
+    #[error("not valid JSON: line {line}, column {column}: {reason}")]
+    InvalidJson {
+        line: usize,
+        column: usize,
+        reason: &'static str,
+    },
+
     /// The cancellation flag was set and the work stopped.
     #[error("the operation was cancelled")]
     Cancelled,

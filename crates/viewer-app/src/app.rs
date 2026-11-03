@@ -9,13 +9,14 @@ use gpui::{
     actions, div, prelude::*, relative,
 };
 use viewer_core::{
-    ColumnId, DataSource, DatasetInfo, Filter, FilterCondition, FilterOp, LogicOp, Query,
-    RequestId, SessionId, SortKey, ValueRequest, ViewSpec, ViewerError, WindowRequest,
-    check_condition, filter_ops, format_condition, format_query, format_sort, format_value,
-    is_sortable, is_sqlite_file, op_text, parse_query, sqlite_objects,
+    ColumnId, DataSource, DatasetInfo, DocumentKind, Filter, FilterCondition, FilterOp, LogicOp,
+    Query, RequestId, SessionId, SortKey, ValueRequest, ViewSpec, ViewerError, WindowRequest,
+    check_condition, document_kind, filter_ops, format_condition, format_query, format_sort,
+    format_value, is_sortable, is_sqlite_file, op_text, parse_query, sqlite_objects,
 };
 
 use crate::query_log::{Entry, Origin, QueryLog};
+use crate::ui::document::{DocumentEvent, DocumentPosition, DocumentStatus, DocumentView};
 use crate::ui::explorer::{ExplorerEvent, ExplorerView};
 use crate::ui::find_bar::{FindBar, FindBarEvent, FindStatus};
 use crate::ui::grid::{
@@ -59,6 +60,8 @@ enum TabState {
     Opening,
     Ready(DatasetInfo),
     OpenError(SharedString),
+    /// A Markdown or JSON file, read by the document view whenever the tab is active.
+    Document,
 }
 
 /// Row view being computed.
@@ -106,17 +109,49 @@ enum CenterMode {
     Structure,
 }
 
-/// Tab with one open source: a Parquet file or a SQLite table. Each tab has its own schema view so it remembers
-/// expanded nodes.
+/// What a tab shows: a source read by the data engine, or a document read in full.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum TabSource {
+    Data(DataSource),
+    Document { path: PathBuf, kind: DocumentKind },
+}
+
+impl TabSource {
+    fn path(&self) -> &Path {
+        match self {
+            Self::Data(source) => source.path(),
+            Self::Document { path, .. } => path,
+        }
+    }
+
+    fn table(&self) -> Option<&str> {
+        match self {
+            Self::Data(source) => source.table(),
+            Self::Document { .. } => None,
+        }
+    }
+
+    fn document_kind(&self) -> Option<DocumentKind> {
+        match self {
+            Self::Data(_) => None,
+            Self::Document { kind, .. } => Some(*kind),
+        }
+    }
+}
+
+/// Tab with one open source: a Parquet file, a SQLite table, or a Markdown or JSON document. Each tab has its own
+/// schema view so it remembers expanded nodes.
 struct Tab {
     session: SessionId,
-    source: DataSource,
+    source: TabSource,
     state: TabState,
     schema: Entity<SchemaView>,
     /// Grid scroll position and selected cell saved when leaving the tab.
     grid_position: GridPosition,
     view: TabView,
     mode: CenterMode,
+    /// Where a document tab was left.
+    document: DocumentPosition,
 }
 
 impl Tab {
@@ -139,7 +174,7 @@ impl Tab {
 }
 
 /// Full path, with `› table` for a SQLite table.
-fn source_label(source: &DataSource) -> String {
+fn source_label(source: &TabSource) -> String {
     match source.table() {
         Some(table) => format!("{} › {table}", source.path().display()),
         None => source.path().display().to_string(),
@@ -178,6 +213,8 @@ pub struct AppController {
     notice: Option<SharedString>,
     /// Conditions being swept in the filter and sort bar: where the drag started and where it is, in the order shown.
     sweep: Option<(usize, usize)>,
+    /// Body of the active tab when it shows a document.
+    document: Entity<DocumentView>,
     structure: Entity<StructureView>,
     /// Latest request the file structure view may apply.
     latest_structure: Option<RequestId>,
@@ -202,11 +239,13 @@ pub struct AppController {
     _subscriptions: Vec<Subscription>,
 }
 
+/// What queries and find answer on a Markdown or JSON tab.
+const QUERY_NEEDS_TABLE: &str = "Queries and find work on Parquet and SQLite tabs.";
 /// Hint above the text of the query input window.
 #[cfg(target_os = "windows")]
 const INPUT_HINT: &str = "find, filter and sort lines, such as: filter age >= 30 and status == \"active\". Ctrl+Enter applies.";
-/// How often the message file is checked.
-const INBOX_INTERVAL: Duration = Duration::from_millis(500);
+/// How often the message file and the open document's file are checked.
+const POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 impl AppController {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -245,6 +284,9 @@ impl AppController {
                 &explorer,
                 |this, _, event: &ExplorerEvent, cx| match event {
                     ExplorerEvent::Open(source) => this.open_source(source.clone(), cx),
+                    ExplorerEvent::OpenDocument(path, kind) => {
+                        this.open_document(path.clone(), *kind, cx)
+                    }
                 },
             );
 
@@ -288,6 +330,15 @@ impl AppController {
             },
         );
 
+        let document = cx.new(|_| DocumentView::new());
+        let document_events = cx.subscribe(&document, |this, _, event: &DocumentEvent, cx| {
+            this.value.update(cx, |value, cx| match event {
+                DocumentEvent::Value(detail) => value.set_detail((**detail).clone(), cx),
+                DocumentEvent::ValueGone => value.clear(cx),
+            });
+        });
+        let document_changes = cx.observe(&document, |_, _, cx| cx.notify());
+
         let value = cx.new(ValueView::new);
         let value_events = cx.subscribe(&value, |this, _, event: &ValueEvent, cx| match event {
             ValueEvent::Expand { path, range } => this.value_op(
@@ -297,7 +348,14 @@ impl AppController {
                 },
             ),
             ValueEvent::Select(path) => this.value_op(path.clone(), ValueOpKind::Body),
-            ValueEvent::Copy(path) => this.value_op(path.clone(), ValueOpKind::Copy),
+            ValueEvent::Copy(path) => {
+                if this.active_is_document() {
+                    this.document
+                        .update(cx, |document, cx| document.copy_selected(cx));
+                } else {
+                    this.value_op(path.clone(), ValueOpKind::Copy);
+                }
+            }
             ValueEvent::Retry => this.request_value(cx),
         });
 
@@ -306,9 +364,13 @@ impl AppController {
         let query_log = app_dir.map(|dir| QueryLog::new(dir.join("query-log")));
         cx.spawn_in(window, async move |this, cx| {
             loop {
-                cx.background_executor().timer(INBOX_INTERVAL).await;
+                cx.background_executor().timer(POLL_INTERVAL).await;
                 if this
-                    .update_in(cx, |this, window, cx| this.poll_inbox(window, cx))
+                    .update_in(cx, |this, window, cx| {
+                        this.poll_inbox(window, cx);
+                        this.document
+                            .update(cx, |document, cx| document.check_for_changes(cx));
+                    })
                     .is_err()
                 {
                     break;
@@ -364,6 +426,7 @@ impl AppController {
             pending_cell_menu: None,
             notice: None,
             sweep: None,
+            document,
             structure,
             latest_structure: None,
             follow_system: true,
@@ -385,6 +448,8 @@ impl AppController {
                 value_events,
                 find_events,
                 structure_events,
+                document_events,
+                document_changes,
                 quit,
             ],
         }
@@ -438,9 +503,13 @@ impl AppController {
         .detach();
     }
 
-    /// Opens a picked file. A SQLite database opens its first table or view by name and reveals the others in the
-    /// explorer; any other file opens as Parquet.
+    /// Opens a picked file. A Markdown or JSON file opens as a document, and a SQLite database opens its first table or
+    /// view by name and reveals the others in the explorer; any other file opens as Parquet.
     fn open_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if let Some(kind) = document_kind(&path) {
+            self.open_document(path, kind, cx);
+            return;
+        }
         if !is_sqlite_file(&path) {
             self.open_source(DataSource::Parquet(path), cx);
             return;
@@ -469,26 +538,54 @@ impl AppController {
 
     /// Opens a source in a new tab and activates it. If the source is already open in a tab, activates that tab.
     fn open_source(&mut self, source: DataSource, cx: &mut Context<Self>) {
-        if let Some(ix) = self
-            .tabs
-            .iter()
-            .position(|tab| same_source(&tab.source, &source))
-        {
-            self.activate(ix, cx);
+        let tab_source = TabSource::Data(source.clone());
+        if self.activate_open_tab(&tab_source, cx) {
             return;
         }
         let session = self.next_session();
+        self.worker.open(session, source);
+        self.push_tab(session, tab_source, TabState::Opening, cx);
+    }
+
+    /// Opens a Markdown or JSON file in a new tab and activates it, or activates the tab that already shows it.
+    fn open_document(&mut self, path: PathBuf, kind: DocumentKind, cx: &mut Context<Self>) {
+        let tab_source = TabSource::Document { path, kind };
+        if self.activate_open_tab(&tab_source, cx) {
+            return;
+        }
+        let session = self.next_session();
+        self.push_tab(session, tab_source, TabState::Document, cx);
+    }
+
+    fn activate_open_tab(&mut self, source: &TabSource, cx: &mut Context<Self>) -> bool {
+        let open = self
+            .tabs
+            .iter()
+            .position(|tab| same_tab_source(&tab.source, source));
+        if let Some(ix) = open {
+            self.activate(ix, cx);
+        }
+        open.is_some()
+    }
+
+    fn push_tab(
+        &mut self,
+        session: SessionId,
+        source: TabSource,
+        state: TabState,
+        cx: &mut Context<Self>,
+    ) {
+        self.remember_position(cx);
         self.tabs.push(Tab {
             session,
-            source: source.clone(),
-            state: TabState::Opening,
+            source,
+            state,
             schema: cx.new(|_| SchemaView::new()),
             grid_position: GridPosition::default(),
             view: TabView::default(),
             mode: CenterMode::default(),
+            document: DocumentPosition::default(),
         });
-        self.worker.open(session, source);
-        self.remember_grid_position(cx);
         self.active = Some(self.tabs.len() - 1);
         self.show_active_tab(cx);
     }
@@ -502,22 +599,30 @@ impl AppController {
         self.active.and_then(|ix| self.tabs.get(ix))
     }
 
+    fn active_is_document(&self) -> bool {
+        self.active_tab()
+            .is_some_and(|tab| matches!(tab.state, TabState::Document))
+    }
+
     fn activate(&mut self, ix: usize, cx: &mut Context<Self>) {
         if self.active == Some(ix) || ix >= self.tabs.len() {
             return;
         }
-        self.remember_grid_position(cx);
+        self.remember_position(cx);
         self.active = Some(ix);
         self.show_active_tab(cx);
     }
 
-    /// Saves the grid scroll position and selected cell of the active tab before leaving it.
-    fn remember_grid_position(&mut self, cx: &mut Context<Self>) {
+    /// Saves the active tab's place before leaving it: the grid's scroll position and selected cell, or the document's.
+    fn remember_position(&mut self, cx: &mut Context<Self>) {
         let position = self.grid.read(cx).position();
-        if let Some(tab) = self.active.and_then(|ix| self.tabs.get_mut(ix))
-            && matches!(tab.state, TabState::Ready(_))
-        {
-            tab.grid_position = position;
+        let document = self.document.read(cx).position(cx);
+        if let Some(tab) = self.active.and_then(|ix| self.tabs.get_mut(ix)) {
+            match tab.state {
+                TabState::Ready(_) => tab.grid_position = position,
+                TabState::Document => tab.document = document,
+                TabState::Opening | TabState::OpenError(_) => {}
+            }
         }
     }
 
@@ -555,9 +660,19 @@ impl AppController {
             }
             _ => self.grid.update(cx, |grid, cx| grid.clear(cx)),
         }
+        // Only the active tab's document stays in memory. Returning to a tab reads its file again.
+        match active.map(|tab| (&tab.source, &tab.document)) {
+            Some((TabSource::Document { path, kind }, position)) => {
+                let (path, kind, position) = (path.clone(), *kind, position.clone());
+                self.document
+                    .update(cx, |document, cx| document.open(path, kind, position, cx));
+            }
+            _ => self.document.update(cx, |document, cx| document.clear(cx)),
+        }
         if let Some(source) = active.map(|tab| tab.source.clone()) {
-            self.explorer
-                .update(cx, |explorer, cx| explorer.file_activated(&source, cx));
+            self.explorer.update(cx, |explorer, cx| {
+                explorer.file_activated(source.path(), source.table(), cx)
+            });
         }
         let structure_mode = active.is_some_and(|tab| {
             tab.mode == CenterMode::Structure && matches!(tab.state, TabState::Ready(_))
@@ -578,7 +693,9 @@ impl AppController {
             return;
         }
         let tab = self.tabs.remove(ix);
-        self.worker.close(tab.session);
+        if matches!(tab.source, TabSource::Data(_)) {
+            self.worker.close(tab.session);
+        }
         match self.active {
             Some(active) if active == ix => {
                 self.active = if self.tabs.is_empty() {
@@ -632,7 +749,10 @@ impl AppController {
         let Some(ix) = self.active else {
             return;
         };
-        self.remember_grid_position(cx);
+        let TabSource::Data(source) = self.tabs[ix].source.clone() else {
+            return;
+        };
+        self.remember_position(cx);
         let session = self.next_session();
         let tab = &mut self.tabs[ix];
         self.worker.close(tab.session);
@@ -646,7 +766,7 @@ impl AppController {
         };
         tab.schema
             .update(cx, |schema, cx| schema.set_schema(None, cx));
-        self.worker.open(session, tab.source.clone());
+        self.worker.open(session, source);
         self.show_active_tab(cx);
     }
 
@@ -1073,6 +1193,7 @@ impl AppController {
     ) {
         let schema = match self.active_tab().map(|tab| &tab.state) {
             Some(TabState::Ready(info)) => info.schema.clone(),
+            Some(TabState::Document) => return self.report_message(QUERY_NEEDS_TABLE, cx),
             Some(_) => return self.report_message("The file is still opening.", cx),
             None => return self.report_message("Open a file before sending a query.", cx),
         };
@@ -1557,6 +1678,11 @@ impl AppController {
         if self.active_tab().is_none() {
             return;
         }
+        if self.active_is_document() {
+            self.notice = Some(QUERY_NEEDS_TABLE.into());
+            cx.notify();
+            return;
+        }
         // Find works in the data grid.
         self.set_mode(CenterMode::Data, cx);
         self.write_find(window, cx);
@@ -2019,7 +2145,7 @@ impl AppController {
     fn render_center(&self, cx: &mut Context<Self>) -> Div {
         let Some(tab) = self.active_tab() else {
             return panel("Data Grid").child(placeholder(
-                "Open a Parquet or SQLite file with Open File or Ctrl+O.",
+                "Open a Parquet, SQLite, Markdown or JSON file with Open File or Ctrl+O.",
             ));
         };
         let labels = self
@@ -2032,6 +2158,7 @@ impl AppController {
                     TabState::Opening => TabStatus::Opening,
                     TabState::Ready(_) => TabStatus::Ready,
                     TabState::OpenError(_) => TabStatus::Error,
+                    TabState::Document => TabStatus::Ready,
                 },
             })
             .collect();
@@ -2045,6 +2172,7 @@ impl AppController {
                 div().flex_1().min_h_0().child(self.structure.clone())
             }
             TabState::Ready(_) => div().flex_1().min_h_0().child(self.grid.clone()),
+            TabState::Document => div().flex_1().min_h_0().child(self.document.clone()),
             TabState::OpenError(message) => placeholder(if tab.is_sqlite() {
                 "Cannot open the table."
             } else {
@@ -2214,6 +2342,18 @@ impl AppController {
                 is_error = true;
                 "Open failed"
             }
+            Some(TabState::Document) => {
+                let document = self.document.read(cx);
+                summary.extend(document.summary(cx));
+                match document.status() {
+                    DocumentStatus::Reading => "Reading",
+                    DocumentStatus::Open => "Open",
+                    DocumentStatus::Failed => {
+                        is_error = true;
+                        "Read error"
+                    }
+                }
+            }
         };
         let state_color = if is_error {
             theme::error()
@@ -2246,6 +2386,12 @@ impl AppController {
                     .clone()
                     .map(|error| div().text_color(theme::error()).child(error)),
             )
+            .children(
+                self.active_is_document()
+                    .then(|| self.notice.clone())
+                    .flatten()
+                    .map(|notice| div().min_w_0().truncate().child(notice)),
+            )
     }
 }
 
@@ -2256,6 +2402,31 @@ impl Render for AppController {
             self.sweep = None;
         }
         let schema = self.active_tab().map(|tab| tab.schema.clone());
+        // A Markdown document reads across the whole width, and a JSON document has no schema of its own.
+        let document_kind = self.active_tab().and_then(|tab| tab.source.document_kind());
+        let side_panel = (document_kind != Some(DocumentKind::Markdown)).then(|| {
+            div()
+                .flex_none()
+                .w(style::SIDE_PANEL_WIDTH)
+                .flex()
+                .flex_col()
+                .border_l_1()
+                .border_color(theme::border())
+                .when(document_kind.is_none(), |side| {
+                    side.child(
+                        panel("Schema")
+                            .h(relative(0.4))
+                            .border_b_1()
+                            .child(div().flex_1().min_h_0().children(schema)),
+                    )
+                })
+                .child(
+                    panel("Value")
+                        .flex_1()
+                        .min_h_0()
+                        .child(div().flex_1().min_h_0().child(self.value.clone())),
+                )
+        });
         div()
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::open_file))
@@ -2288,27 +2459,7 @@ impl Render for AppController {
                             .child(div().flex_1().min_h_0().child(self.explorer.clone())),
                     )
                     .child(self.render_center(cx).flex_1().min_w_0())
-                    .child(
-                        div()
-                            .flex_none()
-                            .w(style::SIDE_PANEL_WIDTH)
-                            .flex()
-                            .flex_col()
-                            .border_l_1()
-                            .border_color(theme::border())
-                            .child(
-                                panel("Schema")
-                                    .h(relative(0.4))
-                                    .border_b_1()
-                                    .child(div().flex_1().min_h_0().children(schema)),
-                            )
-                            .child(
-                                panel("Value")
-                                    .flex_1()
-                                    .min_h_0()
-                                    .child(div().flex_1().min_h_0().child(self.value.clone())),
-                            ),
-                    ),
+                    .children(side_panel),
             )
             .child(self.render_status_bar(cx))
             .children(
@@ -2452,6 +2603,17 @@ fn same_source(a: &DataSource, b: &DataSource) -> bool {
     }
 }
 
+/// Whether two tabs show the same thing.
+fn same_tab_source(a: &TabSource, b: &TabSource) -> bool {
+    match (a, b) {
+        (TabSource::Data(a), TabSource::Data(b)) => same_source(a, b),
+        (TabSource::Document { path: a, .. }, TabSource::Document { path: b, .. }) => {
+            same_path(a, b)
+        }
+        _ => false,
+    }
+}
+
 /// Turns an engine error into a user message.
 fn open_error_message(err: &ViewerError) -> String {
     match err {
@@ -2584,6 +2746,26 @@ mod tests {
         assert!(!same_source(
             &table(r"C:\Data\x.db", "a"),
             &DataSource::Parquet(r"C:\Data\x.db".into())
+        ));
+    }
+
+    #[test]
+    fn tells_documents_and_data_sources_apart() {
+        let document = |path: &str| TabSource::Document {
+            path: path.into(),
+            kind: DocumentKind::Markdown,
+        };
+        assert!(same_tab_source(
+            &document(r"C:\Data\a.md"),
+            &document(r"c:\data\A.MD")
+        ));
+        assert!(!same_tab_source(
+            &document(r"C:\Data\a.md"),
+            &document(r"C:\Data\b.md")
+        ));
+        assert!(!same_tab_source(
+            &document(r"C:\Data\a.md"),
+            &TabSource::Data(DataSource::Parquet(r"C:\Data\a.md".into()))
         ));
     }
 }

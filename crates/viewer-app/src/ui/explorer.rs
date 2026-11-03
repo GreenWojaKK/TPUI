@@ -1,5 +1,6 @@
 //! Folder explorer. Lists only the direct children of expanded folders and databases, and draws only the
-//! visible rows. Parquet files and SQLite databases are shown; a database expands into its tables and views.
+//! visible rows. Parquet files, SQLite databases, and Markdown and JSON documents are shown; a database expands into its
+//! tables and views.
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
@@ -12,7 +13,9 @@ use gpui::{
     div, prelude::*, uniform_list,
 };
 
-use viewer_core::{DataSource, SqliteObjectKind, is_sqlite_file, sqlite_objects};
+use viewer_core::{
+    DataSource, DocumentKind, SqliteObjectKind, document_kind, is_sqlite_file, sqlite_objects,
+};
 use viewer_ui::theme;
 
 use super::style;
@@ -26,6 +29,8 @@ pub enum EntryKind {
     File,
     /// SQLite database. Expands into its tables and views.
     Database,
+    /// Markdown or JSON file.
+    Document(DocumentKind),
     /// Table or view of the database at the entry's path.
     Table {
         table: String,
@@ -49,7 +54,7 @@ impl EntryKind {
 }
 
 /// Explorer entry: a directory, a Parquet file, a SQLite database (`.sqlite`, `.sqlite3`, `.db`, `.db3`,
-/// `.s3db`, `.sl3` with a SQLite header) or one of its tables.
+/// `.s3db`, `.sl3` with a SQLite header) or one of its tables, or a Markdown or JSON document.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DirEntry {
     pub name: String,
@@ -89,7 +94,10 @@ pub fn list_directory(dir: &Path) -> io::Result<Vec<DirEntry>> {
         let kind = match kind {
             EntryKind::File if is_parquet(&path) => EntryKind::File,
             EntryKind::File if is_database(&path) => EntryKind::Database,
-            EntryKind::File => continue,
+            EntryKind::File => match document_kind(&path) {
+                Some(kind) => EntryKind::Document(kind),
+                None => continue,
+            },
             other => other,
         };
         entries.push(DirEntry {
@@ -147,7 +155,7 @@ impl DirEntry {
                 path: self.path.clone(),
                 table: table.clone(),
             }),
-            EntryKind::Directory | EntryKind::Database => None,
+            EntryKind::Directory | EntryKind::Database | EntryKind::Document(_) => None,
         }
     }
 
@@ -172,6 +180,7 @@ fn compare_names(a: &str, b: &str) -> Ordering {
 
 pub enum ExplorerEvent {
     Open(DataSource),
+    OpenDocument(PathBuf, DocumentKind),
 }
 
 enum Listing {
@@ -233,20 +242,19 @@ impl ExplorerView {
         cx.notify();
     }
 
-    /// Called when a source was opened by another path. Without a root, sets the file's parent folder as the root.
-    /// A table's database is expanded so the table shows in the tree.
-    pub fn file_activated(&mut self, source: &DataSource, cx: &mut Context<Self>) {
-        let path = source.path();
+    /// Called when a file or table was opened by another path. Without a root, sets the file's parent folder as the
+    /// root. A table's database is expanded so the table shows in the tree.
+    pub fn file_activated(&mut self, path: &Path, table: Option<&str>, cx: &mut Context<Self>) {
         if self.root.is_none()
             && let Some(parent) = path.parent()
         {
             self.set_root(parent.to_path_buf(), cx);
         }
-        if source.table().is_some() && self.expanded.insert(path.to_path_buf()) {
+        if table.is_some() && self.expanded.insert(path.to_path_buf()) {
             self.start_listing(path.to_path_buf(), cx);
             self.rebuild_rows();
         }
-        self.selected = Some((path.to_path_buf(), source.table().map(str::to_string)));
+        self.selected = Some((path.to_path_buf(), table.map(str::to_string)));
         cx.notify();
     }
 
@@ -310,6 +318,8 @@ impl ExplorerView {
     fn activate(&mut self, entry: &DirEntry, cx: &mut Context<Self>) {
         if let Some(source) = entry.source() {
             cx.emit(ExplorerEvent::Open(source));
+        } else if let EntryKind::Document(kind) = entry.kind {
+            cx.emit(ExplorerEvent::OpenDocument(entry.path.clone(), kind));
         } else if entry.kind.expands() && !entry.is_link {
             self.toggle(entry.path.clone(), cx);
         }
@@ -453,7 +463,7 @@ impl ExplorerView {
                 .child(if *database {
                     "No tables or views"
                 } else {
-                    "No Parquet or SQLite files"
+                    "No Parquet, SQLite, Markdown or JSON files"
                 }),
             RowContent::Failed { dir, message } => {
                 let dir = dir.clone();
@@ -588,6 +598,28 @@ mod tests {
                 view: true
             }
         );
+    }
+
+    #[test]
+    fn lists_markdown_and_json_documents() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["b.md", "A.MARKDOWN", "c.json", "d.jsonl", "e.txt"] {
+            fs::write(dir.path().join(name), b"").unwrap();
+        }
+        let entries = list_directory(dir.path()).unwrap();
+        let shown: Vec<_> = entries
+            .iter()
+            .map(|entry| (entry.name.as_str(), entry.kind.clone()))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("A.MARKDOWN", EntryKind::Document(DocumentKind::Markdown)),
+                ("b.md", EntryKind::Document(DocumentKind::Markdown)),
+                ("c.json", EntryKind::Document(DocumentKind::Json)),
+            ]
+        );
+        assert_eq!(entries[0].source(), None);
     }
 
     #[test]

@@ -1,15 +1,19 @@
 //! Engine that opens Parquet files and SQLite tables read-only and decodes requested row and column ranges into
 //! Arrow batches.
-//! Also provides sequential column scans and row view computation for find, filter and sort.
+//! Also provides sequential column scans and row view computation for find, filter and sort, and reads Markdown and
+//! JSON files into document models.
 //!
 //! Public types consist only of Rust standard and Arrow types, with no dependency on GPUI.
 
 mod cache;
 mod condition;
+mod document;
 mod engine;
 mod error;
 mod filter;
 mod find;
+mod json;
+mod markdown;
 mod model;
 mod query;
 mod reader;
@@ -23,10 +27,16 @@ pub use cache::DEFAULT_CACHE_BUDGET;
 pub use condition::{
     CompiledFilter, ValueClass, check_condition, filter_ops, is_sortable, parse_value, value_class,
 };
+pub use document::{Document, DocumentKind, FileStamp, document_kind, file_stamp, read_document};
 pub use engine::ViewerEngine;
 pub use error::ViewerError;
 pub use filter::{Filter, FilterClause, LogicOp};
 pub use find::{FindIndex, FindQuery, FindTask};
+pub use json::{JsonDocument, JsonError, JsonKind, JsonNodeId};
+pub use markdown::{
+    MarkdownDocument, MdAlign, MdBlock, MdBlockKind, MdMarker, MdPosition, MdSourceKind, MdSpan,
+    MdStyle, MdText,
+};
 pub use model::{
     BLOCK_ROWS, BlockRequest, ColumnId, DataSource, DatasetInfo, DecodedBlock, FilterCondition,
     FilterOp, RequestId, RowIds, SessionId, SortKey, ValueRequest, ValueSlice, ViewSpec,

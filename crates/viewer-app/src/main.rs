@@ -5,9 +5,13 @@ mod cell_preview;
 mod query_log;
 mod value_detail;
 mod ui {
+    pub mod doc_scrollbar;
+    pub mod document;
     pub mod explorer;
     pub mod find_bar;
     pub mod grid;
+    pub mod json_tree;
+    pub mod markdown;
     pub mod schema;
     pub mod structure;
     pub mod style;
@@ -29,6 +33,7 @@ use crate::ui::explorer::OpenSelected;
 use crate::ui::grid::{
     MoveDown, MoveLeft, MoveRight, MoveToFirstRow, MoveToLastRow, MoveUp, PageDown, PageUp,
 };
+use crate::ui::markdown::SelectAll;
 use crate::ui::value::CopyValue;
 
 fn main() {
@@ -53,6 +58,17 @@ fn main() {
             KeyBinding::new("ctrl-end", MoveToLastRow, Some("Grid")),
             KeyBinding::new("ctrl-c", CopyValue, Some("Grid")),
             KeyBinding::new("ctrl-c", CopyValue, Some("ValuePanel")),
+            KeyBinding::new("ctrl-c", CopyValue, Some("Document")),
+            KeyBinding::new("ctrl-a", SelectAll, Some("Document")),
+            KeyBinding::new("enter", OpenSelected, Some("Document")),
+            KeyBinding::new("up", MoveUp, Some("Document")),
+            KeyBinding::new("down", MoveDown, Some("Document")),
+            KeyBinding::new("left", MoveLeft, Some("Document")),
+            KeyBinding::new("right", MoveRight, Some("Document")),
+            KeyBinding::new("pageup", PageUp, Some("Document")),
+            KeyBinding::new("pagedown", PageDown, Some("Document")),
+            KeyBinding::new("ctrl-home", MoveToFirstRow, Some("Document")),
+            KeyBinding::new("ctrl-end", MoveToLastRow, Some("Document")),
         ]);
 
         // Single-window app: quit when the window closes.
@@ -68,7 +84,7 @@ fn main() {
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: Some(TitlebarOptions {
-                    title: Some("Parquet Viewer".into()),
+                    title: Some("TPUI".into()),
                     ..Default::default()
                 }),
                 ..Default::default()

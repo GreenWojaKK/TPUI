@@ -1,12 +1,14 @@
-# Parquet Viewer Architecture and Implementation Plan
+# TPUI Architecture
+
+This document defines component boundaries, state ownership, data contracts and execution. See [usage.md](usage.md) for screens, controls and query syntax, and [README.md](README.md) for build and integration instructions.
 
 ## 1. Product scope and technology choices
 
-Parquet Viewer is a native desktop app that opens local Parquet files and SQLite tables read-only to explore their structure and data. The MVP consists of **the explorer, file opening, tabs, schema view, a grid virtualized over rows and columns, and value detail**, with **find, filter, sort and the file structure view** on top. The core stack is **Rust + GPUI + Arrow/Parquet**.
+TPUI is a native desktop viewer that opens local Parquet files and SQLite tables read-only to explore their structure and data and reads Markdown and JSON files, together with the UI components that it shares with other GPUI apps. The viewer consists of the explorer, file opening, tabs, schema view, a grid virtualized over rows and columns, value detail, find, filter, sort and the file and table structure views. The core stack is Rust + GPUI + Arrow/Parquet.
 
-The app shows what the raw data looks like and how the file is stored. Statistical analysis and aggregation belong in other analysis tools. Find, filter and sort are ways to locate source rows, not features that compute values.
+The app shows what the raw data looks like and how the file is stored. Find, filter and sort locate source rows.
 
-The first target is Windows x64, matching the current development environment. The app opens several files as tabs in a single window and activates one tab at a time. Without filter or sort, data is shown in the source file's row and column order.
+Windows x64 comes first. The app opens several files as tabs in a single window and activates one tab at a time. Without filter or sort, data is shown in the source file's row and column order.
 
 | Area | Technology and role |
 |---|---|
@@ -14,6 +16,7 @@ The first target is Windows x64, matching the current development environment. T
 | UI | GPUI used directly: windows, input, layout, text and grid rendering |
 | Parquet reading | arrow-rs `parquet`: footer, schema, Row Groups, decoding selected rows and columns |
 | SQLite reading | `rusqlite` with the bundled SQLite: read-only connections, schema pragmas, range queries in table order |
+| Markdown and JSON reading | `pulldown-cmark` for Markdown events; an own JSON parser that keeps key order, duplicates and number text. See section 11 |
 | Data representation | `arrow-array`, `arrow-schema`: `RecordBatch` and typed column arrays |
 | Comparison and sorting | `arrow-ord`: value comparison for find and filter, and sort order |
 | Local file access | `std::fs`: read-only file handles and directory listing |
@@ -21,221 +24,43 @@ The first target is Windows x64, matching the current development environment. T
 | Result delivery | Bounded `async-channel`; worker results are received in a GPUI task |
 | Cache | Byte-budgeted LRU inside the engine; all tabs share one budget |
 
-GPUI Kit is not a dependency. Find, filter and sort are built on the engine's sequential column scans and Arrow comparison and sort kernels; no SQL or aggregation engine is added. There is no API for modifying or saving the source file.
+Find, filter and sort are built on the engine's sequential column scans and Arrow comparison and sort kernels.
 
 GPUI is pinned to an exact commit of a GitHub fork (`GreenWojaKK/zed`) that adds an `image` codec reduction and its change notice on top of a Zed release revision. The fork narrows the `image` features in Zed's root `Cargo.toml` to the gif, jpeg, png and webp that gpui uses directly or for clipboard conversion, and records the difference from upstream in a comment next to the changed lines and in `FORK.md`. GPUI source code is unchanged. Upgrading GPUI means reapplying this change and notice on the new release. The platform crates and Rust toolchain are pinned together, following that revision's Windows examples. `parquet` and the Arrow crates used directly stay on the same arrow-rs release line, and resolved dependencies are pinned in `Cargo.lock`.
 
-## 2. User flow and screens
+## 2. Application state and query processing
 
-```text
-┌─────────────────────────────────────────────────────────────────────┐
-│ Open File    Open Folder               Active file name   Light Mode │
-├────────────────┬──────────────────────────────────┬─────────────────┤
-│ Explorer       │ [a.parquet ×][b.parquet ×] [Data|File Structure] │ Schema │
-│                │ Find bar · Filter and sort bar    │ Fields · types  │
-│ Expand folders │ Data Grid                        │ nullable        │
-│ Select files   │ Fixed headers · sort/filter marks │ Nested fields   │
-│                │ Source row numbers / visible cells├─────────────────┤
-│                │ Vertical/horizontal scroll · cell │                 │
-│                │ selection                        │ Value           │
-│                │                                  │ Raw value       │
-│                │                                  │ Nested value tree│
-├────────────────┴──────────────────────────────────┴─────────────────┤
-│ Active tab's path · total rows · columns · Row Groups · read state  │
-└─────────────────────────────────────────────────────────────────────┘
-```
+### Sources, tabs and screen state
 
-### Explorer
+A source is a Parquet path, a SQLite path and table name, or a document path with its kind (`TabSource`). `AppController` deduplicates open sources and assigns a `SessionId` to each new tab. Different tables in the same database are separate sources. Each tab owns its schema view, source identity, file state, row view, center mode, scroll position and selected cell.
 
-- `Open Folder` selects the root directory. Expanding a folder lists only its direct children.
-- Directories, files with the `.parquet` extension, and SQLite databases are shown. A database is a file with the `.sqlite`, `.sqlite3`, `.db`, `.db3`, `.s3db` or `.sl3` extension that starts with the SQLite header; other `.db` files are hidden. Extensions are case-insensitive.
-- Expanding a database lists its tables, views and virtual tables by name. Internal `sqlite_` tables and the shadow tables of virtual tables are left out. Views are tagged `view`.
-- Directories come first, then names in order within each kind. Symbolic links and directory junctions are not followed automatically.
-- The expanded tree is flattened into a row list, and only visible entries are rendered.
-- Double-clicking a Parquet file or a table, or selecting it and pressing Enter, opens it in a tab. A single click expands a folder or database.
-- A failed folder listing shows an error and retry on that node. Grids of files already open are kept.
+The active tab supplies the shared grid, Value panel, structure view and status bar. Switching tabs preserves per-tab state and requests the new active tab's visible range and selected value. Closing a tab releases its session; the next active tab is the one to its right, or the one to its left when there is no right neighbour.
 
-### Opening files
+Explorer nodes represent directories, Parquet files, Markdown and JSON documents, SQLite databases and database objects. Directory and database listings load on expansion. The expanded tree is flattened for virtualized rendering; root generations discard results from a previous root. File dialogs and explorer activation converge on `open_source` and `open_document`. SQLite detection uses the file header, and a direct database open resolves the first table or view by name.
 
-- `Open File` or `Ctrl+O` opens the native file dialog. Cancelling keeps the current state.
-- A selected file with the SQLite header opens its first table or view by name, and the explorer expands the database to show the others; a database without tables shows a notice in the status bar. Any other file is validated by the Parquet reader regardless of extension. The extension filter is only the explorer's display policy.
-- Opening a new source creates a new tab, activates it and starts in the `Opening` state. A source is a Parquet file, or a SQLite database and a table name. If the source is already open in a tab, that tab is activated. A SQLite tab is titled `table · file name`.
-- The footer and metadata are read first to show the row count and schema, then data for the first viewport is requested.
-- When a file is opened directly and the explorer has no root, its parent directory becomes the explorer root. An existing root is kept.
+File and folder dialogs use GPUI's `App::prompt_for_paths`. [Official API](https://docs.rs/gpui/latest/gpui/struct.App.html#method.prompt_for_paths)
 
-File and folder selection uses GPUI's `App::prompt_for_paths`. [Official API](https://docs.rs/gpui/latest/gpui/struct.App.html#method.prompt_for_paths)
+### Query model and application
 
-### Tabs
+`viewer-core::Query` contains a `ViewSpec` and an optional find value. `ViewSpec` contains a `Filter` and at most one `SortKey`. A filter is an AND of clauses; each clause is an OR of conditions on one column. Comparisons are checked and parsed against that column's Arrow type. The textual grammar and examples are in the [query reference](usage.md#query-text).
 
-- Each file opens in one tab. The same path is never open in two tabs.
-- The tab bar above the grid shows file names and close buttons. Clicking a tab switches to it; `Ctrl+Tab` and `Ctrl+Shift+Tab` go to the next and previous tab, and `Ctrl+W` closes the active tab.
-- With many tabs, widths shrink evenly down to a minimum; beyond that the tab bar scrolls horizontally. It scrolls with the mouse wheel, and scrolls to keep the active tab visible when it changes. When tabs overflow, a scroll position indicator is shown below the bar.
-- Hovering a tab shows the file's full path as a tooltip, so files stay distinguishable when shrunk tabs truncate their names.
-- Dropping a dragged tab on another tab moves it to that tab's slot; dropping it on empty space moves it to the last slot. While dragging, the tab at the drop slot is highlighted. Reordering keeps the active tab. Holding a dragged tab near either end of the bar keeps scrolling the bar that way, so it can be moved to slots out of view.
-- The grid, schema, Value panel and status bar show the active tab's content.
-- Each tab remembers its scroll position, selected cell and schema expansion. Returning to a tab requests cell data again from that state, and blocks still in the cache are shown without I/O.
-- Closing the active tab activates the tab to its right, or else to its left. Closing all tabs returns to the empty state.
+`parse_query` returns a complete query or a `QueryError` with a 1-based line, character column and reason. A valid text replaces the active tab's filter, sort and find state; omitted commands clear their corresponding state. A parse failure leaves the current state unchanged. `format_query` serializes the same model, so formatted queries parse back to equivalent conditions, sort and find values.
 
-### Schema view
+Context-menu actions update the same `ViewSpec` used by textual queries. New row view work has a request number, target specification and progress. The controller keeps the completed row view visible until the replacement is ready. Cancelling retains the completed view and its conditions. A find submitted with new conditions starts after the corresponding row view has been applied.
 
-- Shows the Arrow schema's field names, data types and nullability.
-- Child types of `Struct`, `List` and `Map` are shown as an expandable tree. Only expanded nodes are included in the row list.
-- Grid columns are top-level fields. Expanding nested fields does not change the grid's column or row count.
-- The file summary shows the total rows, top-level columns, Row Groups and file size.
-- A file with zero rows still shows its schema and column headers, with an empty data state in the body.
+### Input adapters
 
-### Data grid
+`InputWindow` and `Inbox` are adapters in `viewer-ui` that deliver text to the app. `AppController::apply_message` parses text from either adapter and applies it to the active tab. Immediate mouse actions use GPUI menus.
 
-- Uses fixed-height rows, fixed-width columns, and fixed header and row number areas.
-- Provides vertical and horizontal scrollbars, mouse wheel, and Shift+wheel for horizontal movement.
-- A click selects one cell and highlights it. The selected cell is the target of value detail.
-- With the grid focused, arrow keys move the selected cell by rows and columns, Page Up/Down move by a screen, and Ctrl+Home/End go to the first and last rows.
-- Cells being read show a placeholder and are updated when data arrives.
-- A cell is a one-line preview of its value. Newlines, tabs and control characters become display symbols, and long values get an ellipsis at the preview length. The full raw value is shown in value detail.
+On Windows, `InputWindow` owns a native multiline edit control on a dedicated thread with its own message loop. The operating system handles IME composition, editing, clipboard and undo. The controller receives submit/close/failure events asynchronously and sends status and text updates without waiting for the window thread. Requests received before window creation are applied after creation. Other platforms use the message-file adapter.
 
-### Value detail
+`Inbox` owns one process-specific file in the app's storage directory. The controller polls every 500ms. A changed length/modification-time signature must remain unchanged for a second poll before the text is delivered. The adapter removes a UTF-8 byte order mark, normalizes CRLF line endings and tracks the last delivered signature. The file is removed on shutdown; creation also removes files whose owner processes have exited.
 
-- The Value panel shows the selected cell's value exactly as stored. Without a selected cell, it shows an empty state.
-- The top of the panel shows the row number, column name, type and value size. The value size is the byte length and character count for strings, the byte length for Binary, and the element or entry count for List and Map.
-- Strings are shown in full with their newlines, and Binary as a hex dump of all bytes. Any value can be scrolled to its end regardless of length.
-- `Struct`, `List` and `Map` values expand into a value tree. Selecting a node in the tree shows that node's raw value in the body.
-- `Ctrl+C` copies the raw value of the selected cell or node.
-- The Value panel keeps its value even when the selected cell scrolls out of the grid.
+### Query log
 
-### Row view
+`QueryLog` appends one JSON object per recorded query to a daily file in the app's storage directory. Each entry contains local time, source path, SQLite table when present, origin (`click`, `window` or `file`), complete query text, and either the resulting row count or an error.
 
-- Each tab has filter conditions and a sort key. Together they decide which rows the grid shows and in what order; this is the row view. Without filter or sort, the row view is the source file's row order.
-- Grid row positions, scrolling, selection and key movement follow the row view's order. The row number area shows the source file's row numbers, and so does the Value panel.
-- Changing the filter or sort makes the worker build a new row view. While it is being built, the grid keeps showing the previous row view, and the filter and sort bar above the grid shows progress and `Cancel`. When complete, the grid moves to the new row view's first row and clears the selection; the horizontal scroll position is kept. `Cancel` restores the conditions from before the change.
-- The filter and sort bar is shown when there are conditions. It reads as the query text, such as `filter ( OBE_ID == "366" or ▾ OBE_ID == "977" ) and ▾ route_name == "중구01" sort -id`: each condition and the sort is a chip removed with `×`, operators are boxes with `▾`, and conditions joined by `or` are in parentheses. A long filter wraps onto more lines. `Copy Query` copies the whole query text, including the find value while the find bar is open, and `Clear All` returns to source order. The status bar shows the row view's row count together with the total.
-- Each tab remembers its row view. Conditions and results survive tab switches.
-
-### Find
-
-- The viewer has no text input of its own. `Ctrl+F` opens the query window with the active tab's conditions and a `find` line, the cursor after `find` (on systems without the query window, the message file is pointed to). The value can also come from `Find` in a cell's context menu or from a `find` line in any query.
-- The find bar above the grid shows the value being found, `Change…`, which opens the query window again, `Previous`, `Next`, the status and `×`. `Esc` in the grid closes the find bar.
-- Find locates cells whose whole value exactly equals the input. It is case-sensitive and does not match partial values.
-- The comparison target is the full text shown for the cell: the original text for strings, the text of the cell display contract for numbers, times and Boolean, and the same lowercase hexadecimal as the copy text for Binary. Hexadecimal input is case-insensitive. Null cells and `Struct`, `List` and `Map` cells are not find targets.
-- `F3` and `Next` move to the next match, `Shift+F3` and `Previous` to the previous one. The order is the row view's row order, then column order within a row. The search starts from the selected cell and wraps around at the end.
-- The found cell is selected and scrolled into view. The find bar shows the number of matching cells in the whole row view, and the grid highlights matching cells.
-- `Find` in a cell's context menu puts the cell's full value into the find bar and moves to its next match.
-- The first search for a new value reads the file to compute match positions. During the computation, the find bar shows progress, and grid scrolling, cell selection and tab switching keep working.
-- A find sent together with new conditions runs once they are applied. `F3` while conditions are being applied shows a notice in the find bar. After a tab switch, find results are recomputed for the new tab.
-
-### Context menus
-
-- Right-clicking a column header opens its menu: `Sort Ascending`, `Sort Descending`, `Clear Sort` on the sorted column, `Only Nulls`, `Exclude Nulls`, and `Remove Conditions on This Column` when the column has conditions.
-- Right-clicking a cell selects it and opens its menu once the cell's full value is read. A cell with a value offers conditions comparing the column with that value (`=`, `≠`, and `>`, `≥`, `<`, `≤` where the column type allows them), `Find` and `Copy Value`. A Null cell offers `Only Nulls` and `Exclude Nulls`. Nested values offer no conditions.
-- Condition items act with modifier keys: Shift+click joins the column's conditions with `or`, and Alt+click adds the opposite condition (`≠` for `=`, `≥` for `<`, `≤` for `>`, `Exclude Nulls` for `Only Nulls`). While the menu is open, holding the keys changes the labels to what a click adds, such as `or == "977"` or `!= "977"`, and a note under the items says `Shift: or · Alt: not`. A condition already in the filter is marked `✓`; choosing it changes nothing.
-- Conditions use the full value, not the shortened cell preview. The value text is the copy text of the cell: strings as is, Binary as lowercase hexadecimal, other values as displayed, which parses back to the same value.
-- Choosing an item applies it and closes the menu. Clicking outside or `Esc` closes the menu without an action. Menu labels show values quoted, on one line, shortened after 40 characters.
-- The menu is the `Menu` component of `viewer-ui`: items, items whose label and action follow the modifier keys held, disabled items, notes and separators, drawn above the window at the click position. It has no text input.
-
-### Filter
-
-- Conditions come from the context menus and from query text (see below).
-- A filter has the shape of a spreadsheet filter: clauses that must all hold, joined by `and`. A clause is one or more conditions on one column of which at least one must hold, joined by `or` and drawn in parentheses when there are several: `(OBE_ID == "366" or OBE_ID == "977") and id >= 5 and id < 20`. So `or` joins conditions on one column only, and parentheses never nest.
-- Clauses on the same column sit next to each other, in the order their columns first appear, so each column's conditions read together.
-- A condition from a menu is added with `and` after the column's other clauses. With Shift it joins the column's last clause with `or`. An `=` condition on a column that already has an `=` condition joins that clause with `or` without Shift, since two different values joined by `and` match no row.
-- In the filter and sort bar each operator is a small box such as `and ▾`. Clicking it opens the choice of `and` and `or` just below it. Inside parentheses, `and` splits the clause there into two; between two clauses on one column, `or` merges them. Between clauses on different columns `or` is grayed out with the note `or joins conditions on one column only`.
-- Dragging from a condition's text across others sweeps a range of conditions in reading order, across wrapped lines too. The swept chips are highlighted, and the line under the conditions says what releasing does: `Release to join 3 conditions with or`, or, when the range covers another column, red chips and `or joins conditions on one column only`. Releasing over the conditions makes the range exactly one clause, joined by `or` inside and by `and` to the conditions just outside it, so sweeping part of a clause splits it. A range of one condition or of several columns changes nothing. Leaving the conditions shrinks the range back to its start, and releasing elsewhere or pressing `Esc` drops the sweep. The `▾` boxes do the same edits one join at a time.
-- The engine computes each condition as a Boolean per row with Null cells false, folds each clause with `|` and the clauses with `&`. Only columns with conditions are read.
-- Operators depend on the column type:
-
-| Column type | Operators |
-|---|---|
-| String | `=`, `≠`, `contains`, `<`, `≤`, `>`, `≥`, `null`, `not null` |
-| Boolean, integer, float, Decimal, Date, Time, Timestamp | `=`, `≠`, `<`, `≤`, `>`, `≥`, `null`, `not null` |
-| Binary | `=`, `≠`, `null`, `not null` |
-| `Struct`, `List`, `Map` and other types | `null`, `not null` |
-
-- Values of comparison operators are parsed as the column type and compared by value. For example, `= 1.5` on a Decimal column matches `1.50`. A value that cannot be parsed is not applied, and the filter and sort bar shows the reason.
-- String comparison and `contains` are case-sensitive. String `<` and `>` use UTF-8 byte order. Binary values are entered as hexadecimal.
-- Comparison operators and `contains` never match Null cells. Null cells are selected with the `null` operator.
-- Columns with a filter show their header name in the accent color.
-
-### Sort
-
-- Each header click cycles ascending, descending, then no sort. The header's context menu sets a direction or clears the sort directly. The sort key is a single column; clicking another column's header switches to ascending on that column. The header shows the direction with `▲` or `▼`.
-- With a filter, only rows that pass the filter are sorted.
-- Null goes last regardless of direction. Rows with equal values keep the source file's order.
-- Strings sort by UTF-8 byte order, and floating-point NaN sorts as the largest value.
-- Columns of `Struct`, `List`, `Map` and types without display support are not sorted. Clicking such a header shows a notice in the filter and sort bar that the column cannot be sorted.
-
-### Query text
-
-A query is the text form of a row view and a find value, one command per line. The filter and sort bar shows conditions in this form, context menus label their items with it, and `Copy Query` writes it.
-
-```text
-find 홍길동
-filter age >= 30 and status == "활성"
-sort -created_at
-```
-
-- `find <value>` finds cells whose whole value equals the value.
-- `filter <expression>` keeps rows for which the expression holds. Conditions are joined with `and`, and conditions on one column also with `or`, in the shape of the filter above. One level joins with one word, so mixing `and` and `or` takes parentheses: `filter (a == 1 or a == 2) and b == 3`. A line of `or` alone needs none: `filter a == 1 or a == 2`. Several `filter` lines combine with `and`.
-- `or` between different columns, `and` inside `or`, and mixing without parentheses are errors that point at the place, such as ``line 1, column 20: `or` joins conditions on one column only; this one is on status, not age``.
-- A written query puts each clause of several conditions in parentheses, as the bar shows it.
-- Conditions are `<column> <op> <value>` with `==`, `!=`, `<`, `<=`, `>`, `>=` or `contains`, or `<column> is null` and `<column> is not null`. `=` is read as `==`. Operators follow the column type as in the filter table above.
-- `sort <column>` sorts ascending and `sort -<column>` descending, by one column. A query has at most one `find` and one `sort` line.
-- Values without spaces are written as is; others are quoted as `"…"` with `\"`, `\\`, `\n`, `\t` and `\r` escapes. Other backslashes stay as written, so Windows paths read back unchanged. Values of string columns are always written quoted.
-- Column names with spaces or symbols are written in backticks, with a backtick inside doubled: `` `운행 일자` ``. Names must match exactly; a name that differs only in case is suggested in the error.
-- Keywords are case-insensitive and blank lines are ignored. A query states the whole view: a missing line means no find, filter or sort, and an empty query clears them.
-- Values are parsed as their column types with the same rules as conditions from the menus. An error names the line and character column and the reason, such as ``line 1, column 8: this `(` is not closed``.
-- Writing a query and reading it back gives the same conditions, sort and find value.
-
-### Query input and log
-
-Queries reach a tab in three ways, all applied the same way and logged the same way.
-
-| Way | For |
-|---|---|
-| Context menus and header clicks | Quick changes with the mouse |
-| Query window (Windows) | A person writing a query, such as `contains` or a value not on screen |
-| Message file | Agents and other programs, and systems without the query window |
-
-- A query text states the whole view of the active tab: its conditions, sort and find value replace the current ones. A text that does not parse changes nothing; the reason, with line and column, is shown on a line of its own in the filter and sort bar and in the query window's status.
-- A find sent with new conditions runs once their row view is applied, since find works on finished row views.
-- The toolbar's `Query` menu has `Write Query…`, `Copy Query`, `Copy Message File Path` and `Open Query Log Folder`. The context menus of headers and cells also have `Write Query…`.
-
-The query window is the `InputWindow` of `viewer-ui`, a small window of the operating system.
-
-- It holds the system's multi-line edit control, so typing, Korean IME composition, clipboard and undo are the system's. It opens over the viewer, owned by it, filled with the active tab's current query; opening it again refills it and brings it to the front.
-- `Ctrl+Enter` or `Apply` applies the text and keeps the window open; `Esc` or `Close` closes it. The status line shows `Applied · 352 of 280,797 rows` once the row view is applied, or the error.
-- The window runs on its own thread with its own message loop, which also gives `Tab` between its controls. The viewer's thread never waits for that thread: showing a window that has an owner sends messages to the owner's thread, so waiting there would never end. Requests made before the window exists, such as a new status, are applied as soon as it does.
-
-The message file is the `Inbox` of `viewer-ui`.
-
-- Each running viewer has its own file, `%LOCALAPPDATA%\TPUI\inbox\<process id>.txt` (`~/.local/state/tpui/inbox/` elsewhere), created empty at start. `Copy Message File Path` copies its path.
-- The file is checked every 0.5 seconds. A change is applied once the file has stayed the same for one more check, which skips the empty file a writer leaves between truncating and writing. A UTF-8 byte order mark is dropped and `\r\n` line ends are read as `\n`.
-- The file is removed when the viewer quits. Files of viewers that ended without quitting are removed when the next viewer starts.
-
-Every applied query goes to the query log, `%LOCALAPPDATA%\TPUI\query-log\<date>.jsonl`, one JSON line per query.
-
-- A line holds the local time, the source file and SQLite table, the origin (`click`, `window` or `file`), the whole query text, and the row count of the resulting row view or the error. A text that does not parse is logged as received, with its error.
-- A query that starts a row view computation is logged when the computation ends. A computation replaced by a newer query before it ends is not logged, and a click that leaves the query unchanged is not logged again.
-- Lines are only appended; the log is never rewritten or trimmed. The log stays in the app's own folder, never next to the data. Queries can contain cell values, so the log can hold personal data from the files viewed; `Open Query Log Folder` shows where it is, and the user deletes it when they want to.
-
-### File structure
-
-- `Data` and `File Structure` at the right of the tab bar switch the tab body. Each tab remembers its last choice. `Ctrl+F` in the file structure returns to the data and opens find.
-- The file structure shows only the information in the Parquet metadata. No data pages are read, so it appears immediately regardless of file size.
-- The top shows the file summary: Parquet format version, the program that wrote the file, compressed and uncompressed data size and ratio, and the keys and value sizes of the key-value metadata.
-- The middle table shows, per leaf column, the path, physical and logical type, codec, compressed and uncompressed size, ratio, null count, min, max, and whether a page index and Bloom filter exist. Hovering a cell shows truncated content in full and the list of encodings as a tooltip.
-- The bottom table shows, per Row Group, the row count, compressed and uncompressed size, and ratio. The first row, `All`, is the total over all Row Groups. Selecting a Row Group switches the middle table to that Row Group's information.
-- Min and max convert per-Row-Group statistics to Arrow types for comparison and are shown in the same format as the cell display contract. Approximations truncated in the file get a `≈` prefix. Without statistics, or for leaves of nested columns, `-` is shown. Null counts are summed only when every Row Group records them.
-
-### Table structure
-
-- For a SQLite tab, the structure button reads `Table Structure`. It shows the schema and pragmas of the table; no rows are read.
-- The top shows the kind (table, view or virtual table, with `WITHOUT ROWID` and `STRICT`), the row count, the row order, and the database: file size, page count and size, text encoding and journal mode.
-- The column table shows, per column, the name, declared type, the Arrow type the grid shows it as, the storage classes found in it, `NOT NULL`, the default and the primary key position.
-- The bottom shows the indexes (name, columns, uniqueness, origin and whether partial, with the `CREATE INDEX` statement as a tooltip) next to the table's `CREATE` statement.
-
-### Theme
-
-- Colors come in a light and a dark set. At startup the app follows the Windows app color setting and keeps following its changes. The toolbar's `Light Mode` / `Dark Mode` button switches the theme, after which the app no longer follows the setting until restart.
-- The viewer uses the default theme of `viewer-ui`. Sizes and colors used only by the viewer's own views, such as grid and tree sizes and the find highlight, live in `viewer-app`.
+Queries that start row view work are recorded when that work completes. A superseded computation produces no completion entry; repeated clicks that leave the query unchanged produce no duplicate entry. Parse failures retain the received text and error. The app appends to its own log and message files while source-data access remains read-only. User-facing file locations and controls are in [Query input and log](usage.md#query-input-and-log).
 
 ## 3. Components and dependencies
 
@@ -243,9 +68,9 @@ The Cargo workspace consists of three crates.
 
 | Crate | Role | Depends on |
 |---|---|---|
-| `viewer-core` | Parquet and SQLite reading, row views, find, query text, file and table structure. No GPUI dependency | arrow-rs, parquet, rusqlite |
-| `viewer-ui` | UI components shared by GPUI apps: light and dark themes, context menu, query window of the operating system (Windows), message file, tab bar, tables with fixed or wrapping rows, small buttons, line, bar and strip charts, heatmap, route map, number and size formats. No dependency on the data engine | GPUI |
-| `viewer-app` | The Parquet viewer app. Combines the two crates and owns the worker and screen state | `viewer-core`, `viewer-ui`, GPUI |
+| `viewer-core` | Parquet and SQLite reading, row views, find, query text, file and table structure, Markdown and JSON documents | arrow-rs, parquet, rusqlite, pulldown-cmark |
+| `viewer-ui` | UI components shared by GPUI apps: light and dark themes, context menu, query window of the operating system (Windows), message file, tab bar, tables with fixed or wrapping rows, styled wrapping text, small buttons, line, bar and strip charts, heatmap, route map, number and size formats | GPUI |
+| `viewer-app` | The viewer app. Combines the two crates and owns the worker and screen state | `viewer-core`, `viewer-ui`, GPUI |
 
 ### Shared theme
 
@@ -255,11 +80,11 @@ The Cargo workspace consists of three crates.
 - Palette roles: background, surface (panels, bars, table headers), overlay (tooltips, menus, popovers), border, text, muted text, missing (null values and missing bars), error, selection, hover, button, button hover, accent, grid line, chart track, scrollbar track and thumb, drop target.
 - Metrics hold sizes several components follow together: the fixed table row height, the panel header height (including the tab bar), table cell padding, wrapping row padding and button padding. Geometry of one component stays with that component: tab sizes in the tab bar, bar thickness, track thickness and point size as chart options.
 - Fonts: the UI font and the monospace font. The defaults are Segoe UI and Consolas on Windows and DejaVu Sans and DejaVu Sans Mono elsewhere.
-- An app starts from `Theme::default()`, changes the fields it needs and calls `theme::install` once, before anything is drawn. The theme types are `#[non_exhaustive]`, so roles added later do not break an app's theme. Installing after the theme has been read panics, because the default theme is already in use.
+- Theme installation is a one-time process initialization. The theme types are `#[non_exhaustive]`, so roles added later do not break consumer apps. Installing after the theme has been read panics because the default theme is already in use. Integration examples are in [README.md](README.md#using-viewer-ui-in-another-app).
 - There is one color mode per process. `theme::mode` and `theme::set_mode` switch between the two palettes, and color functions read the mode on every paint. Colors of an app's own views come from `theme::pick(dark, light)`.
-- A strip chart cannot know what lies behind it, so the ring that separates overlapping points takes its color from `StripChart::background`, by default the surface color.
+- The ring separating overlapping strip-chart points uses `StripChart::background`, which defaults to the surface color.
 
-GPUI apps in other repositories use `viewer-ui` as a git dependency. Such an app depends on the same GPUI fork commit as `viewer-ui`; with a different commit, GPUI is built twice and the types do not match. When GPUI is upgraded, this repository moves first and the apps follow its commit.
+`viewer-ui` and its consumer apps share one GPUI fork commit, preserving GPUI type identity across crate boundaries. A GPUI revision change therefore coordinates this workspace with its consumers.
 
 ```mermaid
 flowchart TB
@@ -280,6 +105,7 @@ flowchart TB
         Scan[Sequential column scan]
         View[Condition parsing / row lists / find match table]
         Cache[Arrow block cache shared by all sessions]
+        Documents[Markdown and JSON models]
         Engine --> Metadata
         Engine --> Reader
         Engine --> Sqlite
@@ -287,6 +113,7 @@ flowchart TB
         Engine --> Cache
     end
     Worker --> Engine
+    UI -->|read in background tasks| Documents
     Reader --> File[Read-only local Parquet file]
     Sqlite --> Db[Read-only local SQLite database]
 ```
@@ -307,16 +134,19 @@ flowchart TB
 | `SchemaView` | The active tab's schema nodes and expansion state |
 | `GridView` | The active tab's logical scroll position, visible row and column ranges, cell previews and source row numbers, sort and filter marks in headers, input and rendering |
 | `ValueView` | Value tree nodes and expansion, selected node, body value and display line index, body scroll position |
+| `DocumentView` | The active tab's document, its file's last stamp, and the Markdown or JSON view showing it |
+| `MarkdownView` | The parsed document, list state, text selection, the link under the mouse, the document's images |
+| `JsonView` | The parsed document, expanded paths, selected path, flattened rows, scroll position |
 | `ViewerWorker` | Handling open and close commands, picking the latest requests, calling the engine, checking result generations, bounded text conversion of Arrow values, holding the selected value and building detail and copy text, holding per-session row lists and mapping row view positions to source rows, row view and find computation tasks |
 | `ViewerEngine` | Per open session: file handle, metadata, Row Group index; read planning, decoding, sequential column scans, arbitrary row reads, and the cache shared by all sessions |
 
-Public types of `viewer-core` consist of Rust standard and Arrow types. GPUI's `Entity`, `Context` and `Window` are used only inside `viewer-app`. The app requests data through the engine's public API, and GPUI layout and paint callbacks only read screen state that is already prepared.
+Public types of `viewer-core` consist of Rust standard and Arrow types. GPUI's `Entity`, `Context` and `Window` belong to `viewer-app` and `viewer-ui`. The app requests data through the engine's public API, and GPUI layout and paint callbacks only read screen state that is already prepared.
 
 `ViewerWorker` runs the data engine. Explorer directory listings run as separate GPUI background tasks, and in-flight requests for the same folder are merged. When the explorer root changes, responses for the previous root are dropped.
 
 ### Charts, heatmaps and maps
 
-Charts and maps in `viewer-ui` are drawn directly as GPUI custom `Element`s. No chart or map library is used.
+Charts and maps in `viewer-ui` are drawn directly as GPUI custom `Element`s.
 
 - `LineChart` takes x and y axes and a list of layers. Layers are bands (`Band`), lines (`Line`) and rules (`Rule`), drawn in insertion order. Prediction intervals are stacked bands, medians and actuals are lines, and nominal values and diagonals are rules.
 - `Heatmap` colors row × column cells with a diverging color scale centered at 0, and draws a color scale bar with its bounds on the right.
@@ -328,27 +158,30 @@ Charts and maps in `viewer-ui` are drawn directly as GPUI custom `Element`s. No 
 - Axis ticks are either given by the caller or placed automatically within the range at 1·2·2.5·5×10ⁿ steps. Automatic tick labels use the fewest decimals that can express the step.
 - Text is drawn with `shape_line`, and the plot area is clipped with a content mask so layers do not spill outside the frame.
 - On hover, a line chart reports the index of the nearest point, a heatmap the cell's row and column, a bar chart the bar's row and series, and a strip chart the row and index of the point within reach of the mouse. The caller updates its state and passes back the guide or highlight position.
-- Charts compute no values. The caller passes values that are already computed.
+- The caller passes values that are already computed.
 
-`GeoMap` draws background areas, routes, markers and labels at `[latitude, longitude]` coordinates, without map tiles.
+`GeoMap` draws background areas, routes, markers and labels at `[latitude, longitude]` coordinates.
 
 - The projection is equirectangular around the center latitude of the fitted region. The view fits the routes, markers and labels with a padding, keeps the aspect ratio and centers them; areas are background and do not affect the fit.
 - Areas are filled with `PathBuilder::fill` using the even-odd rule, so holes need no particular winding, and outlined with `PathBuilder::stroke`. Routes are strokes with bevel joins and optional dashes; markers are circles drawn with `paint_quad`; labels are shaped lines with an optional halo drawn as offset copies under the text.
 - Area geometry is prepared once per view: areas whose bounds miss the element are skipped, rings are clipped to the element plus a margin (Sutherland–Hodgman), vertices are snapped to the device pixel grid and repeated points are removed. Every area snaps to the same grid, so the shared borders of neighbouring areas stay coincident. The snapping error is at most half a device pixel.
 - The tessellated area paths are kept in element state, keyed by the area set (`Arc` identity), the view, the device scale and the border width. Each frame only moves the cached paths to the element's position; colors are applied at paint time, so a theme change reuses the geometry.
-- On real analysis runs (55 areas with 29,060 vertices, 8 maps at 1067 × 710 px and scale 1.5), preparation keeps on average 35 areas and 5,234 outline vertices and takes about 2 ms; tessellating every area on every frame takes about 6.9 ms, while reusing the prepared paths takes about 0.06 ms per frame.
 
 ### Wrapping text and tables
 
-GPUI's own text wrapping may break between any two Hangul syllables and split a word. `WrappedText` wraps only at whitespace and newlines, the way CSS `word-break: keep-all` sets Korean text; no-break spaces join their neighbours, and only a word wider than the whole line is broken between graphemes. It fills its parent's width and requests a measured layout, so its height follows its line count. Line widths are measured with `layout_line`, whose results GPUI caches across frames.
+`WrappedText` wraps only at whitespace and newlines, the way CSS `word-break: keep-all` sets Korean text; no-break spaces join their neighbours, and only a word wider than the whole line is broken between graphemes. It fills its parent's width and requests a measured layout, so its height follows its line count. Line widths are measured with `layout_line`, whose results GPUI caches across frames.
 
-`table::row` has a fixed height for `uniform_list`, and text that does not fit is truncated and shown in a tooltip. `table::wrapped_row` puts each cell in a `WrappedText`, so a row grows to fit its longest cell; it is for short tables of sentences laid out in an ordinary column. Table functions take column names as `&'static str` or as `SharedString` known only at run time.
+`RichText` wraps by the same rules and draws runs of different fonts, weights, colors and backgrounds. Widths are measured with each run's font, a word wider than a line is split by a search among the graphemes that can fit, and a selection is painted between the backgrounds and the glyphs. It reports the mouse as byte positions of its text. `TextSelection` turns those reports into a selection across the numbered texts of a view: press, drag and release, words and whole texts by click count, and the selected bytes of each text. For code it keeps every space and line, continues long lines on the next line, and draws tabs as spaces up to the next tab stop while reporting positions in the original text.
+
+`table::row` has a fixed height for `uniform_list`, and text that does not fit is truncated and shown in a tooltip. `table::wrapped_row` puts each cell in a `WrappedText`, so a row grows to fit its longest cell; it is for short tables of sentences laid out in an ordinary column. `table::element_header` and `table::element_row` lay out cells the caller draws, such as selectable text. Table functions take column names as `&'static str` or as `SharedString` known only at run time.
 
 ### Directory layout
 
 ```text
 TPUI/
+├── README.md
 ├── architecture.md
+├── usage.md
 ├── Cargo.toml
 ├── Cargo.lock
 ├── rust-toolchain.toml
@@ -368,7 +201,11 @@ TPUI/
     │       ├── value_detail.rs
     │       ├── query_log.rs
     │       └── ui/
+    │           ├── doc_scrollbar.rs
+    │           ├── document.rs
     │           ├── explorer.rs
+    │           ├── json_tree.rs
+    │           ├── markdown.rs
     │           ├── schema.rs
     │           ├── grid.rs
     │           ├── value.rs
@@ -404,6 +241,9 @@ TPUI/
         │   ├── reader.rs
         │   ├── row_index.rs
         │   ├── cache.rs
+        │   ├── document.rs
+        │   ├── json.rs
+        │   ├── markdown.rs
         │   ├── scan.rs
         │   ├── condition.rs
         │   ├── row_view.rs
@@ -414,6 +254,7 @@ TPUI/
         │   ├── structure.rs
         │   └── error.rs
         └── tests/
+            ├── document_contract.rs
             ├── reader_contract.rs
             ├── sqlite_contract.rs
             └── view_contract.rs
@@ -475,7 +316,7 @@ pub struct SortKey {
 }
 
 pub struct ViewSpec {
-    pub filters: Vec<FilterCondition>, // one per column
+    pub filter: Filter, // clauses joined by and, each conditions on one column joined by or
     pub sort: Option<SortKey>,
 }
 ```
@@ -485,7 +326,7 @@ pub struct ViewSpec {
 - Requested columns are sorted into source schema order and deduplicated. Out-of-range column IDs are returned as errors.
 - Row ranges are intersected with `[0, total_rows)`. An empty intersection is an empty result with no I/O. `start > end` is a request error.
 - A `ValueRequest` row outside `[0, total_rows)` is a request error.
-- Column IDs in responses link source fields to positions in the projected batch. Column names are not used as identifiers.
+- Column IDs in responses link source fields to positions in the projected batch.
 - Requests for sessions that are not open end with `StaleSession`.
 
 ## 5. Opening files and reading selected ranges
@@ -512,7 +353,7 @@ total rows = offsets[G]
 
 Global row `r` belongs to the Row Group satisfying `offsets[i] <= r < offsets[i + 1]`. It is found by upper-bound binary search, and the row within the group is `r - offsets[i]`. Row Groups with zero rows are skipped by the same rule. The cumulative sum uses checked arithmetic.
 
-Building the index is `O(G)`, and looking up a single row's group is `O(log G)`. In the MVP the cumulative sum over metadata sizes is computed on the CPU.
+Building the index is `O(G)`, and looking up a single row's group is `O(log G)`.
 
 ### Decoding unit
 
@@ -552,11 +393,17 @@ A SQLite table is addressed like a Parquet file with one Row Group: rows are pos
 - Connections are opened read-only with `query_only`. No transaction is held between reads, so writers are never blocked. Readers of a WAL database update its `-shm` shared-memory file as SQLite requires; the database and WAL files are not written.
 - The size and modification time of the database file and its `-wal` file are compared before reads. A change, a row count that no longer matches, or a value whose storage class the column type cannot hold ends the read with `FileChanged`, and the tab offers reopening.
 
+### Storage structure contracts
+
+Parquet structure results use footer metadata and do not decode data pages. They include file-level metadata, Row Group sizes and per-leaf-column storage details. Min/max statistics are converted to Arrow types for comparison and display; truncated statistics retain an approximation marker. Missing statistics and nested leaves have no displayed min/max. Null counts are combined only when every selected Row Group records them.
+
+SQLite structure results combine the session's row count and discovered storage classes with schema pragmas, index information and `CREATE` statements. Opening the SQLite session performs the row inspection described above; requesting its structure does not repeat that scan.
+
 ## 6. Virtualized grid
 
 ### Viewport computation and rendering
 
-`GridView` stores `first_visible_row: u64` and a pixel offset within that row. It never creates a huge GPUI element of total rows times row height; cells are placed in coordinates relative to the viewport. The vertical scrollbar's position ratio is computed in `f64`, and row-wise key input updates the integer row position.
+`GridView` stores `first_visible_row: u64` and a pixel offset within that row. Cells are placed in coordinates relative to the viewport. The vertical scrollbar's position ratio is computed in `f64`, and row-wise key input updates the integer row position.
 
 The horizontal position is likewise stored as the first column ID and an offset within that column. The visible column range is computed from the fixed column width. Header and body share the horizontal position, and the row number area stays fixed during horizontal movement.
 
@@ -624,7 +471,7 @@ Switching tabs releases the previous tab's selected value. If the new active tab
 
 ### Copy
 
-With the grid focused, the selected cell's value is copied; with the Value panel focused, the selected node's value. The worker builds the copy text from the selected value and the UI writes it to the clipboard. Preview text is never used for copying.
+With the grid focused, the selected cell's value is copied; with the Value panel focused, the selected node's value. The worker builds the copy text from the selected value and the UI writes it to the clipboard.
 
 | Data | Copy text |
 |---|---|
@@ -657,7 +504,7 @@ Row i of the row view is the i-th entry of the display order if it exists, other
 
 1. Parse each condition's value as the column type: string columns use the input as is, Binary as hexadecimal, and other types through `arrow-cast` string conversion. Dictionary columns are parsed as the type of their values.
 2. Read only the columns with conditions using a sequential scan.
-3. For each batch, build a Boolean result per condition, turn Null results into false, and AND them all. Comparisons use `arrow-ord` comparison kernels, and `contains` uses string search.
+3. For each batch, build a Boolean result per condition. Comparison and `contains` results are false for Null values; `is null` and `is not null` evaluate validity directly. OR the conditions within each clause, then AND the clauses. Comparisons use `arrow-ord` kernels, and `contains` uses string search.
 4. Append the source numbers of true rows to the filtered rows.
 
 ### Sort computation
@@ -698,7 +545,7 @@ Row view and find computations run on the data worker thread, split into batches
 - Viewport and value requests come only from the active tab. `RequestId` increments whenever the viewport request changes.
 - Value requests take `RequestId`s from the same issuer. The controller keeps the latest `RequestId` for viewports and values separately, and applies a result only when it matches the latest request of the same kind.
 - Pending viewport and value requests are each replaced by the latest one. Switching tabs replaces the previous tab's pending requests with those of the new active tab. When the selection changes, node expansion and copy requests and results for the previous value are dropped.
-- Open and close commands are all processed in request order. Closing a tab whose open command has not been processed cancels that command. Responses for closed tabs' sessions are dropped.
+- Close commands are handled before pending opens; opens retain their request order. Closing a tab whose open command has not been processed cancels that command. Responses for closed tabs' sessions are dropped.
 - The worker checks generations before reading a block, after decoding a batch, and before sending results.
 - Results of cancelled requests are not delivered to the UI. Synchronous I/O already in progress is checked once it returns.
 - Blocks completed in the same session can be reused from the cache. The UI applies only results matching the current `SessionId` and `RequestId`.
@@ -713,7 +560,7 @@ The cache key is `(SessionId, RowGroupId, block_start, sorted ColumnId list)`. T
 
 There is one cache per engine, and all tabs share the same budget. The LRU evicts by recency regardless of tab, so blocks of tabs not viewed for a while go first. Closing a tab removes that session's cache entries immediately.
 
-| Item | Initial value |
+| Item | Value |
 |---|---|
 | Concurrent decoding on the data worker | 1 |
 | Row block and output batch size | At most 512 rows |
@@ -727,8 +574,6 @@ There is one cache per engine, and all tabs share the same budget. The LRU evict
 | Row lists | 4 bytes per row; 8 bytes when the total row count exceeds `u32` |
 | Find match bitmap | 1 bit per source row; 1 most recent result |
 | Progress update interval | At least 100ms |
-
-These values are implementation defaults, not measured performance results.
 
 The cache conservatively counts the actual buffer capacity held by arrays. When a small slice pins a large source buffer, the cost of keeping the source buffer is included. LRU entries are evicted before insertion to fit the budget. A single block larger than the budget is not cached; only the needed previews are built before it is released.
 
@@ -756,54 +601,34 @@ Without tabs, the app is in the empty state. Each tab's file state transitions `
 | Message file or query log cannot be read or written | Reason shown in the filter and sort bar |
 | Read failure during row view computation | Previous row view kept; reason and `Retry` shown in the filter and sort bar |
 | Read failure during find computation | Reason shown in the find bar; recomputed on the next `F3` |
+| Document cannot be read, is not UTF-8 or is not valid JSON | Reason shown in the tab with `Retry`; the file stays watched and other tabs keep working |
 | Responses for closed tabs' sessions or earlier requests | Dropped |
 | Tab closed | That session's pending work cancelled; file handle, metadata, index and cache entries released |
 | File size or modification time changed between reads | The tab's cache and grid are invalidated and reopen is offered |
 | App exit | Request intake stops, running work is signalled to cancel, all files and caches are released |
 
-File size and modification time are checked on the open handle. The expected usage is that the source is not modified while it is open. Errors are distinguished by `viewer-core`'s error type, and user messages are built in `viewer-app`.
+File size and modification time are checked on the open handle. The expected usage is that a Parquet or SQLite source is not modified while it is open; documents follow changes to their files (section 11). Errors are distinguished by `viewer-core`'s error type, and user messages are built in `viewer-app`.
 
-## 11. Implementation order and completion criteria
+## 11. Documents
 
-Each stage uses the results of the previous ones. The path from opening the first file to seeing its first row is completed first; the explorer, virtualization, tabs, value detail and cache are connected after.
+Markdown and JSON files are read whole, parsed into a model and shown by views of their own. They share the tabs, the explorer and the Value panel with the data engine's sources, and `DocumentView` reads them directly in background tasks.
 
-| Stage | Scope | Completion criteria |
-|---|---|---|
-| 1. Foundation | Workspace and two crates, pinned GPUI fork commit and toolchain, app window and Open action | On Windows, the window and file dialog open and the selected path reaches app state |
-| 2. Engine and metadata | Read-only open/close, `DatasetInfo`, cumulative Row Group index, worker connection | Row counts and schemas of normal and zero-row files are shown; open failures reach the UI as errors |
-| 3. First data | Projection, RowSelection, block reads, cell previews, first viewport grid | Values of the selected rows and columns equal the reference data, and Null, string and nested types follow the display contract |
-| 4. Explorer and schema | Folder selection, lazy directory listing, file activation, schema tree | The explorer and Open share the same open path, and nested schemas can be expanded |
-| 5. Two-axis virtualization | Logical scroll coordinates, row and column range computation, fixed headers, scrollbars and key input, cell selection, overscan | The first, middle and last rows and Row Group boundaries can be explored, and rendering is limited to the viewport range |
-| 6. Tabs | Multi-session open/close in the engine, ordered open and close commands, tab list and active tab, drag reordering, per-tab scroll, selection and schema expansion, tab bar and shortcuts | Opening and switching between several files keeps each tab's scroll position and selected cell, and closing a tab releases its session's file handle and metadata |
-| 7. Value detail | `read_value`, holding the selected value, value tree and range nodes, virtualized body lines, raw value copy | Long strings, strings with newlines, large Binary and nested values can be viewed to the end without truncation, and copies equal the reference data |
-| 8. Request and memory control | Latest-request handling, generation checks, bounded result delivery, LRU shared by all tabs, release on tab switch and close | Fast scrolling, cell movement and tab switching never mix in earlier results, and with many tabs open the retained cache stays within the shared budget |
-| 9. Find | Find bar, sequential column scans, batch-by-batch computation tasks, find value parsing, match bitmap and navigation, match highlighting | String, numeric and time values are found with input exactly equal to their display text, and next, previous and wrap-around work. Scrolling and tab switching keep working during computation |
-| 10. Filter | Condition parsing, filtered rows, row view numbers, `read_rows`, source row number display, context menus and filter and sort bar | Result rows per condition equal the reference data, and in a filtered row view scrolling, selection, value detail and find follow the row view order |
-| 11. Sort | Header sort input, sort computation, display order, combination with filters | Ascending, descending, Null placement and source order of equal values match the reference data, and filter and sort work together |
-| 12. File structure | `file_structure` and `row_group_columns`, conversion of statistics to Arrow types, switching between data and file structure, file summary, column and Row Group tables | Per-column size, compression, null count, min and max and per-Row-Group sizes equal the reference metadata, and selecting a Row Group switches to its information |
-| 13. Shared UI crate and charts | `viewer-ui` split, shared table, buttons and input bindings, line/band/rule charts, heatmap, automatic ticks | Prediction intervals, actuals, bias, reliability and heatmaps of real probabilistic forecast data are drawn at the same positions as the source values, and hovered values equal the source |
-| 14. Themes | Light and dark color sets, following the OS app color setting, toolbar switch | Both themes render every view legibly, and the switch applies immediately |
-| 15. Route map | `GeoMap` with areas, routes, markers and labels, prepared area geometry kept across frames | Every route map of real analysis runs is drawn over the area background in both themes, and frames reuse the prepared geometry |
-| 16. SQLite tables | `DataSource`, SQLite sessions in the engine (typing, row order, block keys, scans, change detection), table listing in the explorer, table tabs, table structure view | Tables, `WITHOUT ROWID` tables, views and virtual tables of real databases open with row counts, last rows, filter, sort and find results equal to the same queries in SQLite, and the database and WAL files are unchanged |
-| 17. BI charts and wrapping tables | `BarChart`, `StripChart`, `WrappedText` with space-only wrapping, `table::wrapped_row`, run-time column names | The table, bar and strip blocks of real analysis runs are drawn with the source values in both themes, Korean cells and row labels break only at spaces at narrow widths, and hovered bars and points match the source |
+### Reading and lifetime
 
-### Verification required for the MVP
+`read_document(path, kind)` reads a file read-only and returns a `Document`; `document_kind(path)` decides the kind from the extension, and `file_stamp(path)` gives its size and modification time. Text must be UTF-8 (`InvalidText`, with the first invalid byte), and a byte order mark is dropped.
 
-- Engine contracts: Generate small Parquet fixtures with several Row Groups and projections using Rust's `ArrowWriter`, and compare first and last rows, group boundaries, zero rows, Null and nested fields against reference arrays. The writer is used only to generate test fixtures.
-- Value detail: Build fixtures with multi-megabyte strings, strings with newlines, tabs and control characters, large Binary, deep nesting and Lists of more than 1,000 elements, and compare `read_value` results, body display and copy text with the source values.
-- Virtualization: Check viewport computation and end positions on a logical model with a huge row count and a wide schema. On screen, scroll a file with several Row Groups and columns spanning several screen widths.
-- Request lifetimes: Switch to another tab or close a tab during a delayed read and check that the earlier response does not reach the active tab's grid. When moving the selection quickly, check that earlier cells' values do not reach the Value panel.
-- Tabs: Open several files as tabs and repeatedly switch and close them, checking that per-tab scroll and selection state is kept and that the same path never opens in two tabs.
-- Memory: Compare the cache's retained bytes, UI preview count, pending result count and selected values held against the implementation values. With several tabs open, check that the cache total stays within the shared budget, and that closing a tab releases its session's references.
-- Read-only: Check that fixture hashes are identical before and after opening and exploring them.
-- User flow: Complete `Open Folder → open a file → expand the schema → scroll vertically and horizontally → select a cell and inspect value detail → open another file in a new tab → switch tabs → close a tab` in the Windows app. Window movement and input must keep working during reads.
+`DocumentView` holds the active tab's document only. Activating a tab reads the file in a GPUI background task, and leaving it drops the document, its views and its images, so memory follows the one document on screen. The tab keeps a `DocumentPosition`: the first block and the offset within it for Markdown, or the expanded paths, the selected path and the scroll offset for JSON. Paths are child positions from the root, so they stay meaningful across versions of a file.
 
-### Verifying find, filter, sort and file structure
+While a document is shown, the controller's 500ms poll asks `DocumentView` to check its file. The stamp is read in a background task and goes through `ChangeWatch`, which counts a change once the same new stamp is seen twice, so a file caught mid-write or briefly missing during a save is not read. The stamp of a read is taken before the read, so a write landing during it shows as a change afterwards. A reread replaces the document in the existing view and keeps its place; a failed read shows the reason and `Retry`, drops the selected value and keeps watching. Generations drop the results of reads and checks for a previous file.
 
-- Engine contracts: On fixtures with several Row Groups and Null and Dictionary columns, compare scan batch positions, row list reads and `read_rows` order against reference arrays.
-- Find, filter and sort results: On real Parquet files, compare the app's matching cell counts, filtered row counts and sort order with the same conditions computed by pyarrow.
-- Execution: On large files, check that scrolling, cell selection, tab switching and cancel work during row view and find computation.
-- File structure: Compare the app's per-column and per-Row-Group display with the metadata of real Parquet files read by pyarrow.
-- SQLite: On a contract fixture with rowid gaps, mixed storage classes, a `WITHOUT ROWID` table, a view and an empty table, compare listing, typing, blocks, values, scans, row views, find, table structure and change detection with the inserted data. On real databases, compare row counts, last rows, filtered row counts, sort order and find counts with the same SQL queries.
+### Markdown model and view
 
-The MVP is complete when the six product features above and each stage's completion criteria are met. Performance checks record metadata open, first viewport preparation, viewport update on cache hits and value detail preparation separately, to tell file reading cost apart from UI processing cost.
+`MarkdownDocument::parse` runs `pulldown-cmark` with tables, footnotes, strikethrough, task lists, math and metadata blocks, and flattens its events into a list of `MdBlock`s. Containers become fields: a block carries its quote and list depth, and the first block of a list item carries the marker. A table becomes one `TableRow` block per row, sharing alignments and column widths taken from each column's longest text up to a limit. A paragraph holding only images becomes `Image` blocks. Each selectable `MdText` has a number in reading order, its text and its styled spans, so a selection is two `(number, byte)` positions compared as tuples, and `text_between` builds the copy text from them.
+
+`MarkdownView` draws blocks with GPUI's `list` and a `ListState`, which lays out only the blocks on screen plus an overdraw; blocks not yet measured count as a fixed height for the scrollbar. The view keeps the selection and the link under the mouse; `RichText` reports the mouse as byte positions. Images go through a `RetainAllImageCache` owned by the view and dropped with it. An image at a web address shows its alt text and address.
+
+### JSON model and view
+
+`JsonDocument::parse` is an iterative RFC 8259 parser that keeps the file's text and one record per value: its kind, the byte spans of its key and value, and the range of its children in a shared array. Key order, duplicate keys and number text therefore come from the file itself. Strings are decoded when asked for, and `string_preview` decodes only the beginning of a long one. Parsing keeps its open containers in a list, so depth is limited by memory only. Files are limited to 4 GiB by the 32-bit offsets. Failures report a byte, a line, a character column and a reason (`InvalidJson`).
+
+`JsonView` flattens the expanded tree into rows for `uniform_list`, grouping more than `GROUP_SIZE` children into range rows as the value tree does. Selecting a row sends a `ValueDetail` without children to the Value panel: the decoded text for strings, the file's text for other scalars, a count for arrays and objects. Copying a node gives its decoded text, or for other kinds its bytes in the file.

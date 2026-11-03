@@ -644,11 +644,10 @@ impl ValueView {
             .gap_0p5()
             .border_b_1()
             .border_color(theme::border())
-            .child(
-                div()
-                    .truncate()
-                    .child(format!("Row {} · {}", header.row + 1, header.column)),
-            )
+            .child(div().truncate().child(match header.row {
+                Some(row) => SharedString::from(format!("Row {} · {}", row + 1, header.column)),
+                None => header.column.clone(),
+            }))
             .child(
                 div()
                     .flex()
@@ -702,7 +701,7 @@ impl Render for ValueView {
                 .child(text)
         };
         match &self.state {
-            ValueState::Empty => container.child(message("No cell selected.".into())),
+            ValueState::Empty => container.child(message("Nothing selected.".into())),
             ValueState::Loading => container.child(message("Reading…".into())),
             ValueState::Failed(error) => container.child(
                 message(error.clone())

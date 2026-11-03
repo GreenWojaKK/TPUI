@@ -39,7 +39,7 @@ pub struct CellPreview {
 }
 
 impl CellPreview {
-    fn new(text: impl Into<SharedString>, kind: CellKind) -> Self {
+    pub(crate) fn new(text: impl Into<SharedString>, kind: CellKind) -> Self {
         Self {
             text: text.into(),
             kind,

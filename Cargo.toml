@@ -27,6 +27,8 @@ async-channel = "2.5.0"
 raw-window-handle = "0.6"
 windows = "0.62.2"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
+# Parsing only: the crate's HTML output and command-line option support are left out.
+pulldown-cmark = { version = "0.13.6", default-features = false }
 # bundled: SQLite is compiled in, so reading databases needs no system library.
 rusqlite = { version = "0.41.1", features = ["bundled"] }
 serde_json = "1.0.154"
@@ -40,3 +42,15 @@ embed-resource = "3.0.12"
 # Fork branch: GreenWojaKK/zed tpui/v1.26.2-slim-image
 gpui = { git = "https://github.com/GreenWojaKK/zed", rev = "f941f6a1c26a295c051e2a3776d9897093b3db8c" }
 gpui_platform = { git = "https://github.com/GreenWojaKK/zed", rev = "f941f6a1c26a295c051e2a3776d9897093b3db8c" }
+
+# Keeps debug builds small: line numbers for this workspace, no debug info for dependencies.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+# Release optimization with function names and line numbers, for profilers. Build with --profile profiling.
+[profile.profiling]
+inherits = "release"
+debug = "line-tables-only"

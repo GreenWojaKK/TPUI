@@ -1,4 +1,4 @@
-//! UI components shared by GPUI apps. The Parquet viewer and other desktop tools use the same theme, inputs,
+//! UI components shared by GPUI apps. The TPUI viewer and other desktop tools use the same theme, menus,
 //! tables, tab bar and charts.
 //!
 //! Depends only on GPUI, not on the data engine. Apps using this crate must use the same GPUI commit.

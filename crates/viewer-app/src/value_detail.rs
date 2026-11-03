@@ -20,8 +20,8 @@ use crate::cell_preview::{CellPreview, is_number, preview_column};
 /// Cell information shown at the top of the panel.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ValueHeader {
-    /// Zero-based row within the file.
-    pub row: u64,
+    /// Zero-based row within the file, for a value in a table.
+    pub row: Option<u64>,
     pub column: SharedString,
     pub data_type: SharedString,
     pub size: Option<SharedString>,
@@ -59,7 +59,7 @@ pub fn detail(slice: &ValueSlice) -> ValueDetail {
     let (array, row) = resolve(&slice.value, 0);
     ValueDetail {
         header: ValueHeader {
-            row: slice.row,
+            row: Some(slice.row),
             column: slice.field.name().clone().into(),
             data_type: slice.field.data_type().to_string().into(),
             size: value_size(&array, row),

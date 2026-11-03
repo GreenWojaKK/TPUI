@@ -2,9 +2,11 @@
 //!
 //! [`row`] has a fixed height for `uniform_list`, and content truncated in narrow cells is shown in full as a
 //! tooltip. [`wrapped_row`] wraps long text at spaces and grows to fit it, for short tables of sentences.
+//! [`element_header`] and [`element_row`] lay out cells the caller draws, such as text that can be selected.
 
 use gpui::{
-    AnyView, App, Context, Div, SharedString, Stateful, Window, div, prelude::*, px, relative,
+    AnyElement, AnyView, App, Context, Div, SharedString, Stateful, Window, div, prelude::*, px,
+    relative,
 };
 
 use crate::theme;
@@ -150,6 +152,58 @@ pub fn wrapped_row<L>(
                     })
             },
         ))
+}
+
+/// Header row of cells the caller draws, one per column. It grows with its cells.
+pub fn element_header<L>(columns: &[(L, f32)], cells: Vec<AnyElement>) -> Div {
+    let total = total_weight(columns);
+    let metrics = theme::metrics();
+    div()
+        .flex_none()
+        .min_h(metrics.list_row_height)
+        .px(metrics.cell_padding_x)
+        .py(metrics.wrapped_row_padding_y)
+        .flex()
+        .items_start()
+        .bg(theme::surface())
+        .border_b_1()
+        .border_color(theme::border())
+        .text_color(theme::text_muted())
+        .children(cells.into_iter().zip(columns).map(|(cell, (_, weight))| {
+            div()
+                .w(relative(weight / total))
+                .min_w_0()
+                .pr(metrics.cell_padding_x)
+                .child(cell)
+        }))
+}
+
+/// One table row of cells the caller draws, as tall as its tallest cell. Element ids are built as in [`row`].
+pub fn element_row<L>(
+    name: &'static str,
+    row: usize,
+    columns: &[(L, f32)],
+    cells: Vec<AnyElement>,
+) -> Stateful<Div> {
+    let total = total_weight(columns);
+    let metrics = theme::metrics();
+    div()
+        .id((name, row))
+        .w_full()
+        .min_h(metrics.list_row_height)
+        .px(metrics.cell_padding_x)
+        .py(metrics.wrapped_row_padding_y)
+        .flex()
+        .items_start()
+        .border_b_1()
+        .border_color(theme::grid_line())
+        .children(cells.into_iter().zip(columns).map(|(cell, (_, weight))| {
+            div()
+                .w(relative(weight / total))
+                .min_w_0()
+                .pr(metrics.cell_padding_x)
+                .child(cell)
+        }))
 }
 
 /// Builds a multi-line text tooltip. Pass it to an element's `tooltip`.
