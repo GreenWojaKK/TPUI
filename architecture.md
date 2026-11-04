@@ -4,7 +4,7 @@ This document defines component boundaries, state ownership, data contracts and 
 
 ## 1. Product scope and technology choices
 
-TPUI is a native desktop viewer that opens local Parquet files and SQLite tables read-only to explore their structure and data and reads Markdown and JSON files, together with the UI components that it shares with other GPUI apps. The viewer consists of the explorer, file opening, tabs, schema view, a grid virtualized over rows and columns, value detail, find, filter, sort and the file and table structure views. The core stack is Rust + GPUI + Arrow/Parquet.
+TPUI is a native desktop viewer that opens local Parquet files and SQLite tables read-only to explore their structure and data and reads Markdown, JSON, JSON Lines and source files, together with the UI components that it shares with other GPUI apps. The viewer consists of the explorer, file opening, tabs, schema view, a grid virtualized over rows and columns, value detail, find, filter, sort and the file and table structure views. The core stack is Rust + GPUI + Arrow/Parquet, and a Go process finds the tokens of source files.
 
 The app shows what the raw data looks like and how the file is stored. Find, filter and sort locate source rows.
 
@@ -16,7 +16,8 @@ Windows x64 comes first. The app opens several files as tabs in a single window 
 | UI | GPUI used directly: windows, input, layout, text and grid rendering |
 | Parquet reading | arrow-rs `parquet`: footer, schema, Row Groups, decoding selected rows and columns |
 | SQLite reading | `rusqlite` with the bundled SQLite: read-only connections, schema pragmas, range queries in table order |
-| Markdown and JSON reading | `pulldown-cmark` for Markdown events; an own JSON parser that keeps key order, duplicates and number text. See section 11 |
+| Markdown and JSON reading | `pulldown-cmark` for Markdown events; an own JSON and JSON Lines parser that keeps key order, duplicates and number text. See section 11 |
+| Source tokens | `tpui-core`, a Go program on the standard library: a one-pass scanner with a rule table per language. See section 11 |
 | Data representation | `arrow-array`, `arrow-schema`: `RecordBatch` and typed column arrays |
 | Comparison and sorting | `arrow-ord`: value comparison for find and filter, and sort order |
 | Local file access | `std::fs`: read-only file handles and directory listing |
@@ -36,7 +37,7 @@ A source is a Parquet path, a SQLite path and table name, or a document path wit
 
 The active tab supplies the shared grid, Value panel, structure view and status bar. Switching tabs preserves per-tab state and requests the new active tab's visible range and selected value. Closing a tab releases its session; the next active tab is the one to its right, or the one to its left when there is no right neighbour.
 
-Explorer nodes represent directories, Parquet files, Markdown and JSON documents, SQLite databases and database objects. Directory and database listings load on expansion. The expanded tree is flattened for virtualized rendering; root generations discard results from a previous root. File dialogs and explorer activation converge on `open_source` and `open_document`. SQLite detection uses the file header, and a direct database open resolves the first table or view by name.
+Explorer nodes represent directories, Parquet files, documents, SQLite databases and database objects. Directory and database listings load on expansion. The expanded tree is flattened for virtualized rendering; root generations discard results from a previous root. File dialogs, the command line and explorer activation converge on `open_source` and `open_document`. SQLite detection uses the file header, and a direct database open resolves the first table or view by name.
 
 File and folder dialogs use GPUI's `App::prompt_for_paths`. [Official API](https://docs.rs/gpui/latest/gpui/struct.App.html#method.prompt_for_paths)
 
@@ -62,13 +63,25 @@ On Windows, `InputWindow` owns a native multiline edit control on a dedicated th
 
 Queries that start row view work are recorded when that work completes. A superseded computation produces no completion entry; repeated clicks that leave the query unchanged produce no duplicate entry. Parse failures retain the received text and error. The app appends to its own log and message files while source-data access remains read-only. User-facing file locations and controls are in [Query input and log](usage.md#query-input-and-log).
 
+### Files from outside
+
+`open_requests::begin` runs before any window exists. It takes the paths on the command line, made absolute, and tries to create the first instance of a named pipe whose name comes from the app's storage directory, so there is one per user. The process that succeeds is a viewer and keeps a thread listening; the pipe goes away with it, however it ends. A later start with files writes them to the pipe as UTF-16 with a zero after each path and exits without opening a window. A later start without files opens its own window and does not listen. Requests reach `AppController` on a channel and go to `open_path`, and files from a later start bring the window to the front.
+
+The listener makes its next pipe instance before reading the connected one, and a later start retries for up to two seconds while the pipe is between connections, so files opened at the same moment all arrive. Pipe instances accept local clients only.
+
+### Usage log
+
+`UsageMonitor` reads the viewer's memory and CPU, with `GetProcessMemoryInfo` and `GetProcessTimes`, and adds those of `tpui-core` through its process handle. It appends each reading to a daily file in the app's storage directory (see [usage.md](usage.md#memory-and-cpu-use)). Readings follow events, and the controller's 500ms poll only asks it whether a minute has passed; a reading from that poll is written when a shown value has changed. CPU is the difference of the counted CPU time between two readings over the time between them, relative to the logical processors, so it stays exact however far apart readings are.
+
+Readings change no screen state. The status bar's text changes only when the button is pressed, so usage never causes a redraw by itself. Readings after a tab change or a read are deferred until the update has finished, so what it dropped is gone from the numbers.
+
 ## 3. Components and dependencies
 
-The Cargo workspace consists of three crates.
+The Cargo workspace consists of three crates. The Go module in `core/` builds a separate program, `tpui-core`.
 
 | Crate | Role | Depends on |
 |---|---|---|
-| `viewer-core` | Parquet and SQLite reading, row views, find, query text, file and table structure, Markdown and JSON documents | arrow-rs, parquet, rusqlite, pulldown-cmark |
+| `viewer-core` | Parquet and SQLite reading, row views, find, query text, file and table structure, Markdown, JSON, JSON Lines and code documents | arrow-rs, parquet, rusqlite, pulldown-cmark |
 | `viewer-ui` | UI components shared by GPUI apps: light and dark themes, context menu, query window of the operating system (Windows), message file, tab bar, tables with fixed or wrapping rows, styled wrapping text, small buttons, line, bar and strip charts, heatmap, route map, number and size formats | GPUI |
 | `viewer-app` | The viewer app. Combines the two crates and owns the worker and screen state | `viewer-core`, `viewer-ui`, GPUI |
 
@@ -105,7 +118,7 @@ flowchart TB
         Scan[Sequential column scan]
         View[Condition parsing / row lists / find match table]
         Cache[Arrow block cache shared by all sessions]
-        Documents[Markdown and JSON models]
+        Documents[Markdown, JSON and code models]
         Engine --> Metadata
         Engine --> Reader
         Engine --> Sqlite
@@ -114,6 +127,8 @@ flowchart TB
     end
     Worker --> Engine
     UI -->|read in background tasks| Documents
+    UI -->|token requests over pipes| Lexer[tpui-core: tokens of the one active file]
+    Lexer --> Source[Read-only local source file]
     Reader --> File[Read-only local Parquet file]
     Sqlite --> Db[Read-only local SQLite database]
 ```
@@ -128,15 +143,19 @@ flowchart TB
 | `InputWindow` (`viewer-ui`, Windows) | The query window's thread, edit control, status line and requests from the viewer |
 | `Inbox` (`viewer-ui`) | The message file of the process and the last version delivered |
 | `QueryLog` | The folder of the daily query log files |
+| `open_requests` | The thread listening for files from later starts, and the channel to `AppController` |
+| `UsageMonitor` | The folder of the daily usage log files, the last reading and the values of the last written line |
 | `ViewBar` | The row view's filter and sort conditions as query text with operator boxes and the parentheses of `or` clauses, sweeping conditions into parentheses, query copy, progress and cancel, notices for unsortable columns |
 | `StructureView` | The active tab's file structure, the selected Row Group and its column information, or the table structure of a SQLite tab |
 | `ExplorerView` | Root path, expanded folders and databases, selected file or table, directory and database listing state |
 | `SchemaView` | The active tab's schema nodes and expansion state |
 | `GridView` | The active tab's logical scroll position, visible row and column ranges, cell previews and source row numbers, sort and filter marks in headers, input and rendering |
 | `ValueView` | Value tree nodes and expansion, selected node, body value and display line index, body scroll position |
-| `DocumentView` | The active tab's document, its file's last stamp, and the Markdown or JSON view showing it |
+| `DocumentView` | The active tab's document, its file's last stamp, the Markdown, JSON or code view showing it, and the connection to the code core |
 | `MarkdownView` | The parsed document, list state, text selection, the link under the mouse, the document's images |
 | `JsonView` | The parsed document, expanded paths, selected path, flattened rows, scroll position |
+| `CodeView` | The file's text, scroll position, text selection, the tokens around the screen and the bytes asked for |
+| `CodeCore` | The `tpui-core` process, the latest request waiting to be sent, and the threads writing requests and reading answers |
 | `ViewerWorker` | Handling open and close commands, picking the latest requests, calling the engine, checking result generations, bounded text conversion of Arrow values, holding the selected value and building detail and copy text, holding per-session row lists and mapping row view positions to source rows, row view and find computation tasks |
 | `ViewerEngine` | Per open session: file handle, metadata, Row Group index; read planning, decoding, sequential column scans, arbitrary row reads, and the cache shared by all sessions |
 
@@ -185,6 +204,12 @@ TPUI/
 ├── Cargo.toml
 ├── Cargo.lock
 ├── rust-toolchain.toml
+├── core/
+│   ├── go.mod
+│   ├── main.go
+│   └── lex/
+│       ├── lex.go
+│       └── languages.go
 └── crates/
     ├── viewer-app/
     │   ├── Cargo.toml
@@ -196,11 +221,15 @@ TPUI/
     │   └── src/
     │       ├── main.rs
     │       ├── app.rs
+    │       ├── open_requests.rs
     │       ├── worker.rs
     │       ├── cell_preview.rs
+    │       ├── code_core.rs
     │       ├── value_detail.rs
     │       ├── query_log.rs
+    │       ├── usage_log.rs
     │       └── ui/
+    │           ├── code.rs
     │           ├── doc_scrollbar.rs
     │           ├── document.rs
     │           ├── explorer.rs
@@ -241,6 +270,7 @@ TPUI/
         │   ├── reader.rs
         │   ├── row_index.rs
         │   ├── cache.rs
+        │   ├── code.rs
         │   ├── document.rs
         │   ├── json.rs
         │   ├── markdown.rs
@@ -599,9 +629,11 @@ Without tabs, the app is in the empty state. Each tab's file state transitions `
 | Filter value cannot be parsed as the column type | Not applied; reason shown in the filter and sort bar |
 | Query text does not parse | Nothing changes; line, column and reason shown in the filter and sort bar and the query window, and logged |
 | Message file or query log cannot be read or written | Reason shown in the filter and sort bar |
+| Usage log line cannot be written | The usage button's text says `not logged` at the next press; the viewer keeps working |
 | Read failure during row view computation | Previous row view kept; reason and `Retry` shown in the filter and sort bar |
 | Read failure during find computation | Reason shown in the find bar; recomputed on the next `F3` |
 | Document cannot be read, is not UTF-8 or is not valid JSON | Reason shown in the tab with `Retry`; the file stays watched and other tabs keep working |
+| Code core missing, ended or failing on a file | Text stays on screen in plain colors; reason shown in the status bar |
 | Responses for closed tabs' sessions or earlier requests | Dropped |
 | Tab closed | That session's pending work cancelled; file handle, metadata, index and cache entries released |
 | File size or modification time changed between reads | The tab's cache and grid are invalidated and reopen is offered |
@@ -611,13 +643,13 @@ File size and modification time are checked on the open handle. The expected usa
 
 ## 11. Documents
 
-Markdown and JSON files are read whole, parsed into a model and shown by views of their own. They share the tabs, the explorer and the Value panel with the data engine's sources, and `DocumentView` reads them directly in background tasks.
+Markdown, JSON, JSON Lines and source files are read whole, parsed into a model and shown by views of their own. They share the tabs, the explorer and the Value panel with the data engine's sources, and `DocumentView` reads them directly in background tasks.
 
 ### Reading and lifetime
 
-`read_document(path, kind)` reads a file read-only and returns a `Document`; `document_kind(path)` decides the kind from the extension, and `file_stamp(path)` gives its size and modification time. Text must be UTF-8 (`InvalidText`, with the first invalid byte), and a byte order mark is dropped.
+`read_document(path, kind)` reads a file read-only and returns a `Document`; `document_kind(path)` decides the kind from the extension, and `file_stamp(path)` gives its size and modification time. Text must be UTF-8 (`InvalidText`, with the first invalid byte), and a byte order mark is dropped. A source file holding a NUL byte is also `InvalidText`.
 
-`DocumentView` holds the active tab's document only. Activating a tab reads the file in a GPUI background task, and leaving it drops the document, its views and its images, so memory follows the one document on screen. The tab keeps a `DocumentPosition`: the first block and the offset within it for Markdown, or the expanded paths, the selected path and the scroll offset for JSON. Paths are child positions from the root, so they stay meaningful across versions of a file.
+`DocumentView` holds the active tab's document only. Activating a tab reads the file in a GPUI background task, and leaving it drops the document, its views and its images, so memory follows the one document on screen. The tab keeps a `DocumentPosition`: the first block and the offset within it for Markdown, the expanded paths, the selected path and the scroll offset for JSON, or the scroll offsets for code. Paths are child positions from the root, so they stay meaningful across versions of a file.
 
 While a document is shown, the controller's 500ms poll asks `DocumentView` to check its file. The stamp is read in a background task and goes through `ChangeWatch`, which counts a change once the same new stamp is seen twice, so a file caught mid-write or briefly missing during a save is not read. The stamp of a read is taken before the read, so a write landing during it shows as a change afterwards. A reread replaces the document in the existing view and keeps its place; a failed read shows the reason and `Retry`, drops the selected value and keeps watching. Generations drop the results of reads and checks for a previous file.
 
@@ -632,3 +664,36 @@ While a document is shown, the controller's 500ms poll asks `DocumentView` to ch
 `JsonDocument::parse` is an iterative RFC 8259 parser that keeps the file's text and one record per value: its kind, the byte spans of its key and value, and the range of its children in a shared array. Key order, duplicate keys and number text therefore come from the file itself. Strings are decoded when asked for, and `string_preview` decodes only the beginning of a long one. Parsing keeps its open containers in a list, so depth is limited by memory only. Files are limited to 4 GiB by the 32-bit offsets. Failures report a byte, a line, a character column and a reason (`InvalidJson`).
 
 `JsonView` flattens the expanded tree into rows for `uniform_list`, grouping more than `GROUP_SIZE` children into range rows as the value tree does. Selecting a row sends a `ValueDetail` without children to the Value panel: the decoded text for strings, the file's text for other scalars, a count for arrays and objects. Copying a node gives its decoded text, or for other kinds its bytes in the file.
+
+`JsonDocument::parse_lines` reads a JSON Lines file with the same parser, one `\n`-separated line at a time, as the children of a root array whose text is the whole file. Blank lines are skipped. A table beside the nodes holds each child's file line number and the reason for each failed line. A failed line's partial nodes are dropped, and one `Invalid` node over its text takes its place, so a bad line costs only itself. Only a file over 4 GiB fails as a whole. `JsonView` names the root `file`, numbers its children by line, shows a line's text in the file on its row, and writes places as `line 12: $.a`.
+
+### Code view
+
+`CodeDocument` keeps the file's text whole with the start of each line and the width of the widest line. Lines break at `\n`, `\r\n` and `\r`, and a final line break starts an empty last line. Selections are `(line, byte)` positions, and copying takes the bytes between them, so the clipboard holds the file's own line breaks.
+
+`CodeView` draws through a custom element. Every line has one height and stays on one row, so the scroll position alone gives the lines on screen, and only those are shaped. A line is shaped up to `MAX_DRAWN_LINE_BYTES` with a note of what is left. The scroll range follows the widest drawn line.
+
+The text is on screen before any token exists. During layout the view compares the bytes on screen with the tokens it holds and the bytes already asked for; when neither covers them it emits `NeedTokens` for the lines on screen plus `TOKEN_MARGIN_LINES` on each side. A token crossing lines, such as a block comment, colors each line it touches. A token that does not fit the text is left out, and `style::token_color` turns its kind into a color.
+
+### Code core
+
+`core/` is a Go module on the standard library. `build.rs` runs `go build` with `CGO_ENABLED=0` and puts `tpui-core` next to the viewer's executable; a failed build gives a Cargo warning.
+
+The viewer and the core exchange one JSON object per line over stdin and stdout.
+
+| Message | Fields |
+|---|---|
+| Request | `id`, `path`, `stamp` (`len`, `modified` in nanoseconds since the Unix epoch), `start`, `end` |
+| Tokens | `id`, `language` (empty for a file without rules), `tokens` as a flat list of start, length and kind |
+| Stale | `id`, `stale`: the file on disk is not the version asked for |
+| Failure | `id`, `error`: this request failed and the core keeps running |
+
+Token kinds are 1 comment, 2 string, 3 number, 4 keyword, 5 constant, 6 type, 7 function and 8 attribute. Byte positions count from after a byte order mark.
+
+The core holds one `activeFile`: its path, stamp, language and a `lex.Table` of parallel start, length and kind arrays in file order. It builds the table when a request names another file or stamp, in memory only, and answers a range by binary search. It checks the file's stamp before and after reading, so the text it scans is the version the viewer holds or the answer says `stale`. Files over `maxLexBytes` get no tokens.
+
+`lex.Lex` makes one pass in linear time and keeps only the previous token as context. A `Language` is data: comment markers, a `stringRule` per opening quote, keyword tables, the words that define a name, and optional hooks for what the table cannot say, such as Rust's raw strings and JavaScript's regular expressions and templates. A name right after a definer takes the definer's kind, a name before `(` is a function, or a type when capitalized in languages that say so, other capitalized names are types and all-capitals names constants, and a name after an adjacent `.` is never a keyword. `Detect` chooses the language from the extension.
+
+Requests never wait in a queue. `CodeCore` keeps only the latest unsent request and the core keeps only the latest unanswered one, and `DocumentView` drops every answer but the one to its latest request. The UI thread only sets a slot and receives on a channel.
+
+`DocumentView` starts the core at the first token request and ends it when a tab other than code is shown. The core starts no other process. It ends when stdin closes, so it ends with the viewer however the viewer ends. When it ends unexpectedly, the next request starts it again, up to `MAX_CORE_STARTS` times per opened file. A stale answer holds further requests until the file's next read, or until the file is back at the version on screen.

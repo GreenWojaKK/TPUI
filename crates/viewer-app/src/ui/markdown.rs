@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, ClipboardItem, Context, DispatchPhase, Div, Entity, FocusHandle, FontWeight, Hsla,
-    ListAlignment, ListOffset, ListState, MouseButton, MouseDownEvent, MouseMoveEvent,
+    AnyElement, Axis, ClipboardItem, Context, DispatchPhase, Div, Entity, FocusHandle, FontWeight,
+    Hsla, ListAlignment, ListOffset, ListState, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, ObjectFit, Pixels, RetainAllImageCache, SharedString, StyledImage, TextAlign,
     Window, actions, canvas, div, img, list, point, prelude::*, px, relative,
 };
@@ -567,8 +567,9 @@ impl Render for MarkdownView {
                 .size_full(),
             )
             .child(scrollbar(
+                Axis::Vertical,
                 self.scrollbar.clone(),
-                move || ScrollMetrics {
+                move |_| ScrollMetrics {
                     offset: -read.scroll_px_offset_for_scrollbar().y,
                     max: read.max_offset_for_scrollbar().y,
                     viewport: read.viewport_bounds().size.height,

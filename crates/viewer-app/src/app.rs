@@ -1,7 +1,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui::{
     App, ClickEvent, ClipboardItem, Context, Div, Entity, FocusHandle, Modifiers,
@@ -15,6 +15,7 @@ use viewer_core::{
     format_value, is_sortable, is_sqlite_file, op_text, parse_query, sqlite_objects,
 };
 
+use crate::open_requests::OpenRequest;
 use crate::query_log::{Entry, Origin, QueryLog};
 use crate::ui::document::{DocumentEvent, DocumentPosition, DocumentStatus, DocumentView};
 use crate::ui::explorer::{ExplorerEvent, ExplorerView};
@@ -27,6 +28,7 @@ use crate::ui::structure::{StructureEvent, StructureView};
 use crate::ui::style;
 use crate::ui::value::{ValueEvent, ValueView};
 use crate::ui::view_bar::{SweepRange, ViewBar, ViewBarAction};
+use crate::usage_log::{ActiveFile, Measured, UsageEvent, UsageMonitor};
 use crate::value_detail::CellValue;
 use crate::worker::{
     FindRequest, StructureRequest, ValueOp, ValueOpKind, ViewId, ViewerWorker, WorkerEvent,
@@ -38,7 +40,7 @@ use viewer_ui::input_window::{self, InputEvent, InputWindow};
 use viewer_ui::menu::{self, Menu, MenuEvent};
 use viewer_ui::tab_bar::{TabBar, TabBarState, TabLabel, TabStatus};
 use viewer_ui::theme;
-use viewer_ui::widgets::toggle_button;
+use viewer_ui::widgets::{small_button, toggle_button};
 
 actions!(
     viewer,
@@ -223,6 +225,9 @@ pub struct AppController {
     /// Message file other programs write queries to.
     inbox: Option<Inbox>,
     query_log: Option<QueryLog>,
+    usage: UsageMonitor,
+    /// The status bar's text for the last reading the user asked for.
+    usage_label: Option<SharedString>,
     /// A logged query waiting for its row view to finish: the row view request and the entry to complete.
     pending_log: Option<(RequestId, Entry)>,
     /// Last logged query text and its session, so that a click repeating it is not logged twice.
@@ -248,7 +253,11 @@ const INPUT_HINT: &str = "find, filter and sort lines, such as: filter age >= 30
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 impl AppController {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        open_requests: async_channel::Receiver<OpenRequest>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
 
@@ -331,12 +340,23 @@ impl AppController {
         );
 
         let document = cx.new(|_| DocumentView::new());
-        let document_events = cx.subscribe(&document, |this, _, event: &DocumentEvent, cx| {
-            this.value.update(cx, |value, cx| match event {
-                DocumentEvent::Value(detail) => value.set_detail((**detail).clone(), cx),
-                DocumentEvent::ValueGone => value.clear(cx),
-            });
-        });
+        let document_events =
+            cx.subscribe(
+                &document,
+                |this, _, event: &DocumentEvent, cx| match event {
+                    DocumentEvent::Value(detail) => this
+                        .value
+                        .update(cx, |value, cx| value.set_detail((**detail).clone(), cx)),
+                    DocumentEvent::ValueGone => this.value.update(cx, |value, cx| value.clear(cx)),
+                    DocumentEvent::Read { again: false } => {
+                        this.record_usage_soon(UsageEvent::Read, cx)
+                    }
+                    DocumentEvent::Read { again: true } => {
+                        this.record_usage_soon(UsageEvent::Reread, cx)
+                    }
+                    DocumentEvent::TokensReady => this.record_usage_soon(UsageEvent::Tokens, cx),
+                },
+            );
         let document_changes = cx.observe(&document, |_, _, cx| cx.notify());
 
         let value = cx.new(ValueView::new);
@@ -361,7 +381,16 @@ impl AppController {
 
         let app_dir = viewer_ui::storage::app_dir("TPUI");
         let inbox = app_dir.as_deref().and_then(|dir| Inbox::create(dir).ok());
-        let query_log = app_dir.map(|dir| QueryLog::new(dir.join("query-log")));
+        let query_log = app_dir
+            .as_deref()
+            .map(|dir| QueryLog::new(dir.join("query-log")));
+        let mut usage = UsageMonitor::new(app_dir.map(|dir| dir.join("usage-log")));
+        usage.record(UsageEvent::Start, None, None);
+        // Closing the window releases this view on the way to quitting.
+        cx.on_release(|this, cx| {
+            this.record_usage(UsageEvent::Exit, cx);
+        })
+        .detach();
         cx.spawn_in(window, async move |this, cx| {
             loop {
                 cx.background_executor().timer(POLL_INTERVAL).await;
@@ -370,6 +399,26 @@ impl AppController {
                         this.poll_inbox(window, cx);
                         this.document
                             .update(cx, |document, cx| document.check_for_changes(cx));
+                        if this.usage.tick_due(Instant::now()) {
+                            this.record_usage(UsageEvent::Tick, cx);
+                        }
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
+
+        cx.spawn_in(window, async move |this, cx| {
+            while let Ok(request) = open_requests.recv().await {
+                if this
+                    .update_in(cx, |this, window, cx| {
+                        this.open_path(request.path, cx);
+                        if request.bring_forward {
+                            window.activate_window();
+                        }
                     })
                     .is_err()
                 {
@@ -432,6 +481,8 @@ impl AppController {
             follow_system: true,
             inbox,
             query_log,
+            usage,
+            usage_label: None,
             pending_log: None,
             last_logged: None,
             search_after_view: false,
@@ -503,8 +554,8 @@ impl AppController {
         .detach();
     }
 
-    /// Opens a picked file. A Markdown or JSON file opens as a document, and a SQLite database opens its first table or
-    /// view by name and reveals the others in the explorer; any other file opens as Parquet.
+    /// Opens a picked file. A Markdown, JSON or source file opens as a document, and a SQLite database opens its first
+    /// table or view by name and reveals the others in the explorer; any other file opens as Parquet.
     fn open_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         if let Some(kind) = document_kind(&path) {
             self.open_document(path, kind, cx);
@@ -547,7 +598,7 @@ impl AppController {
         self.push_tab(session, tab_source, TabState::Opening, cx);
     }
 
-    /// Opens a Markdown or JSON file in a new tab and activates it, or activates the tab that already shows it.
+    /// Opens a document file in a new tab and activates it, or activates the tab that already shows it.
     fn open_document(&mut self, path: PathBuf, kind: DocumentKind, cx: &mut Context<Self>) {
         let tab_source = TabSource::Document { path, kind };
         if self.activate_open_tab(&tab_source, cx) {
@@ -590,6 +641,59 @@ impl AppController {
         self.show_active_tab(cx);
     }
 
+    /// The file on screen, for the usage log.
+    fn active_file(&self, cx: &App) -> Option<ActiveFile> {
+        let tab = self.active_tab()?;
+        let size = match &tab.state {
+            TabState::Ready(info) => Some(info.file_size),
+            TabState::Document => self.document.read(cx).file_size(),
+            TabState::Opening | TabState::OpenError(_) => None,
+        };
+        Some(ActiveFile {
+            label: source_label(&tab.source),
+            size,
+        })
+    }
+
+    fn record_usage(&mut self, event: UsageEvent, cx: &App) -> Option<Measured> {
+        let file = self.active_file(cx);
+        let core = self.document.read(cx).core_usage();
+        self.usage.record(event, file.as_ref(), core)
+    }
+
+    /// Records usage once this update has finished, so that what it dropped is gone from the reading.
+    fn record_usage_soon(&mut self, event: UsageEvent, cx: &mut Context<Self>) {
+        let this = cx.entity().downgrade();
+        cx.defer(move |cx| {
+            this.update(cx, |this, cx| {
+                this.record_usage(event, cx);
+            })
+            .ok();
+        });
+    }
+
+    /// Records usage after the active tab changed. A document records when its read finishes, and a tab still opening
+    /// when it is open.
+    fn record_tab_change(&mut self, cx: &mut Context<Self>) {
+        let waiting = matches!(
+            self.active_tab().map(|tab| &tab.state),
+            Some(TabState::Document | TabState::Opening)
+        );
+        if !waiting {
+            self.record_usage_soon(UsageEvent::Tab, cx);
+        }
+    }
+
+    /// Takes the reading the user asked for and shows it.
+    fn take_usage_snapshot(&mut self, cx: &mut Context<Self>) {
+        let label = match self.record_usage(UsageEvent::Snapshot, cx) {
+            Some(measured) => measured.label(chrono::Local::now()),
+            None => "Usage unavailable".to_string(),
+        };
+        self.usage_label = Some(label.into());
+        cx.notify();
+    }
+
     fn next_session(&mut self) -> SessionId {
         self.last_session += 1;
         SessionId(self.last_session)
@@ -611,6 +715,7 @@ impl AppController {
         self.remember_position(cx);
         self.active = Some(ix);
         self.show_active_tab(cx);
+        self.record_tab_change(cx);
     }
 
     /// Saves the active tab's place before leaving it: the grid's scroll position and selected cell, or the document's.
@@ -704,6 +809,7 @@ impl AppController {
                     Some(ix.min(self.tabs.len() - 1))
                 };
                 self.show_active_tab(cx);
+                self.record_tab_change(cx);
             }
             Some(active) if active > ix => self.active = Some(active - 1),
             _ => {}
@@ -1830,6 +1936,7 @@ impl AppController {
                 };
                 if self.active == Some(ix) {
                     self.show_active_tab(cx);
+                    self.record_usage_soon(UsageEvent::Open, cx);
                 }
                 cx.notify();
             }
@@ -2295,7 +2402,7 @@ impl AppController {
             .child(body)
     }
 
-    fn render_status_bar(&self, cx: &App) -> impl IntoElement {
+    fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let path: SharedString = match self.active_tab() {
             Some(tab) => source_label(&tab.source).into(),
             None => "No file".into(),
@@ -2392,6 +2499,20 @@ impl AppController {
                     .flatten()
                     .map(|notice| div().min_w_0().truncate().child(notice)),
             )
+            .children(
+                self.active_is_document()
+                    .then(|| self.document.read(cx).plain_note())
+                    .flatten()
+                    .map(|note| div().min_w_0().truncate().child(note)),
+            )
+            .child(
+                small_button(
+                    "usage-snapshot",
+                    self.usage_label.clone().unwrap_or_else(|| "Usage".into()),
+                )
+                .ml_auto()
+                .on_click(cx.listener(|this, _, _, cx| this.take_usage_snapshot(cx))),
+            )
     }
 }
 
@@ -2402,9 +2523,13 @@ impl Render for AppController {
             self.sweep = None;
         }
         let schema = self.active_tab().map(|tab| tab.schema.clone());
-        // A Markdown document reads across the whole width, and a JSON document has no schema of its own.
+        // Markdown and code read across the whole width, and a JSON document has no schema of its own.
         let document_kind = self.active_tab().and_then(|tab| tab.source.document_kind());
-        let side_panel = (document_kind != Some(DocumentKind::Markdown)).then(|| {
+        let reads_across = matches!(
+            document_kind,
+            Some(DocumentKind::Markdown | DocumentKind::Code)
+        );
+        let side_panel = (!reads_across).then(|| {
             div()
                 .flex_none()
                 .w(style::SIDE_PANEL_WIDTH)

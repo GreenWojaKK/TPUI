@@ -2,9 +2,13 @@
 
 mod app;
 mod cell_preview;
+mod code_core;
+mod open_requests;
 mod query_log;
+mod usage_log;
 mod value_detail;
 mod ui {
+    pub mod code;
     pub mod doc_scrollbar;
     pub mod document;
     pub mod explorer;
@@ -37,7 +41,11 @@ use crate::ui::markdown::SelectAll;
 use crate::ui::value::CopyValue;
 
 fn main() {
-    application().run(|cx: &mut App| {
+    let open_requests = match open_requests::begin() {
+        open_requests::Startup::Run(requests) => requests,
+        open_requests::Startup::HandedOver => return,
+    };
+    application().run(move |cx: &mut App| {
         cx.bind_keys([
             KeyBinding::new("ctrl-o", OpenFile, None),
             KeyBinding::new("ctrl-tab", NextTab, None),
@@ -89,7 +97,7 @@ fn main() {
                 }),
                 ..Default::default()
             },
-            |window, cx| cx.new(|cx| AppController::new(window, cx)),
+            |window, cx| cx.new(|cx| AppController::new(open_requests, window, cx)),
         )
         .expect("cannot open the main window");
         cx.activate(true);

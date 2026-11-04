@@ -1,11 +1,12 @@
-//! Vertical scrollbar over a document view.
+//! Scrollbar over a document view, along either axis.
 
 use std::cell::Cell;
 use std::rc::Rc;
 
 use gpui::{
-    App, Bounds, DispatchPhase, HitboxBehavior, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Pixels, Window, canvas, fill, point, prelude::*, px, size,
+    Along, App, Axis, Bounds, CursorStyle, DispatchPhase, HitboxBehavior, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Window, canvas, fill, point, prelude::*,
+    px, size,
 };
 use viewer_ui::theme;
 
@@ -46,32 +47,38 @@ fn offset_for(start: Pixels, track: Pixels, length: Pixels, max: Pixels) -> Pixe
     max * ((start / room).clamp(0., 1.))
 }
 
-/// The scrollbar, drawn along the right edge of a parent with relative positioning. `metrics` reads the list and
-/// `set_offset` scrolls it.
+/// The scrollbar, drawn along the right or bottom edge of a parent with relative positioning. `metrics` reads the list
+/// and `set_offset` scrolls it.
 pub fn scrollbar(
+    axis: Axis,
     drag: ScrollbarDrag,
-    metrics: impl Fn() -> ScrollMetrics + 'static,
+    metrics: impl Fn(&App) -> ScrollMetrics + 'static,
     set_offset: impl Fn(Pixels, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
     let metrics = Rc::new(metrics);
     let set_offset = Rc::new(set_offset);
-    canvas(
+    let bar = canvas(
         |bounds, window, _cx| window.insert_hitbox(bounds, HitboxBehavior::Normal),
-        move |bounds, hitbox, window, _cx| {
-            let track = bounds.size.height;
-            let Some((start, length)) = thumb(track, metrics()) else {
+        move |bounds, hitbox, window, cx| {
+            let track = bounds.size.along(axis);
+            let Some((start, length)) = thumb(track, metrics(cx)) else {
                 return;
             };
             window.paint_quad(fill(bounds, theme::scrollbar_track()));
-            window.paint_quad(fill(
-                Bounds::new(
+            let thumb_bounds = match axis {
+                Axis::Vertical => Bounds::new(
                     point(bounds.left(), bounds.top() + start),
                     size(bounds.size.width, length),
                 ),
-                theme::scrollbar_thumb(),
-            ));
+                Axis::Horizontal => Bounds::new(
+                    point(bounds.left() + start, bounds.top()),
+                    size(length, bounds.size.height),
+                ),
+            };
+            window.paint_quad(fill(thumb_bounds, theme::scrollbar_thumb()));
+            window.set_cursor_style(CursorStyle::Arrow, &hitbox);
 
-            let top = bounds.top();
+            let origin = bounds.origin.along(axis);
             let (down_drag, down_metrics, down_set) =
                 (drag.clone(), metrics.clone(), set_offset.clone());
             window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
@@ -82,19 +89,23 @@ pub fn scrollbar(
                     return;
                 }
                 cx.stop_propagation();
-                let current = down_metrics();
+                let current = down_metrics(cx);
                 let Some((start, length)) = thumb(track, current) else {
                     return;
                 };
-                let y = event.position.y - top;
+                let at = event.position.along(axis) - origin;
                 // A press beside the thumb moves the thumb's middle there.
-                let grab = if y >= start && y < start + length {
-                    y - start
+                let grab = if at >= start && at < start + length {
+                    at - start
                 } else {
                     length / 2.
                 };
                 down_drag.0.set(Some(grab));
-                down_set(offset_for(y - grab, track, length, current.max), window, cx);
+                down_set(
+                    offset_for(at - grab, track, length, current.max),
+                    window,
+                    cx,
+                );
             });
 
             let (move_drag, move_metrics, move_set) =
@@ -106,10 +117,14 @@ pub fn scrollbar(
                 let Some(grab) = move_drag.0.get() else {
                     return;
                 };
-                let current = move_metrics();
+                let current = move_metrics(cx);
                 if let Some((_, length)) = thumb(track, current) {
-                    let y = event.position.y - top;
-                    move_set(offset_for(y - grab, track, length, current.max), window, cx);
+                    let at = event.position.along(axis) - origin;
+                    move_set(
+                        offset_for(at - grab, track, length, current.max),
+                        window,
+                        cx,
+                    );
                 }
             });
 
@@ -121,11 +136,16 @@ pub fn scrollbar(
             });
         },
     )
-    .absolute()
-    .top_0()
-    .right_0()
-    .h_full()
-    .w(style::GRID_SCROLLBAR_SIZE)
+    .absolute();
+    match axis {
+        Axis::Vertical => bar.top_0().right_0().h_full().w(style::GRID_SCROLLBAR_SIZE),
+        // Stops short of the vertical bar's corner.
+        Axis::Horizontal => bar
+            .left_0()
+            .right(style::GRID_SCROLLBAR_SIZE)
+            .bottom_0()
+            .h(style::GRID_SCROLLBAR_SIZE),
+    }
 }
 
 #[cfg(test)]

@@ -1,21 +1,31 @@
-//! Body of a Markdown or JSON tab. Holds the document of the active tab only: leaving a tab drops it, and returning reads
-//! the file again. While a document is shown, a change to its file shows up by itself.
+//! Body of a document tab. Holds the document of the active tab only: leaving a tab drops it, and returning reads the file
+//! again. While a document is shown, a change to its file shows up by itself.
+//!
+//! A code tab shows its text as soon as it is read. Its colors come from the code core, which runs only while a code tab
+//! is shown. Whatever happens to the core, the text stays on screen.
 
 use std::io;
+use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui::{
-    ClickEvent, Context, Entity, EventEmitter, ListOffset, SharedString, Subscription, Window, div,
-    prelude::*,
+    ClickEvent, Context, Entity, EventEmitter, ListOffset, SharedString, Subscription, Task,
+    Window, div, prelude::*,
 };
 use viewer_core::{Document, DocumentKind, FileStamp, ViewerError, file_stamp, read_document};
 use viewer_ui::format::{format_bytes, format_quantity};
 use viewer_ui::theme;
 
+use super::code::{CodeEvent, CodeScroll, CodeView};
 use super::json_tree::{JsonEvent, JsonPosition, JsonView};
 use super::markdown::MarkdownView;
+use crate::code_core::{CodeCore, CoreEvent, TokenRequest, core_path};
+use crate::usage_log::ProcessUsage;
 use crate::value_detail::ValueDetail;
+
+/// How many times the core may start for one opened file. A file that keeps ending the core stays plain text.
+const MAX_CORE_STARTS: u32 = 3;
 
 /// Where a document tab was left, kept by the tab while another tab is shown.
 #[derive(Clone, Debug, Default)]
@@ -24,6 +34,7 @@ pub enum DocumentPosition {
     Start,
     Markdown(ListOffset),
     Json(JsonPosition),
+    Code(CodeScroll),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -38,6 +49,10 @@ pub enum DocumentEvent {
     Value(Box<ValueDetail>),
     /// The file could not be read, so no value is selected.
     ValueGone,
+    /// A read finished. `again` tells a read after a change from the first read in this tab.
+    Read { again: bool },
+    /// The first tokens of the read document arrived.
+    TokensReady,
 }
 
 /// Tells when a file has been rewritten. A new stamp counts once it has stayed the same for a second check, which skips
@@ -78,6 +93,13 @@ enum Body {
     Failed(SharedString),
     Markdown(Entity<MarkdownView>),
     Json(Entity<JsonView>),
+    Code(Entity<CodeView>),
+}
+
+/// A running core with the task that receives its answers.
+struct CoreLink {
+    core: CodeCore,
+    _answers: Task<()>,
 }
 
 pub struct DocumentView {
@@ -91,8 +113,22 @@ pub struct DocumentView {
     watch: ChangeWatch,
     /// A check of the file is running.
     checking: bool,
-    size: Option<u64>,
-    _json_events: Option<Subscription>,
+    /// The version of the file on screen.
+    shown: Option<FileStamp>,
+    _body_events: Option<Subscription>,
+    core: Option<CoreLink>,
+    /// Times the core started for the opened file.
+    core_starts: u32,
+    /// Why the core last ended.
+    core_stop: Option<String>,
+    /// The latest token request. Only its answer counts.
+    request_id: u64,
+    /// The core found the file differs from the version on screen.
+    tokens_stale: bool,
+    /// Why a code file shows without colors, for the status bar.
+    plain_reason: Option<String>,
+    /// Tokens have arrived for the document as last read.
+    tokens_arrived: bool,
 }
 
 impl EventEmitter<DocumentEvent> for DocumentView {}
@@ -107,12 +143,19 @@ impl DocumentView {
             restore: DocumentPosition::Start,
             watch: ChangeWatch::default(),
             checking: false,
-            size: None,
-            _json_events: None,
+            shown: None,
+            _body_events: None,
+            core: None,
+            core_starts: 0,
+            core_stop: None,
+            request_id: 0,
+            tokens_stale: false,
+            plain_reason: None,
+            tokens_arrived: false,
         }
     }
 
-    /// Reads a file and shows it from `position`.
+    /// Reads a file and shows it from `position`. The core keeps running between code tabs.
     pub fn open(
         &mut self,
         path: PathBuf,
@@ -127,19 +170,27 @@ impl DocumentView {
         self.body = Body::Reading;
         self.watch = ChangeWatch::default();
         self.checking = false;
-        self.size = None;
+        self.shown = None;
+        self.core_starts = 0;
+        self.core_stop = None;
+        self.tokens_stale = false;
+        self.plain_reason = None;
+        if kind != DocumentKind::Code {
+            self.core = None;
+        }
         self.read(cx);
         cx.notify();
     }
 
-    /// Drops the document.
+    /// Drops the document and ends the core.
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         self.generation += 1;
         self.path = None;
         self.body = Body::Empty;
         self.watch = ChangeWatch::default();
         self.checking = false;
-        self.size = None;
+        self.shown = None;
+        self.core = None;
         cx.notify();
     }
 
@@ -173,8 +224,11 @@ impl DocumentView {
         result: Result<Document, ViewerError>,
         cx: &mut Context<Self>,
     ) {
+        let again = !matches!(self.body, Body::Reading);
         self.watch = ChangeWatch::new(stamp);
-        self.size = stamp.map(|stamp| stamp.len);
+        self.shown = stamp;
+        self.tokens_stale = false;
+        self.tokens_arrived = false;
         match result {
             Ok(Document::Markdown(doc)) => {
                 let doc = Arc::new(doc);
@@ -199,12 +253,30 @@ impl DocumentView {
                         _ => JsonPosition::default(),
                     };
                     let view = cx.new(|cx| JsonView::new(doc, position, cx));
-                    self._json_events = Some(cx.subscribe(&view, |_, _, event: &JsonEvent, cx| {
+                    self._body_events = Some(cx.subscribe(&view, |_, _, event: &JsonEvent, cx| {
                         let JsonEvent::Selected(detail) = event;
                         cx.emit(DocumentEvent::Value(Box::new(detail.clone())));
                     }));
                     view.update(cx, |view, cx| view.emit_selected(cx));
                     self.body = Body::Json(view);
+                }
+            }
+            Ok(Document::Code(doc)) => {
+                let doc = Arc::new(doc);
+                if let Body::Code(view) = &self.body {
+                    view.update(cx, |view, cx| view.set_document(doc, cx));
+                } else {
+                    let scroll = match &self.restore {
+                        DocumentPosition::Code(scroll) => *scroll,
+                        _ => CodeScroll::default(),
+                    };
+                    let view = cx.new(|cx| CodeView::new(doc, scroll, cx));
+                    self._body_events =
+                        Some(cx.subscribe(&view, |this, _, event: &CodeEvent, cx| {
+                            let CodeEvent::NeedTokens(range) = event;
+                            this.request_tokens(range.clone(), cx);
+                        }));
+                    self.body = Body::Code(view);
                 }
             }
             Err(error) => {
@@ -213,6 +285,7 @@ impl DocumentView {
                 cx.emit(DocumentEvent::ValueGone);
             }
         }
+        cx.emit(DocumentEvent::Read { again });
         cx.notify();
     }
 
@@ -237,6 +310,12 @@ impl DocumentView {
                 this.checking = false;
                 if this.watch.observe(stamp) {
                     this.read(cx);
+                } else if this.tokens_stale && stamp == this.shown {
+                    // The file is back to the version on screen, so no read will come to ask again.
+                    this.tokens_stale = false;
+                    if let Body::Code(view) = &this.body {
+                        view.update(cx, |view, cx| view.retry_tokens(cx));
+                    }
                 }
             })
             .ok();
@@ -244,11 +323,120 @@ impl DocumentView {
         .detach();
     }
 
+    /// Passes a code view's request to the core, starting the core if needed.
+    fn request_tokens(&mut self, range: Range<usize>, cx: &mut Context<Self>) {
+        let (Some(path), Some(stamp)) = (self.path.clone(), self.shown) else {
+            return self.show_plain("the file cannot be read".to_string(), cx);
+        };
+        if self.core.is_none()
+            && let Err(reason) = self.start_core(cx)
+        {
+            return self.show_plain(reason, cx);
+        }
+        self.request_id += 1;
+        if let Some(link) = &self.core {
+            link.core.request(TokenRequest {
+                id: self.request_id,
+                path,
+                stamp,
+                start: range.start,
+                end: range.end,
+            });
+        }
+    }
+
+    fn start_core(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
+        if self.core_starts >= MAX_CORE_STARTS {
+            let reason = self.core_stop.clone();
+            return Err(reason.unwrap_or_else(|| "the code core keeps ending".to_string()));
+        }
+        self.core_starts += 1;
+        let (core, answers) = core_path()
+            .and_then(|path| CodeCore::start(&path))
+            .map_err(|_| "the code core cannot start".to_string())?;
+        let answers = cx.spawn(async move |this, cx| {
+            while let Ok(event) = answers.recv().await {
+                if this
+                    .update(cx, |this, cx| this.core_event(event, cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        self.core = Some(CoreLink {
+            core,
+            _answers: answers,
+        });
+        Ok(())
+    }
+
+    /// Stops asking the core about this version of the file, and says why in the status bar.
+    fn show_plain(&mut self, reason: String, cx: &mut Context<Self>) {
+        self.plain_reason = Some(reason);
+        if let Body::Code(view) = &self.body {
+            view.update(cx, |view, cx| view.tokens_unavailable(cx));
+        }
+        cx.notify();
+    }
+
+    fn core_event(&mut self, event: CoreEvent, cx: &mut Context<Self>) {
+        match event {
+            CoreEvent::Tokens {
+                id,
+                language,
+                tokens,
+            } if id == self.request_id => {
+                self.plain_reason = None;
+                if let Body::Code(view) = &self.body {
+                    view.update(cx, |view, cx| view.set_tokens(&tokens, language, cx));
+                }
+                if !self.tokens_arrived {
+                    self.tokens_arrived = true;
+                    cx.emit(DocumentEvent::TokensReady);
+                }
+                cx.notify();
+            }
+            CoreEvent::Stale { id } if id == self.request_id => {
+                // A read of the new version is coming, and until then the text on screen has no tokens.
+                self.tokens_stale = true;
+                if let Body::Code(view) = &self.body {
+                    view.update(cx, |view, cx| view.tokens_unavailable(cx));
+                }
+            }
+            CoreEvent::Failed { id, message } if id == self.request_id => {
+                self.show_plain(message, cx);
+            }
+            CoreEvent::Stopped { reason } => {
+                self.core = None;
+                self.core_stop = Some(reason);
+                // The view asks again when it needs tokens, which starts the core while starts are left.
+                if let Body::Code(view) = &self.body {
+                    view.update(cx, |view, cx| view.retry_tokens(cx));
+                }
+                cx.notify();
+            }
+            // The answer to a request that has been replaced.
+            CoreEvent::Tokens { .. } | CoreEvent::Stale { .. } | CoreEvent::Failed { .. } => {}
+        }
+    }
+
+    /// What the code core uses now, when it runs.
+    pub fn core_usage(&self) -> Option<ProcessUsage> {
+        self.core.as_ref().and_then(|link| link.core.usage())
+    }
+
+    /// The size of the file as last read.
+    pub fn file_size(&self) -> Option<u64> {
+        self.shown.map(|stamp| stamp.len)
+    }
+
     /// Where the document stands now, for the tab to remember.
     pub fn position(&self, cx: &gpui::App) -> DocumentPosition {
         match &self.body {
             Body::Markdown(view) => DocumentPosition::Markdown(view.read(cx).scroll_top()),
             Body::Json(view) => DocumentPosition::Json(view.read(cx).position()),
+            Body::Code(view) => DocumentPosition::Code(view.read(cx).scroll()),
             Body::Empty | Body::Reading | Body::Failed(_) => self.restore.clone(),
         }
     }
@@ -257,7 +445,7 @@ impl DocumentView {
         match self.body {
             Body::Empty | Body::Reading => DocumentStatus::Reading,
             Body::Failed(_) => DocumentStatus::Failed,
-            Body::Markdown(_) | Body::Json(_) => DocumentStatus::Open,
+            Body::Markdown(_) | Body::Json(_) | Body::Code(_) => DocumentStatus::Open,
         }
     }
 
@@ -270,17 +458,26 @@ impl DocumentView {
                 "block",
                 "blocks",
             )),
-            Body::Json(view) => summary.push(format_quantity(
-                view.read(cx).value_count() as u64,
-                "value",
-                "values",
-            )),
+            Body::Json(view) => summary.extend(view.read(cx).summary()),
+            Body::Code(view) => {
+                let view = view.read(cx);
+                if let Some(language) = view.language() {
+                    summary[0] = language.to_string();
+                }
+                summary.push(format_quantity(view.line_count() as u64, "line", "lines"));
+            }
             _ => {}
         }
-        if let Some(size) = self.size {
-            summary.push(format_bytes(size));
+        if let Some(stamp) = self.shown {
+            summary.push(format_bytes(stamp.len));
         }
         summary
+    }
+
+    /// Why a code file shows without colors, for the status bar.
+    pub fn plain_note(&self) -> Option<String> {
+        let reason = self.plain_reason.as_ref()?;
+        Some(format!("Plain text: {reason}"))
     }
 
     /// Copies the selected JSON value.
@@ -349,6 +546,7 @@ impl Render for DocumentView {
                 .into_any_element(),
             Body::Markdown(view) => view.clone().into_any_element(),
             Body::Json(view) => view.clone().into_any_element(),
+            Body::Code(view) => view.clone().into_any_element(),
         }
     }
 }

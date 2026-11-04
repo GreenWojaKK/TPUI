@@ -1,12 +1,13 @@
-//! JSON tree view. Draws only the visible rows of the expanded tree. The selected value's full text goes to the
-//! Value panel.
+//! Tree view of JSON and JSON Lines files. Draws only the visible rows of the expanded tree. The selected value's full
+//! text goes to the Value panel. In a JSON Lines file the root stands for the file, its children are numbered by file
+//! line and each line is a JSON document of its own.
 
 use std::collections::HashSet;
 use std::ops::Range;
 use std::sync::Arc;
 
 use gpui::{
-    ClickEvent, ClipboardItem, Context, Div, EventEmitter, FocusHandle, Hsla, MouseButton,
+    Axis, ClickEvent, ClipboardItem, Context, Div, EventEmitter, FocusHandle, Hsla, MouseButton,
     MouseDownEvent, Pixels, Point, ScrollStrategy, SharedString, Stateful, UniformListScrollHandle,
     Window, div, point, prelude::*, px, relative, uniform_list,
 };
@@ -26,6 +27,9 @@ use crate::value_detail::{ValueBody, ValueDetail, ValueHeader, ValueNode};
 
 /// Rows one Page Up or Page Down moves.
 const PAGE_ROWS: usize = 20;
+/// Name of the root of a JSON Lines file, which stands for the file and not for a value in it.
+const FILE_LABEL: &str = "file";
+const FILE_KIND: &str = "JSON Lines";
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum TreeKey {
@@ -122,10 +126,22 @@ fn tree_rows(doc: &JsonDocument, expanded: &HashSet<TreeKey>) -> Vec<TreeRow> {
     rows
 }
 
-/// A value's place in the document, as in `$.routes[3]["운행 일자"]`.
+/// A value's place in the document, as in `$.routes[3]["운행 일자"]`, or `line 12: $.routes[3]` in a JSON Lines file.
 fn path_label(doc: &JsonDocument, path: &[usize]) -> String {
     let mut label = String::from("$");
     let mut node = doc.root();
+    let mut path = path;
+    if doc.is_lines() {
+        let Some((&first, rest)) = path.split_first() else {
+            return FILE_LABEL.to_string();
+        };
+        let Some(line) = doc.child(node, first) else {
+            return FILE_LABEL.to_string();
+        };
+        label = format!("line {}: $", element_number(doc, &[], first));
+        node = line;
+        path = rest;
+    }
     for &ix in path {
         let Some(child) = doc.child(node, ix) else {
             break;
@@ -149,6 +165,14 @@ fn path_label(doc: &JsonDocument, path: &[usize]) -> String {
         node = child;
     }
     label
+}
+
+/// The number a row shows for an element: the file line for a line of a JSON Lines file, otherwise its position.
+fn element_number(doc: &JsonDocument, parent: &[usize], position: usize) -> usize {
+    match parent {
+        [] => doc.line_number(position).unwrap_or(position),
+        _ => position,
+    }
 }
 
 fn is_plain_key(key: &str) -> bool {
@@ -175,10 +199,20 @@ fn one_line(text: &str, more: bool) -> String {
 
 fn container_summary(doc: &JsonDocument, node: JsonNodeId) -> String {
     let count = doc.child_count(node) as u64;
+    if doc.is_lines() && node == doc.root() {
+        return format!("[{}]", format_quantity(count, "line", "lines"));
+    }
     match doc.kind(node) {
         JsonKind::Object => format!("{{{}}}", format_quantity(count, "key", "keys")),
         _ => format!("[{}]", format_quantity(count, "item", "items")),
     }
+}
+
+/// The beginning of a value's text in the file, on one line.
+fn raw_preview(doc: &JsonDocument, node: JsonNodeId) -> String {
+    let mut chars = doc.raw(node).chars();
+    let text: String = chars.by_ref().take(STRING_PREVIEW_CHARS).collect();
+    one_line(&text, chars.next().is_some())
 }
 
 /// The value's text on a row, with the kind that decides its color.
@@ -193,8 +227,19 @@ fn row_preview(doc: &JsonDocument, node: JsonNodeId) -> (String, JsonKind) {
         }
         JsonKind::Array | JsonKind::Object => container_summary(doc, node),
         JsonKind::Null | JsonKind::Bool | JsonKind::Number => doc.raw(node).to_string(),
+        JsonKind::Invalid => raw_preview(doc, node),
     };
     (text, kind)
+}
+
+/// A row's value text and color. A line of a JSON Lines file shows its text in the file, which tells one record from
+/// the next.
+fn row_text(doc: &JsonDocument, path: &[usize], node: JsonNodeId) -> (String, Hsla) {
+    if doc.is_lines() && path.len() == 1 && doc.kind(node).is_container() {
+        return (raw_preview(doc, node), theme::text().into());
+    }
+    let (text, kind) = row_preview(doc, node);
+    (text, kind_color(kind))
 }
 
 fn kind_color(kind: JsonKind) -> Hsla {
@@ -203,6 +248,7 @@ fn kind_color(kind: JsonKind) -> Hsla {
         JsonKind::Bool | JsonKind::Number => theme::accent().into(),
         JsonKind::String => theme::text().into(),
         JsonKind::Array | JsonKind::Object => style::summary_text().into(),
+        JsonKind::Invalid => theme::error().into(),
     }
 }
 
@@ -229,20 +275,31 @@ fn value_detail(doc: &JsonDocument, path: &[usize], node: JsonNodeId) -> ValueDe
             let inner = summary[1..summary.len() - 1].to_string();
             (ValueBody::Summary(summary.into()), Some(inner))
         }
+        JsonKind::Invalid => {
+            let reason = doc
+                .invalid_reason(node)
+                .map(|error| format!("column {}: {}", error.column, error.reason));
+            (ValueBody::Text(doc.raw(node).to_string().into()), reason)
+        }
     };
     let label: SharedString = path_label(doc, path).into();
     let (preview, _) = row_preview(doc, node);
+    let kind_name: SharedString = if doc.is_lines() && path.is_empty() {
+        FILE_KIND.into()
+    } else {
+        kind.name().into()
+    };
     ValueDetail {
         header: ValueHeader {
             row: None,
             column: label.clone(),
-            data_type: kind.name().into(),
+            data_type: kind_name.clone(),
             size: size.map(Into::into),
         },
         root: ValueNode {
             label,
             preview: CellPreview::new(preview, CellKind::Text),
-            type_label: kind.name().into(),
+            type_label: kind_name,
             child_count: 0,
         },
         body,
@@ -307,8 +364,19 @@ impl JsonView {
         }
     }
 
-    pub fn value_count(&self) -> usize {
-        self.doc.value_count()
+    /// Facts about the document for the status bar.
+    pub fn summary(&self) -> Vec<String> {
+        if !self.doc.is_lines() {
+            let values = self.doc.value_count() as u64;
+            return vec![format_quantity(values, "value", "values")];
+        }
+        let lines = self.doc.child_count(self.doc.root()) as u64;
+        let mut summary = vec![format_quantity(lines, "line", "lines")];
+        let invalid = self.doc.invalid_line_count() as u64;
+        if invalid > 0 {
+            summary.push(format_quantity(invalid, "invalid line", "invalid lines"));
+        }
+        summary
     }
 
     pub fn emit_selected(&self, cx: &mut Context<Self>) {
@@ -458,12 +526,17 @@ impl JsonView {
             } => {
                 let selected = self.selected == *path;
                 let expandable = self.doc.child_count(*node) > 0;
-                let label: SharedString = match (self.doc.key(*node), path.last()) {
+                let label: SharedString = match (self.doc.key(*node), path.split_last()) {
                     (Some(key), _) => one_line(&key, false).into(),
-                    (None, Some(position)) => position.to_string().into(),
+                    (None, Some((position, parent))) => {
+                        element_number(&self.doc, parent, *position)
+                            .to_string()
+                            .into()
+                    }
+                    (None, None) if self.doc.is_lines() => FILE_LABEL.into(),
                     (None, None) => "$".into(),
                 };
-                let (preview, kind) = row_preview(&self.doc, *node);
+                let (preview, color) = row_text(&self.doc, path, *node);
                 let path = path.clone();
                 row.pl(indent(*depth))
                     .when(selected, |row| row.bg(theme::selection()))
@@ -482,7 +555,7 @@ impl JsonView {
                             .flex_1()
                             .min_w_0()
                             .truncate()
-                            .text_color(kind_color(kind))
+                            .text_color(color)
                             .child(preview),
                     )
                     .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
@@ -500,11 +573,13 @@ impl JsonView {
                 expanded,
             } => {
                 let key = TreeKey::Group(parent.clone(), range.start);
+                let first = element_number(&self.doc, parent, range.start);
+                let last = element_number(&self.doc, parent, range.end - 1);
                 row.pl(indent(*depth))
                     .hover(|style| style.bg(theme::hover()))
                     .text_color(theme::text_muted())
                     .child(chevron(true, *expanded))
-                    .child(format!("[{} … {}]", range.start, range.end - 1))
+                    .child(format!("[{first} … {last}]"))
                     .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                         this.focus_handle.focus(window, cx);
                         this.toggle(key.clone(), cx);
@@ -564,8 +639,9 @@ impl Render for JsonView {
                 .size_full(),
             )
             .child(scrollbar(
+                Axis::Vertical,
                 self.scrollbar.clone(),
-                move || ScrollMetrics {
+                move |_| ScrollMetrics {
                     offset: -read.offset().y,
                     max: read.max_offset().y,
                     viewport: read.bounds().size.height,
@@ -670,6 +746,76 @@ mod tests {
         assert_eq!(detail.header.data_type, "string");
         assert_eq!(detail.root.child_count, 0);
         assert_eq!(detail.header.size.as_deref(), Some("783 bytes · 261 chars"));
+    }
+
+    fn parse_lines(text: &str) -> JsonDocument {
+        JsonDocument::parse_lines(text.to_string()).unwrap()
+    }
+
+    #[test]
+    fn names_lines_by_their_place_in_the_file() {
+        let doc = parse_lines("{\"a\":[1]}\n\n[2]\n3\n");
+        let label = |path: &[usize]| path_label(&doc, path);
+        assert_eq!(label(&[]), "file");
+        assert_eq!(label(&[0]), "line 1: $");
+        assert_eq!(label(&[0, 0, 0]), "line 1: $.a[0]");
+        assert_eq!(label(&[1]), "line 3: $");
+        assert_eq!(label(&[1, 0]), "line 3: $[0]");
+        assert_eq!(label(&[2]), "line 4: $");
+        assert_eq!(element_number(&doc, &[], 1), 3);
+        // Elements inside a line count from zero as in any array.
+        assert_eq!(element_number(&doc, &[1], 0), 0);
+    }
+
+    #[test]
+    fn shows_lines_as_they_stand_in_the_file() {
+        let doc = parse_lines("{\"a\":\"가\\n\", \"b\":[1]}\n[1,2]\n\"s\"\n7\n");
+        let text = |ix: usize| row_text(&doc, &[ix], doc.child(doc.root(), ix).unwrap()).0;
+        assert_eq!(text(0), "{\"a\":\"가\\n\", \"b\":[1]}");
+        assert_eq!(text(1), "[1,2]");
+        assert_eq!(text(2), "\"s\"");
+        assert_eq!(text(3), "7");
+        // Below a line, values read as in a JSON file.
+        assert_eq!(
+            row_text(&doc, &[0, 1], doc.node_at(&[0, 1]).unwrap()).0,
+            "[1 item]"
+        );
+        assert_eq!(row_preview(&doc, doc.root()).0, "[4 lines]");
+        // A long line is cut for its row.
+        let long = format!("[\"{}\"]", "가".repeat(STRING_PREVIEW_CHARS));
+        let doc = parse_lines(&long);
+        let shown = row_text(&doc, &[0], doc.child(doc.root(), 0).unwrap()).0;
+        assert_eq!(shown.chars().count(), STRING_PREVIEW_CHARS + 1);
+        assert!(shown.ends_with('…'));
+    }
+
+    #[test]
+    fn describes_an_invalid_line_with_its_reason() {
+        let doc = parse_lines("{\"가\": x}\n1\n");
+        let node = doc.child(doc.root(), 0).unwrap();
+        let detail = value_detail(&doc, &[0], node);
+        assert_eq!(detail.header.column, "line 1: $");
+        assert_eq!(detail.header.data_type, "invalid JSON");
+        assert_eq!(
+            detail.header.size.as_deref(),
+            Some("column 7: expected a value")
+        );
+        assert_eq!(detail.body, ValueBody::Text("{\"가\": x}".into()));
+        assert_eq!(row_preview(&doc, node).1, JsonKind::Invalid);
+        let file = value_detail(&doc, &[], doc.root());
+        assert_eq!(file.header.column, "file");
+        assert_eq!(file.header.data_type, "JSON Lines");
+        assert_eq!(file.header.size.as_deref(), Some("2 lines"));
+    }
+
+    #[test]
+    fn groups_many_lines_by_position_and_keeps_paths_when_lines_are_added() {
+        let text = "1\n".repeat(2_500);
+        let doc = parse_lines(&text);
+        let expanded = JsonPosition::default().expanded;
+        assert_eq!(tree_rows(&doc, &expanded).len(), 1 + 3);
+        let more = parse_lines(&(text + "{\"a\":1}\n"));
+        assert_eq!(path_label(&more, &[2_500, 0]), "line 2501: $.a");
     }
 
     #[test]

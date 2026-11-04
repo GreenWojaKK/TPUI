@@ -1,4 +1,5 @@
-//! Contracts of Markdown and JSON documents, checked against files on disk and, for JSON, against serde_json.
+//! Contracts of Markdown, JSON and JSON Lines documents, checked against files on disk and, for JSON and JSON Lines,
+//! against serde_json.
 
 use std::fs;
 
@@ -155,6 +156,51 @@ fn json_files_keep_what_serde_json_would_lose() {
             ("b".to_string(), "1e2".to_string()),
         ]
     );
+}
+
+#[test]
+fn json_lines_read_the_same_values_as_serde_json_line_by_line() {
+    let lines = [
+        r#"{"이름":"홍길동","점수":[1.5,2,true],"주소":{"동":null}}"#,
+        "",
+        "   ",
+        "[]",
+        "-0.5e-3",
+        r#""\"\\\/\b\f\n\r\t\u0041\uD83D\uDE00가""#,
+        "null",
+        "{\"끊긴\": ",
+        "// 주석",
+        "1 2",
+        "[1,]",
+        "{}",
+    ];
+    for line_break in ["\n", "\r\n"] {
+        let content = format!("\u{feff}{}{line_break}", lines.join(line_break));
+        let Ok(Document::Json(doc)) =
+            write_and_read("a.jsonl", content.as_bytes(), DocumentKind::JsonLines)
+        else {
+            panic!("expected JSON Lines");
+        };
+        let mut position = 0;
+        for (ix, line) in lines.iter().enumerate() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            assert_eq!(doc.line_number(position), Some(ix + 1), "{line:?}");
+            let node = doc.child(doc.root(), position).unwrap();
+            match serde_json::from_str::<Value>(line) {
+                Ok(value) => assert_same(&doc, node, &value),
+                Err(_) => {
+                    assert_eq!(doc.kind(node), JsonKind::Invalid, "{line:?}");
+                    assert_eq!(doc.raw(node), *line);
+                    assert_eq!(doc.invalid_reason(node).unwrap().line, ix + 1);
+                }
+            }
+            position += 1;
+        }
+        assert_eq!(doc.child_count(doc.root()), position);
+        assert_eq!(doc.invalid_line_count(), 4);
+    }
 }
 
 #[test]

@@ -537,14 +537,14 @@ impl TextSelection {
 
 /// A tab drawn as spaces: its byte in the text, where it starts in the drawn line, and how many spaces it takes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct TabStop {
+pub struct TabStop {
     byte: usize,
     start: usize,
     columns: usize,
 }
 
 /// A line with its tabs replaced by spaces up to the next tab stop.
-fn expand_tabs(line: &str) -> (String, Vec<TabStop>) {
+pub fn expand_tabs(line: &str) -> (String, Vec<TabStop>) {
     if !line.contains('\t') {
         return (line.to_string(), Vec::new());
     }
@@ -570,7 +570,7 @@ fn expand_tabs(line: &str) -> (String, Vec<TabStop>) {
 }
 
 /// Byte of the text for a byte of the drawn line.
-fn text_index(stops: &[TabStop], drawn: usize) -> usize {
+pub fn text_index(stops: &[TabStop], drawn: usize) -> usize {
     let mut shift = 0;
     for stop in stops {
         if drawn <= stop.start {
@@ -585,7 +585,7 @@ fn text_index(stops: &[TabStop], drawn: usize) -> usize {
 }
 
 /// Byte of the drawn line for a byte of the text.
-fn drawn_index(stops: &[TabStop], index: usize) -> usize {
+pub fn drawn_index(stops: &[TabStop], index: usize) -> usize {
     let extra: usize = stops
         .iter()
         .take_while(|stop| stop.byte < index)

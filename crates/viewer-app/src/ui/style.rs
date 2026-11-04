@@ -44,6 +44,9 @@ pub const DOC_TASK_MARK_SIZE: Pixels = px(11.);
 pub const DOC_BLOCK_HEIGHT_HINT: Pixels = px(44.);
 /// Distance one press of an arrow key scrolls.
 pub const DOC_SCROLL_STEP: Pixels = px(48.);
+pub const CODE_LINE_HEIGHT: Pixels = px(20.);
+/// Space on each side of the line numbers.
+pub const CODE_GUTTER_PADDING: Pixels = px(12.);
 
 /// Text size and space above a Markdown heading of a level.
 pub fn doc_heading(level: u8) -> (Pixels, Pixels) {
@@ -59,6 +62,21 @@ pub fn doc_heading(level: u8) -> (Pixels, Pixels) {
 /// Summaries in place of nested values, such as `{3 fields}`.
 pub fn summary_text() -> Rgba {
     theme::pick(0xb4a7d6, 0x6a55a3)
+}
+
+/// Color of a token kind from the code core. An unknown kind reads as plain text.
+pub fn token_color(kind: u8) -> Rgba {
+    match kind {
+        1 => theme::pick(0x7f848e, 0x6a737d),
+        2 => theme::pick(0x98c379, 0x22863a),
+        3 => theme::pick(0xd19a66, 0x986801),
+        4 => theme::pick(0xc678dd, 0xa626a4),
+        5 => theme::pick(0x56b6c2, 0x0184bc),
+        6 => theme::pick(0xe5c07b, 0xc18401),
+        7 => theme::pick(0x61afef, 0x4078f2),
+        8 => theme::pick(0xe06c75, 0xca1243),
+        _ => theme::text(),
+    }
 }
 
 /// Background of cells matching the find input.

@@ -1,11 +1,12 @@
 //! Engine that opens Parquet files and SQLite tables read-only and decodes requested row and column ranges into
 //! Arrow batches.
-//! Also provides sequential column scans and row view computation for find, filter and sort, and reads Markdown and
-//! JSON files into document models.
+//! Also provides sequential column scans and row view computation for find, filter and sort, and reads Markdown,
+//! JSON, JSON Lines and source files into document models.
 //!
 //! Public types consist only of Rust standard and Arrow types, with no dependency on GPUI.
 
 mod cache;
+mod code;
 mod condition;
 mod document;
 mod engine;
@@ -24,6 +25,7 @@ mod sqlite;
 mod structure;
 
 pub use cache::DEFAULT_CACHE_BUDGET;
+pub use code::CodeDocument;
 pub use condition::{
     CompiledFilter, ValueClass, check_condition, filter_ops, is_sortable, parse_value, value_class,
 };

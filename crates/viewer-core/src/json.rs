@@ -1,5 +1,8 @@
 //! JSON documents read as written: object keys keep their order and duplicates, numbers keep their text, and every
 //! node points back at its bytes in the file. Parsing is iterative, so nesting depth is limited only by memory.
+//!
+//! A JSON Lines file reads the same way, with one value per line under a root that stands for the file. A line that is
+//! not valid JSON stays in its place with the reason, so one bad line leaves the others readable.
 
 use std::borrow::Cow;
 
@@ -18,6 +21,8 @@ pub enum JsonKind {
     String,
     Array,
     Object,
+    /// A line of a JSON Lines file that is not valid JSON.
+    Invalid,
 }
 
 impl JsonKind {
@@ -33,6 +38,7 @@ impl JsonKind {
             Self::String => "string",
             Self::Array => "array",
             Self::Object => "object",
+            Self::Invalid => "invalid JSON",
         }
     }
 }
@@ -61,12 +67,23 @@ pub struct JsonError {
     pub reason: &'static str,
 }
 
-/// A parsed JSON file. Holds the file's text and one small record per value; strings are decoded when asked for.
+/// What a JSON Lines file adds to a document.
+#[derive(Clone, Debug)]
+struct LineTable {
+    /// File line number of each child of the root, in order.
+    numbers: Vec<u32>,
+    /// Nodes of the invalid lines in order, with why each is invalid.
+    invalid: Vec<(u32, JsonError)>,
+}
+
+/// A parsed JSON or JSON Lines file. Holds the file's text and one small record per value; strings are decoded when asked
+/// for.
 #[derive(Clone, Debug)]
 pub struct JsonDocument {
     text: String,
     nodes: Vec<Node>,
     children: Vec<u32>,
+    lines: Option<LineTable>,
 }
 
 impl JsonDocument {
@@ -85,14 +102,7 @@ impl JsonDocument {
             let failure = (0, "the file is larger than 4 GiB");
             return Err(located(&text, failure));
         }
-        let mut parser = Parser {
-            bytes: text.as_bytes(),
-            pos: 0,
-            nodes: Vec::new(),
-            children: Vec::new(),
-            pending: Vec::new(),
-            stack: Vec::new(),
-        };
+        let mut parser = Parser::new(text.as_bytes());
         if let Err(failure) = parser.parse() {
             return Err(located(&text, failure));
         }
@@ -101,11 +111,95 @@ impl JsonDocument {
             text,
             nodes,
             children,
+            lines: None,
+        })
+    }
+
+    /// Parses a JSON Lines file: one value per `\n`-separated line, with blank lines skipped. The root is an array of
+    /// the lines, and its text is the whole file. Only a file too large to address fails.
+    pub fn parse_lines(text: String) -> Result<Self, JsonError> {
+        if text.len() > MAX_BYTES {
+            return Err(JsonError {
+                offset: 0,
+                line: 1,
+                column: 1,
+                reason: "the file is larger than 4 GiB",
+            });
+        }
+        let bytes = text.as_bytes();
+        let mut parser = Parser::new(bytes);
+        parser.push_node(JsonKind::Array, NO_KEY, 0);
+        let mut roots = Vec::new();
+        let mut table = LineTable {
+            numbers: Vec::new(),
+            invalid: Vec::new(),
+        };
+        let mut start = 0;
+        let mut number = 0;
+        while start < bytes.len() {
+            let end = text[start..]
+                .find('\n')
+                .map_or(bytes.len(), |newline| start + newline);
+            number += 1;
+            let line = &bytes[start..end];
+            if !line.iter().all(|byte| matches!(byte, b' ' | b'\t' | b'\r')) {
+                let node = parser.nodes.len() as u32;
+                let drawn_end = end - usize::from(line.ends_with(b"\r"));
+                if let Err((offset, reason)) = parser.parse_line(start, end, drawn_end) {
+                    table.invalid.push((
+                        node,
+                        JsonError {
+                            offset,
+                            line: number as usize,
+                            column: column_of(&text, start, offset),
+                            reason,
+                        },
+                    ));
+                }
+                roots.push(node);
+                table.numbers.push(number);
+            }
+            start = end + 1;
+        }
+        let (mut nodes, mut children) = (parser.nodes, parser.children);
+        nodes[0].children = (children.len() as u32, roots.len() as u32);
+        nodes[0].value = (0, bytes.len() as u32);
+        children.extend(roots);
+        Ok(Self {
+            text,
+            nodes,
+            children,
+            lines: Some(table),
         })
     }
 
     pub fn root(&self) -> JsonNodeId {
         JsonNodeId(0)
+    }
+
+    /// Whether this document holds a JSON Lines file, whose root's children are its lines.
+    pub fn is_lines(&self) -> bool {
+        self.lines.is_some()
+    }
+
+    /// The file line number of the root's child at `position`, in a JSON Lines file.
+    pub fn line_number(&self, position: usize) -> Option<usize> {
+        let table = self.lines.as_ref()?;
+        table.numbers.get(position).map(|&number| number as usize)
+    }
+
+    /// Number of lines of a JSON Lines file that are not valid JSON.
+    pub fn invalid_line_count(&self) -> usize {
+        self.lines.as_ref().map_or(0, |table| table.invalid.len())
+    }
+
+    /// Why a [`JsonKind::Invalid`] node is not valid JSON.
+    pub fn invalid_reason(&self, id: JsonNodeId) -> Option<&JsonError> {
+        let invalid = &self.lines.as_ref()?.invalid;
+        let found = invalid
+            .binary_search_by_key(&id.0, |(node, _)| *node)
+            .ok()?;
+        Some(&invalid[found].1)
     }
 
     /// Number of values in the document, at every depth.
@@ -188,7 +282,16 @@ fn line_column(text: &str, offset: usize) -> (usize, usize) {
     let before = &text[..end];
     let line = before.bytes().filter(|&byte| byte == b'\n').count() + 1;
     let start = before.rfind('\n').map_or(0, |newline| newline + 1);
-    (line, before[start..].chars().count() + 1)
+    (line, column_of(text, start, end))
+}
+
+/// One-based character column of a byte in the line starting at `line_start`.
+fn column_of(text: &str, line_start: usize, offset: usize) -> usize {
+    let mut end = offset.min(text.len());
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[line_start..end].chars().count() + 1
 }
 
 /// Resolves the escapes of a string's inner text. A surrogate that is not half of a pair becomes U+FFFD, and an
@@ -265,7 +368,38 @@ struct Parser<'a> {
     stack: Vec<Frame>,
 }
 
-impl Parser<'_> {
+impl<'a> Parser<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self {
+            bytes,
+            pos: 0,
+            nodes: Vec::new(),
+            children: Vec::new(),
+            pending: Vec::new(),
+            stack: Vec::new(),
+        }
+    }
+
+    /// Reads the value of one line as the next node. A failure leaves one invalid node over the line's text instead, up
+    /// to `drawn_end`.
+    fn parse_line(&mut self, start: usize, end: usize, drawn_end: usize) -> Result<(), Failure> {
+        let all = self.bytes;
+        let (nodes, children) = (self.nodes.len(), self.children.len());
+        self.bytes = &all[..end];
+        self.pos = start;
+        let result = self.parse();
+        self.bytes = all;
+        if result.is_err() {
+            self.nodes.truncate(nodes);
+            self.children.truncate(children);
+            self.pending.clear();
+            self.stack.clear();
+            self.pos = drawn_end;
+            self.push_node(JsonKind::Invalid, NO_KEY, start);
+        }
+        result
+    }
+
     fn error<T>(&self, reason: &'static str) -> Result<T, Failure> {
         Err((self.pos, reason))
     }
@@ -607,6 +741,94 @@ mod tests {
             let found = error(text);
             assert_eq!((found.offset, found.reason), (offset, reason), "{text}");
         }
+    }
+
+    fn parse_lines(text: &str) -> JsonDocument {
+        JsonDocument::parse_lines(text.to_string()).unwrap()
+    }
+
+    fn line_raws(doc: &JsonDocument) -> Vec<(usize, String)> {
+        (0..doc.child_count(doc.root()))
+            .map(|ix| {
+                let node = doc.child(doc.root(), ix).unwrap();
+                (doc.line_number(ix).unwrap(), doc.raw(node).to_string())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn reads_one_value_per_line_and_keeps_line_numbers() {
+        let doc = parse_lines("{\"a\":1}\r\n\n   \n[2, 3]\n\"끝\"\nnull");
+        assert!(doc.is_lines());
+        assert_eq!(
+            line_raws(&doc),
+            [
+                (1, "{\"a\":1}".to_string()),
+                (4, "[2, 3]".to_string()),
+                (5, "\"끝\"".to_string()),
+                (6, "null".to_string()),
+            ]
+        );
+        assert_eq!(doc.invalid_line_count(), 0);
+        assert_eq!(doc.kind(doc.root()), JsonKind::Array);
+        assert_eq!(doc.raw(doc.node_at(&[1, 1]).unwrap()), "3");
+        assert_eq!(doc.key(doc.node_at(&[0, 0]).unwrap()).as_deref(), Some("a"));
+        // The root's text is the whole file.
+        assert!(doc.raw(doc.root()).ends_with("null"));
+        assert!(doc.key(doc.child(doc.root(), 0).unwrap()).is_none());
+    }
+
+    #[test]
+    fn a_bad_line_stays_in_place_and_leaves_the_others_readable() {
+        let doc = parse_lines("{\"a\":[1,{\"b\":2}]}\n{\"가\": x}\r\n[1,\n3\n{\"cut");
+        assert_eq!(doc.child_count(doc.root()), 5);
+        assert_eq!(doc.invalid_line_count(), 3);
+        let kinds: Vec<_> = (0..5)
+            .map(|ix| doc.kind(doc.child(doc.root(), ix).unwrap()))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                JsonKind::Object,
+                JsonKind::Invalid,
+                JsonKind::Invalid,
+                JsonKind::Number,
+                JsonKind::Invalid,
+            ]
+        );
+        let bad = doc.child(doc.root(), 1).unwrap();
+        assert_eq!(doc.raw(bad), "{\"가\": x}");
+        assert_eq!(doc.text(bad), "{\"가\": x}");
+        assert_eq!(doc.child_count(bad), 0);
+        let reason = doc.invalid_reason(bad).unwrap();
+        assert_eq!((reason.line, reason.column), (2, 7));
+        assert_eq!(reason.reason, "expected a value");
+        let cut = doc
+            .invalid_reason(doc.child(doc.root(), 2).unwrap())
+            .unwrap();
+        assert_eq!(cut.reason, "the text ends where a value should start");
+        // A failed line leaves nothing of its partly read values behind.
+        let good = doc.child(doc.root(), 0).unwrap();
+        assert_eq!(doc.raw(doc.node_at(&[0, 0, 1, 0]).unwrap()), "2");
+        assert_eq!(doc.invalid_reason(good), None);
+        assert_eq!(doc.value_count(), 1 + 5 + 3 + 1);
+    }
+
+    #[test]
+    fn an_empty_lines_file_has_no_lines() {
+        for text in ["", "\n", " \r\n\n"] {
+            let doc = parse_lines(text);
+            assert_eq!(doc.child_count(doc.root()), 0, "{text:?}");
+            assert_eq!(doc.kind(doc.root()), JsonKind::Array);
+        }
+    }
+
+    #[test]
+    fn a_plain_json_file_has_no_lines() {
+        let doc = parse("[1]");
+        assert!(!doc.is_lines());
+        assert_eq!(doc.line_number(0), None);
+        assert_eq!(doc.invalid_line_count(), 0);
     }
 
     #[test]

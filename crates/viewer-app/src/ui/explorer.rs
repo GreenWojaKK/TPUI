@@ -601,9 +601,17 @@ mod tests {
     }
 
     #[test]
-    fn lists_markdown_and_json_documents() {
+    fn lists_documents_by_extension() {
         let dir = tempfile::tempdir().unwrap();
-        for name in ["b.md", "A.MARKDOWN", "c.json", "d.jsonl", "e.txt"] {
+        for name in [
+            "b.md",
+            "A.MARKDOWN",
+            "c.json",
+            "d.jsonl",
+            "e.txt",
+            "f.py",
+            "G.RS",
+        ] {
             fs::write(dir.path().join(name), b"").unwrap();
         }
         let entries = list_directory(dir.path()).unwrap();
@@ -617,6 +625,9 @@ mod tests {
                 ("A.MARKDOWN", EntryKind::Document(DocumentKind::Markdown)),
                 ("b.md", EntryKind::Document(DocumentKind::Markdown)),
                 ("c.json", EntryKind::Document(DocumentKind::Json)),
+                ("d.jsonl", EntryKind::Document(DocumentKind::JsonLines)),
+                ("f.py", EntryKind::Document(DocumentKind::Code)),
+                ("G.RS", EntryKind::Document(DocumentKind::Code)),
             ]
         );
         assert_eq!(entries[0].source(), None);

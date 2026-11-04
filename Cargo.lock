@@ -5092,6 +5092,7 @@ dependencies = [
  "unicode-width",
  "viewer-core",
  "viewer-ui",
+ "windows 0.62.2",
 ]
 
 [[package]]
