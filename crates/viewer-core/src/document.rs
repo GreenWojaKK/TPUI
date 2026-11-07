@@ -1,5 +1,5 @@
-//! Text documents opened in full: Markdown, JSON, JSON Lines and source files. A read takes the file as it is at that moment; nothing
-//! is kept between reads.
+//! Documents: Markdown, JSON, JSON Lines and source files opened in full. PDF files are read by the PDF worker, whose
+//! answer becomes a `Document::Pdf`. A read takes the file as it is at that moment; nothing is kept between reads.
 
 use std::fs;
 use std::io;
@@ -10,6 +10,7 @@ use crate::ViewerError;
 use crate::code::CodeDocument;
 use crate::json::{JsonDocument, JsonError};
 use crate::markdown::MarkdownDocument;
+use crate::pdf::PdfInfo;
 
 /// The format of a document, decided by its file extension.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -18,6 +19,7 @@ pub enum DocumentKind {
     Json,
     JsonLines,
     Code,
+    Pdf,
 }
 
 impl DocumentKind {
@@ -27,6 +29,7 @@ impl DocumentKind {
             Self::Json => "JSON",
             Self::JsonLines => "JSON Lines",
             Self::Code => "Code",
+            Self::Pdf => "PDF",
         }
     }
 }
@@ -38,8 +41,8 @@ const CODE_EXTENSIONS: &[&str] = &[
     "toml", "ts", "tsx", "xml", "yaml", "yml",
 ];
 
-/// The kind of document a path holds, by its extension in any letter case: `.md` and `.markdown`, `.json`, `.jsonl`, or a
-/// source file's extension.
+/// The kind of document a path holds, by its extension in any letter case: `.md` and `.markdown`, `.json`, `.jsonl`,
+/// `.pdf`, or a source file's extension.
 pub fn document_kind(path: &Path) -> Option<DocumentKind> {
     let extension = path.extension()?;
     if extension.eq_ignore_ascii_case("md") || extension.eq_ignore_ascii_case("markdown") {
@@ -48,6 +51,8 @@ pub fn document_kind(path: &Path) -> Option<DocumentKind> {
         Some(DocumentKind::Json)
     } else if extension.eq_ignore_ascii_case("jsonl") {
         Some(DocumentKind::JsonLines)
+    } else if extension.eq_ignore_ascii_case("pdf") {
+        Some(DocumentKind::Pdf)
     } else if CODE_EXTENSIONS
         .iter()
         .any(|code| extension.eq_ignore_ascii_case(code))
@@ -64,6 +69,8 @@ pub enum Document {
     Markdown(MarkdownDocument),
     Json(JsonDocument),
     Code(CodeDocument),
+    /// The page sizes of a PDF file, from the PDF worker. Its pages are drawn from the file on request.
+    Pdf(PdfInfo),
 }
 
 /// A file's size and modification time. Two equal stamps mean the file has not been rewritten between them.
@@ -81,8 +88,13 @@ pub fn file_stamp(path: &Path) -> io::Result<FileStamp> {
     })
 }
 
-/// Reads and parses a whole file read-only. A UTF-8 byte order mark is dropped.
+/// Reads and parses a whole file read-only. A UTF-8 byte order mark is dropped. PDF files are read by the PDF worker.
 pub fn read_document(path: &Path, kind: DocumentKind) -> Result<Document, ViewerError> {
+    if kind == DocumentKind::Pdf {
+        return Err(ViewerError::Pdf(
+            "PDF files are read by the PDF worker".into(),
+        ));
+    }
     let bytes = fs::read(path)?;
     let text = String::from_utf8(bytes).map_err(|error| ViewerError::InvalidText {
         offset: error.utf8_error().valid_up_to(),
@@ -108,6 +120,7 @@ fn parse_document(mut text: String, kind: DocumentKind) -> Result<Document, View
             .map(Document::Json)
             .map_err(invalid_json),
         // A NUL byte marks a binary file that happens to be valid UTF-8.
+        DocumentKind::Pdf => unreachable!("PDF files are not read as text"),
         DocumentKind::Code => match text.find('\0') {
             Some(offset) => Err(ViewerError::InvalidText { offset }),
             None => Ok(Document::Code(CodeDocument::new(text))),
@@ -127,6 +140,8 @@ mod tests {
             ("b.Json", Some(DocumentKind::Json)),
             ("c.jsonl", Some(DocumentKind::JsonLines)),
             ("C.JSONL", Some(DocumentKind::JsonLines)),
+            ("p.pdf", Some(DocumentKind::Pdf)),
+            ("P.PDF", Some(DocumentKind::Pdf)),
             ("d.parquet", None),
             ("md", None),
             ("a.py", Some(DocumentKind::Code)),

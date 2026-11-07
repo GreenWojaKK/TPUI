@@ -102,7 +102,8 @@ var Go = &Language{
 		Keyword: `break case chan const continue default defer else fallthrough for func go goto if import interface
 			map package range return select struct switch type var`,
 	}),
-	definers: map[string]Kind{"func": Function, "type": Type},
+	definers:        map[string]Kind{"func": Function, "type": Type},
+	caseMarksExport: true,
 }
 
 // ----------------------------------------------------------------------- Rust

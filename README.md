@@ -1,6 +1,6 @@
 # TPUI
 
-A Windows desktop viewer for the raw data and structure of local Parquet files and SQLite tables and for reading Markdown, JSON, JSON Lines and source files, plus a UI component crate shared with other GPUI apps. Built with Rust, [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui) and [arrow-rs](https://github.com/apache/arrow-rs), with a small Go program that finds the tokens of source files.
+A Windows desktop viewer for the raw data and structure of local Parquet files and SQLite tables for reading Markdown, JSON, JSON Lines and source files, and for checking how PDF pages came out, plus a UI component crate shared with other GPUI apps. Built with Rust, [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui) and [arrow-rs](https://github.com/apache/arrow-rs), with a small Go program that finds the tokens of source files and a worker program that draws PDF pages with the PDF engine built into Windows.
 
 The viewer focuses on locating source rows, inspecting full raw values and reading documents as they stand on disk. Its display rules, such as Korean line breaking, are built in.
 
@@ -21,6 +21,7 @@ The viewer focuses on locating source rows, inspecting full raw values and readi
 - Parquet file structure and SQLite table structure views
 - Markdown, JSON, JSON Lines and code documents, read when their tab is shown and followed as their files change
 - Colors for Python, Go, Rust, JavaScript and TypeScript, found from the file's text alone
+- PDF pages drawn at the width of the view by a separate worker that runs while a PDF tab is shown
 - Native query input on Windows, message-file input for external programs, and query logs
 - The viewer's own memory and CPU use, shown on request and kept in a daily log
 - Light and dark themes that initially follow the Windows app color setting
@@ -29,9 +30,9 @@ The viewer focuses on locating source rows, inspecting full raw values and readi
 
 | Crate | Contents |
 |---|---|
-| `viewer-core` | Parquet and SQLite reading, filter/sort/find computation, query text, file and table structure, Markdown, JSON, JSON Lines and code documents |
+| `viewer-core` | Parquet and SQLite reading, filter/sort/find computation, query text, file and table structure, Markdown, JSON, JSON Lines and code documents, PDF worker messages |
 | `viewer-ui` | GPUI components: light and dark themes, context menu, query window (Windows), message file, tab bar, tables with fixed or wrapping rows, styled wrapping text, buttons, line/band charts, bar charts, strip charts, heatmap, route map |
-| `viewer-app` | The viewer app |
+| `viewer-app` | The viewer app and `tpui-pdf`, the PDF worker |
 
 The Go module in `core/` builds `tpui-core`, the program the viewer asks for tokens. It uses the Go standard library only.
 
@@ -46,9 +47,9 @@ cargo build --release -p viewer-app
 .\target\release\viewer-app.exe
 ```
 
-The build puts `tpui-core.exe` next to `viewer-app.exe`. Keep the two together when moving the viewer.
+The build puts `tpui-core.exe` and `tpui-pdf.exe` next to `viewer-app.exe`. Keep the three together when moving the viewer.
 
-To open files from Windows, copy both to a folder that builds do not replace, such as `%LOCALAPPDATA%\Programs\TPUI`, then choose `viewer-app.exe` under `Open with` → `Choose another app` for each file type.
+To open files from Windows, copy all three to a folder that builds do not replace, such as `%LOCALAPPDATA%\Programs\TPUI`, then choose `viewer-app.exe` under `Open with` → `Choose another app` for each file type.
 
 Start with [opening a file](usage.md#opening-files), then use the [query reference](usage.md#query-text) for find, filter and sort.
 

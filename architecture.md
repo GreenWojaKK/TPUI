@@ -4,7 +4,7 @@ This document defines component boundaries, state ownership, data contracts and 
 
 ## 1. Product scope and technology choices
 
-TPUI is a native desktop viewer that opens local Parquet files and SQLite tables read-only to explore their structure and data and reads Markdown, JSON, JSON Lines and source files, together with the UI components that it shares with other GPUI apps. The viewer consists of the explorer, file opening, tabs, schema view, a grid virtualized over rows and columns, value detail, find, filter, sort and the file and table structure views. The core stack is Rust + GPUI + Arrow/Parquet, and a Go process finds the tokens of source files.
+TPUI is a native desktop viewer that opens local Parquet files and SQLite tables read-only to explore their structure and data and reads Markdown, JSON, JSON Lines and source files and PDF pages, together with the UI components that it shares with other GPUI apps. The viewer consists of the explorer, file opening, tabs, schema view, a grid virtualized over rows and columns, value detail, find, filter, sort and the file and table structure views. The core stack is Rust + GPUI + Arrow/Parquet. A Go process finds the tokens of source files, and a worker process draws PDF pages.
 
 The app shows what the raw data looks like and how the file is stored. Find, filter and sort locate source rows.
 
@@ -18,6 +18,7 @@ Windows x64 comes first. The app opens several files as tabs in a single window 
 | SQLite reading | `rusqlite` with the bundled SQLite: read-only connections, schema pragmas, range queries in table order |
 | Markdown and JSON reading | `pulldown-cmark` for Markdown events; an own JSON and JSON Lines parser that keeps key order, duplicates and number text. See section 11 |
 | Source tokens | `tpui-core`, a Go program on the standard library: a one-pass scanner with a rule table per language. See section 11 |
+| PDF pages | `tpui-pdf`, a worker process calling `Windows.Data.Pdf` through the `windows` crate. See section 11 |
 | Data representation | `arrow-array`, `arrow-schema`: `RecordBatch` and typed column arrays |
 | Comparison and sorting | `arrow-ord`: value comparison for find and filter, and sort order |
 | Local file access | `std::fs`: read-only file handles and directory listing |
@@ -71,19 +72,19 @@ The listener makes its next pipe instance before reading the connected one, and 
 
 ### Usage log
 
-`UsageMonitor` reads the viewer's memory and CPU, with `GetProcessMemoryInfo` and `GetProcessTimes`, and adds those of `tpui-core` through its process handle. It appends each reading to a daily file in the app's storage directory (see [usage.md](usage.md#memory-and-cpu-use)). Readings follow events, and the controller's 500ms poll only asks it whether a minute has passed; a reading from that poll is written when a shown value has changed. CPU is the difference of the counted CPU time between two readings over the time between them, relative to the logical processors, so it stays exact however far apart readings are.
+`UsageMonitor` reads the viewer's memory and CPU, with `GetProcessMemoryInfo` and `GetProcessTimes`, and adds those of `tpui-core` and `tpui-pdf` through their process handles. It appends each reading to a daily file in the app's storage directory (see [usage.md](usage.md#memory-and-cpu-use)). Readings follow events, and the controller's 500ms poll only asks it whether a minute has passed; a reading from that poll is written when a shown value has changed. CPU is the difference of the counted CPU time between two readings over the time between them, relative to the logical processors, so it stays exact however far apart readings are.
 
 Readings change no screen state. The status bar's text changes only when the button is pressed, so usage never causes a redraw by itself. Readings after a tab change or a read are deferred until the update has finished, so what it dropped is gone from the numbers.
 
 ## 3. Components and dependencies
 
-The Cargo workspace consists of three crates. The Go module in `core/` builds a separate program, `tpui-core`.
+The Cargo workspace consists of three crates. The Go module in `core/` builds a separate program, `tpui-core`, and `viewer-app` also builds the PDF worker, `tpui-pdf`.
 
 | Crate | Role | Depends on |
 |---|---|---|
-| `viewer-core` | Parquet and SQLite reading, row views, find, query text, file and table structure, Markdown, JSON, JSON Lines and code documents | arrow-rs, parquet, rusqlite, pulldown-cmark |
+| `viewer-core` | Parquet and SQLite reading, row views, find, query text, file and table structure, Markdown, JSON, JSON Lines and code documents, PDF worker messages | arrow-rs, parquet, rusqlite, pulldown-cmark |
 | `viewer-ui` | UI components shared by GPUI apps: light and dark themes, context menu, query window of the operating system (Windows), message file, tab bar, tables with fixed or wrapping rows, styled wrapping text, small buttons, line, bar and strip charts, heatmap, route map, number and size formats | GPUI |
-| `viewer-app` | The viewer app. Combines the two crates and owns the worker and screen state | `viewer-core`, `viewer-ui`, GPUI |
+| `viewer-app` | The viewer app and the PDF worker. Combines the two crates and owns the worker and screen state | `viewer-core`, `viewer-ui`, GPUI, `windows` |
 
 ### Shared theme
 
@@ -129,6 +130,8 @@ flowchart TB
     UI -->|read in background tasks| Documents
     UI -->|token requests over pipes| Lexer[tpui-core: tokens of the one active file]
     Lexer --> Source[Read-only local source file]
+    UI -->|page requests over pipes| Pdf[tpui-pdf: pages of the shown PDF]
+    Pdf --> PdfFile[Read-only local PDF file]
     Reader --> File[Read-only local Parquet file]
     Sqlite --> Db[Read-only local SQLite database]
 ```
@@ -151,11 +154,13 @@ flowchart TB
 | `SchemaView` | The active tab's schema nodes and expansion state |
 | `GridView` | The active tab's logical scroll position, visible row and column ranges, cell previews and source row numbers, sort and filter marks in headers, input and rendering |
 | `ValueView` | Value tree nodes and expansion, selected node, body value and display line index, body scroll position |
-| `DocumentView` | The active tab's document, its file's last stamp, the Markdown, JSON or code view showing it, and the connection to the code core |
+| `DocumentView` | The active tab's document, its file's last stamp, the Markdown, JSON, code or PDF view showing it, and the connections to the code core and the PDF worker |
 | `MarkdownView` | The parsed document, list state, text selection, the link under the mouse, the document's images |
 | `JsonView` | The parsed document, expanded paths, selected path, flattened rows, scroll position |
 | `CodeView` | The file's text, scroll position, text selection, the tokens around the screen and the bytes asked for |
 | `CodeCore` | The `tpui-core` process, the latest request waiting to be sent, and the threads writing requests and reading answers |
+| `PdfView` | Page sizes and their layout at the view's width, scroll position, the drawn page images and the pages asked for |
+| `PdfWorker` | The `tpui-pdf` process and its Job Object, the open and draw requests waiting to be sent, and the threads writing requests and reading answers |
 | `ViewerWorker` | Handling open and close commands, picking the latest requests, calling the engine, checking result generations, bounded text conversion of Arrow values, holding the selected value and building detail and copy text, holding per-session row lists and mapping row view positions to source rows, row view and find computation tasks |
 | `ViewerEngine` | Per open session: file handle, metadata, Row Group index; read planning, decoding, sequential column scans, arbitrary row reads, and the cache shared by all sessions |
 
@@ -225,9 +230,12 @@ TPUI/
     │       ├── worker.rs
     │       ├── cell_preview.rs
     │       ├── code_core.rs
+    │       ├── pdf_worker.rs
     │       ├── value_detail.rs
     │       ├── query_log.rs
     │       ├── usage_log.rs
+    │       ├── bin/
+    │       │   └── tpui-pdf.rs
     │       └── ui/
     │           ├── code.rs
     │           ├── doc_scrollbar.rs
@@ -235,6 +243,7 @@ TPUI/
     │           ├── explorer.rs
     │           ├── json_tree.rs
     │           ├── markdown.rs
+    │           ├── pdf.rs
     │           ├── schema.rs
     │           ├── grid.rs
     │           ├── value.rs
@@ -274,6 +283,7 @@ TPUI/
         │   ├── document.rs
         │   ├── json.rs
         │   ├── markdown.rs
+        │   ├── pdf.rs
         │   ├── scan.rs
         │   ├── condition.rs
         │   ├── row_view.rs
@@ -634,6 +644,8 @@ Without tabs, the app is in the empty state. Each tab's file state transitions `
 | Read failure during find computation | Reason shown in the find bar; recomputed on the next `F3` |
 | Document cannot be read, is not UTF-8 or is not valid JSON | Reason shown in the tab with `Retry`; the file stays watched and other tabs keep working |
 | Code core missing, ended or failing on a file | Text stays on screen in plain colors; reason shown in the status bar |
+| PDF worker missing or ended, or a PDF Windows cannot read | Reason shown in the tab with `Retry`; `Retry` starts a new worker when none runs |
+| A PDF page Windows cannot draw | The page stays blank; reason shown at the top of the view |
 | Responses for closed tabs' sessions or earlier requests | Dropped |
 | Tab closed | That session's pending work cancelled; file handle, metadata, index and cache entries released |
 | File size or modification time changed between reads | The tab's cache and grid are invalidated and reopen is offered |
@@ -643,7 +655,7 @@ File size and modification time are checked on the open handle. The expected usa
 
 ## 11. Documents
 
-Markdown, JSON, JSON Lines and source files are read whole, parsed into a model and shown by views of their own. They share the tabs, the explorer and the Value panel with the data engine's sources, and `DocumentView` reads them directly in background tasks.
+Markdown, JSON, JSON Lines and source files are read whole, parsed into a model and shown by views of their own. PDF files are read by the PDF worker, which sends their page sizes and drawn pages. They share the tabs, the explorer and the Value panel with the data engine's sources, and `DocumentView` reads them directly in background tasks.
 
 ### Reading and lifetime
 
@@ -692,8 +704,32 @@ Token kinds are 1 comment, 2 string, 3 number, 4 keyword, 5 constant, 6 type, 7 
 
 The core holds one `activeFile`: its path, stamp, language and a `lex.Table` of parallel start, length and kind arrays in file order. It builds the table when a request names another file or stamp, in memory only, and answers a range by binary search. It checks the file's stamp before and after reading, so the text it scans is the version the viewer holds or the answer says `stale`. Files over `maxLexBytes` get no tokens.
 
-`lex.Lex` makes one pass in linear time and keeps only the previous token as context. A `Language` is data: comment markers, a `stringRule` per opening quote, keyword tables, the words that define a name, and optional hooks for what the table cannot say, such as Rust's raw strings and JavaScript's regular expressions and templates. A name right after a definer takes the definer's kind, a name before `(` is a function, or a type when capitalized in languages that say so, other capitalized names are types and all-capitals names constants, and a name after an adjacent `.` is never a keyword. `Detect` chooses the language from the extension.
+`lex.Lex` makes one pass in linear time and keeps only the previous token as context. A `Language` is data: comment markers, a `stringRule` per opening quote, keyword tables, the words that define a name, and optional hooks for what the table cannot say, such as Rust's raw strings and JavaScript's regular expressions and templates. A name right after a definer takes the definer's kind, a name before `(` is a function, or a type when capitalized in languages that say so, other capitalized names are types and all-capitals names constants except in Go, where case marks exported names, and a name after an adjacent `.` is never a keyword. `Detect` chooses the language from the extension.
 
 Requests never wait in a queue. `CodeCore` keeps only the latest unsent request and the core keeps only the latest unanswered one, and `DocumentView` drops every answer but the one to its latest request. The UI thread only sets a slot and receives on a channel.
 
 `DocumentView` starts the core at the first token request and ends it when a tab other than code is shown. The core starts no other process. It ends when stdin closes, so it ends with the viewer however the viewer ends. When it ends unexpectedly, the next request starts it again, up to `MAX_CORE_STARTS` times per opened file. A stale answer holds further requests until the file's next read, or until the file is back at the version on screen.
+
+### PDF view
+
+`document_kind` gives `Pdf` for the `.pdf` extension. `DocumentView` reads a PDF's stamp in a background task, starts the PDF worker if none runs, and asks it to open the file; the worker's `Info` finishes the read with the page sizes, and its `Failed` finishes it with the reason. The stamp and `ChangeWatch` work as for other documents, and a reread asks the worker to open the file again.
+
+`PdfView` lays the pages one under another at the view's width, up to `PDF_MAX_PAGE_WIDTH`, with each page's height from its size in the file. The tab's `PdfScroll` is a page and the fraction of it at the top of the view, so the place survives a new width. During layout the view asks for the pages on screen plus one on each side that it has not drawn at the current pixel width, emitting `Draw` with that width, and drops the images of other pages with `drop_image`, which also frees their atlas tiles. A page arriving for another document, width or a page no longer wanted is dropped. Releasing the view drops all its images.
+
+### PDF worker
+
+`tpui-pdf` is a second binary of `viewer-app`, so the build puts it next to the viewer's executable. It runs `Windows.Data.Pdf`: `StorageFile::GetFileFromPathAsync`, `PdfDocument::LoadFromFileAsync`, page sizes in device-independent pixels, and `RenderWithOptionsToStreamAsync` to a BMP at a destination width. The engine's output is wider than the width asked for by a factor it learns from each result and carries to the next request, and the worker converts the bottom-up BMP to top-down BGRA.
+
+The viewer and the worker exchange framed messages over stdin and stdout: a little-endian 32-bit length, then a tag byte and the fields.
+
+| Message | Fields |
+|---|---|
+| `Open` | `doc`, `path` |
+| `Draw` | `doc`, the pixel width, the page numbers |
+| `Info` | `doc`, the width and height of each page |
+| `Page` | `doc`, `page`, the width asked for, the image's width and height and its BGRA bytes |
+| `Failed` | `doc`, the page when a page failed or none when the open failed, the reason |
+
+A reader thread in the worker keeps only the latest `Open` and the latest `Draw`, and a new `Open` drops a waiting `Draw`. The worker skips a `Draw` for a document other than the one it opened last, and stops a batch of pages when new work arrives. It opens the PDF file for a metadata read or a batch of pages and closes it afterwards, because the engine may map the file while it is open and another program could then not rewrite it in place. `DocumentView` numbers each open with `doc` and drops replies for earlier numbers.
+
+`DocumentView` starts the worker when a PDF tab is read and ends it when a tab other than PDF is shown or the view is cleared, so it runs while a PDF is on screen and stays between PDF tabs. `PdfWorker` creates the process with `CreateProcessW` inside a Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, assigned at creation through `PROC_THREAD_ATTRIBUTE_JOB_LIST`, with an inherited-handle list holding only the child's ends of the two pipes, without a console window and with stderr discarded. Dropping `PdfWorker` closes the job handle, which ends the worker; when the viewer ends in any way the system closes the handle and ends it as well. The worker also exits when its stdin closes. When the worker ends unexpectedly, a pending read finishes with that reason and a shown PDF tab shows it with `Retry`, which starts a new worker.

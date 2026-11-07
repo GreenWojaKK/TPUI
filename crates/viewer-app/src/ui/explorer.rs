@@ -608,6 +608,7 @@ mod tests {
             "A.MARKDOWN",
             "c.json",
             "d.jsonl",
+            "e.pdf",
             "e.txt",
             "f.py",
             "G.RS",
@@ -626,6 +627,7 @@ mod tests {
                 ("b.md", EntryKind::Document(DocumentKind::Markdown)),
                 ("c.json", EntryKind::Document(DocumentKind::Json)),
                 ("d.jsonl", EntryKind::Document(DocumentKind::JsonLines)),
+                ("e.pdf", EntryKind::Document(DocumentKind::Pdf)),
                 ("f.py", EntryKind::Document(DocumentKind::Code)),
                 ("G.RS", EntryKind::Document(DocumentKind::Code)),
             ]

@@ -47,6 +47,10 @@ pub const DOC_SCROLL_STEP: Pixels = px(48.);
 pub const CODE_LINE_HEIGHT: Pixels = px(20.);
 /// Space on each side of the line numbers.
 pub const CODE_GUTTER_PADDING: Pixels = px(12.);
+/// Widest a PDF page is drawn. Wider views center the pages.
+pub const PDF_MAX_PAGE_WIDTH: Pixels = px(960.);
+pub const PDF_PADDING: Pixels = px(16.);
+pub const PDF_PAGE_GAP: Pixels = px(12.);
 
 /// Text size and space above a Markdown heading of a level.
 pub fn doc_heading(level: u8) -> (Pixels, Pixels) {
@@ -77,6 +81,11 @@ pub fn token_color(kind: u8) -> Rgba {
         8 => theme::pick(0xe06c75, 0xca1243),
         _ => theme::text(),
     }
+}
+
+/// Paper of a PDF page, drawn under the page image and while it is being drawn. Pages are white in both themes.
+pub fn pdf_page() -> Rgba {
+    theme::pick(0xffffff, 0xffffff)
 }
 
 /// Background of cells matching the find input.

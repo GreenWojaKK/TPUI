@@ -20,7 +20,9 @@ use viewer_ui::theme;
 use super::code::{CodeEvent, CodeScroll, CodeView};
 use super::json_tree::{JsonEvent, JsonPosition, JsonView};
 use super::markdown::MarkdownView;
+use super::pdf::{PdfScroll, PdfView, PdfViewEvent};
 use crate::code_core::{CodeCore, CoreEvent, TokenRequest, core_path};
+use crate::pdf_worker::{PdfWorker, WorkerEvent, worker_path};
 use crate::usage_log::ProcessUsage;
 use crate::value_detail::ValueDetail;
 
@@ -35,6 +37,7 @@ pub enum DocumentPosition {
     Markdown(ListOffset),
     Json(JsonPosition),
     Code(CodeScroll),
+    Pdf(PdfScroll),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,11 +97,18 @@ enum Body {
     Markdown(Entity<MarkdownView>),
     Json(Entity<JsonView>),
     Code(Entity<CodeView>),
+    Pdf(Entity<PdfView>),
 }
 
 /// A running core with the task that receives its answers.
 struct CoreLink {
     core: CodeCore,
+    _answers: Task<()>,
+}
+
+/// A running PDF worker with the task that receives its answers.
+struct PdfLink {
+    worker: PdfWorker,
     _answers: Task<()>,
 }
 
@@ -129,6 +139,12 @@ pub struct DocumentView {
     plain_reason: Option<String>,
     /// Tokens have arrived for the document as last read.
     tokens_arrived: bool,
+    /// The PDF worker, while a PDF tab is shown.
+    pdf: Option<PdfLink>,
+    /// The worker's name for the latest reading of the PDF file.
+    pdf_doc: u64,
+    /// A reading of the PDF file waiting for its page sizes, with the stamp taken before asking.
+    pdf_pending: Option<(u64, Option<FileStamp>)>,
 }
 
 impl EventEmitter<DocumentEvent> for DocumentView {}
@@ -152,10 +168,14 @@ impl DocumentView {
             tokens_stale: false,
             plain_reason: None,
             tokens_arrived: false,
+            pdf: None,
+            pdf_doc: 0,
+            pdf_pending: None,
         }
     }
 
-    /// Reads a file and shows it from `position`. The core keeps running between code tabs.
+    /// Reads a file and shows it from `position`. The code core keeps running between code tabs, and the PDF worker
+    /// between PDF tabs.
     pub fn open(
         &mut self,
         path: PathBuf,
@@ -178,11 +198,15 @@ impl DocumentView {
         if kind != DocumentKind::Code {
             self.core = None;
         }
+        if kind != DocumentKind::Pdf {
+            self.pdf = None;
+        }
+        self.pdf_pending = None;
         self.read(cx);
         cx.notify();
     }
 
-    /// Drops the document and ends the core.
+    /// Drops the document and ends the code core and the PDF worker.
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         self.generation += 1;
         self.path = None;
@@ -191,6 +215,8 @@ impl DocumentView {
         self.checking = false;
         self.shown = None;
         self.core = None;
+        self.pdf = None;
+        self.pdf_pending = None;
         cx.notify();
     }
 
@@ -200,6 +226,9 @@ impl DocumentView {
             return;
         };
         let (kind, generation) = (self.kind, self.generation);
+        if kind == DocumentKind::Pdf {
+            return self.read_pdf(path, generation, cx);
+        }
         cx.spawn(async move |this, cx| {
             let (stamp, result) = cx
                 .background_spawn(async move {
@@ -216,6 +245,119 @@ impl DocumentView {
             .ok();
         })
         .detach();
+    }
+
+    /// Asks the PDF worker for the page sizes, starting it if needed. The answer finishes the read.
+    fn read_pdf(&mut self, path: PathBuf, generation: u64, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            let stamped = path.clone();
+            // Stamped before asking, so a write landing during the read shows as a change afterwards.
+            let stamp = cx
+                .background_spawn(async move { file_stamp(&stamped).ok() })
+                .await;
+            this.update(cx, |this, cx| {
+                if this.generation != generation {
+                    return;
+                }
+                if this.pdf.is_none()
+                    && let Err(message) = this.start_pdf(cx)
+                {
+                    return this.finish_read(stamp, Err(ViewerError::Pdf(message)), cx);
+                }
+                this.pdf_doc += 1;
+                this.pdf_pending = Some((this.pdf_doc, stamp));
+                if let Some(link) = &this.pdf {
+                    link.worker.open(this.pdf_doc, path);
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn start_pdf(&mut self, cx: &mut Context<Self>) -> Result<(), String> {
+        let (worker, answers) = worker_path()
+            .and_then(|path| PdfWorker::start(&path))
+            .map_err(|_| "the PDF worker cannot start".to_string())?;
+        let answers = cx.spawn(async move |this, cx| {
+            while let Ok(event) = answers.recv().await {
+                if this
+                    .update(cx, |this, cx| this.pdf_event(event, cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        self.pdf = Some(PdfLink {
+            worker,
+            _answers: answers,
+        });
+        Ok(())
+    }
+
+    fn pdf_event(&mut self, event: WorkerEvent, cx: &mut Context<Self>) {
+        let view = match &self.body {
+            Body::Pdf(view) => Some(view.clone()),
+            _ => None,
+        };
+        match event {
+            WorkerEvent::Info { doc, info } => {
+                if let Some((_, stamp)) = self.pdf_pending.take_if(|(pending, _)| *pending == doc) {
+                    self.finish_read(stamp, Ok(Document::Pdf(info)), cx);
+                }
+            }
+            WorkerEvent::Failed {
+                doc,
+                page: None,
+                message,
+            } => {
+                if let Some((_, stamp)) = self.pdf_pending.take_if(|(pending, _)| *pending == doc) {
+                    self.finish_read(stamp, Err(ViewerError::Pdf(message)), cx);
+                } else if doc == self.pdf_doc
+                    && let Some(view) = view
+                {
+                    view.update(cx, |view, cx| view.page_failed(message, cx));
+                }
+            }
+            WorkerEvent::Failed {
+                doc,
+                page: Some(page),
+                message,
+            } => {
+                if doc == self.pdf_doc
+                    && let Some(view) = view
+                {
+                    let message = format!("page {}: {message}", page + 1);
+                    view.update(cx, |view, cx| view.page_failed(message, cx));
+                }
+            }
+            WorkerEvent::Page {
+                doc,
+                page,
+                width,
+                image,
+            } => {
+                if doc == self.pdf_doc
+                    && self.pdf_pending.is_none()
+                    && let Some(view) = view
+                {
+                    view.update(cx, |view, cx| view.take_page(page, width, image, cx));
+                }
+            }
+            WorkerEvent::Stopped => {
+                self.pdf = None;
+                let ended = ViewerError::Pdf("the PDF worker ended".into());
+                if let Some((_, stamp)) = self.pdf_pending.take() {
+                    self.finish_read(stamp, Err(ended), cx);
+                } else if view.is_some() {
+                    // Retry reads the file again, which starts a new worker.
+                    self.restore = self.position(cx);
+                    self.body = Body::Failed(error_message(&ended).into());
+                    cx.notify();
+                }
+            }
+        }
     }
 
     fn finish_read(
@@ -277,6 +419,26 @@ impl DocumentView {
                             this.request_tokens(range.clone(), cx);
                         }));
                     self.body = Body::Code(view);
+                }
+            }
+            Ok(Document::Pdf(info)) => {
+                let info = Arc::new(info);
+                if let Body::Pdf(view) = &self.body {
+                    view.update(cx, |view, cx| view.set_document(info, cx));
+                } else {
+                    let position = match &self.restore {
+                        DocumentPosition::Pdf(position) => *position,
+                        _ => PdfScroll::default(),
+                    };
+                    let view = cx.new(|cx| PdfView::new(info, position, cx));
+                    self._body_events =
+                        Some(cx.subscribe(&view, |this, _, event: &PdfViewEvent, _| {
+                            let PdfViewEvent::Draw { width, pages } = event;
+                            if let Some(link) = &this.pdf {
+                                link.worker.draw(this.pdf_doc, *width, pages.clone());
+                            }
+                        }));
+                    self.body = Body::Pdf(view);
                 }
             }
             Err(error) => {
@@ -421,6 +583,11 @@ impl DocumentView {
         }
     }
 
+    /// What the PDF worker uses now, when it runs.
+    pub fn pdf_usage(&self) -> Option<ProcessUsage> {
+        self.pdf.as_ref().and_then(|link| link.worker.usage())
+    }
+
     /// What the code core uses now, when it runs.
     pub fn core_usage(&self) -> Option<ProcessUsage> {
         self.core.as_ref().and_then(|link| link.core.usage())
@@ -437,6 +604,7 @@ impl DocumentView {
             Body::Markdown(view) => DocumentPosition::Markdown(view.read(cx).scroll_top()),
             Body::Json(view) => DocumentPosition::Json(view.read(cx).position()),
             Body::Code(view) => DocumentPosition::Code(view.read(cx).scroll()),
+            Body::Pdf(view) => DocumentPosition::Pdf(view.read(cx).position()),
             Body::Empty | Body::Reading | Body::Failed(_) => self.restore.clone(),
         }
     }
@@ -445,7 +613,9 @@ impl DocumentView {
         match self.body {
             Body::Empty | Body::Reading => DocumentStatus::Reading,
             Body::Failed(_) => DocumentStatus::Failed,
-            Body::Markdown(_) | Body::Json(_) | Body::Code(_) => DocumentStatus::Open,
+            Body::Markdown(_) | Body::Json(_) | Body::Code(_) | Body::Pdf(_) => {
+                DocumentStatus::Open
+            }
         }
     }
 
@@ -459,6 +629,7 @@ impl DocumentView {
                 "blocks",
             )),
             Body::Json(view) => summary.extend(view.read(cx).summary()),
+            Body::Pdf(view) => summary.extend(super::pdf::summary(view.read(cx))),
             Body::Code(view) => {
                 let view = view.read(cx);
                 if let Some(language) = view.language() {
@@ -503,6 +674,7 @@ fn error_message(error: &ViewerError) -> String {
             column,
             reason,
         } => format!("Not valid JSON: line {line}, column {column}: {reason}."),
+        ViewerError::Pdf(detail) => format!("Windows cannot show this PDF ({detail})."),
         other => other.to_string(),
     }
 }
@@ -547,6 +719,7 @@ impl Render for DocumentView {
             Body::Markdown(view) => view.clone().into_any_element(),
             Body::Json(view) => view.clone().into_any_element(),
             Body::Code(view) => view.clone().into_any_element(),
+            Body::Pdf(view) => view.clone().into_any_element(),
         }
     }
 }

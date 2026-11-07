@@ -4,6 +4,8 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 license.workspace = true
+# The package also builds tpui-pdf, the PDF worker, from src/bin.
+default-run = "viewer-app"
 
 [dependencies]
 arrow-array.workspace = true
@@ -13,6 +15,7 @@ async-channel.workspace = true
 chrono.workspace = true
 gpui.workspace = true
 gpui_platform.workspace = true
+image.workspace = true
 serde_json.workspace = true
 unicode-width.workspace = true
 viewer-core.workspace = true
@@ -20,8 +23,15 @@ viewer-ui.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { workspace = true, features = [
+    "Data_Pdf",
+    "Foundation",
+    "Graphics_Imaging",
+    "Storage",
+    "Storage_Streams",
     "Win32_Foundation",
     "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_WinRT",
     "Win32_Storage_FileSystem",
     "Win32_System_IO",
     "Win32_System_Pipes",

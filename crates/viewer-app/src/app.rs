@@ -28,7 +28,7 @@ use crate::ui::structure::{StructureEvent, StructureView};
 use crate::ui::style;
 use crate::ui::value::{ValueEvent, ValueView};
 use crate::ui::view_bar::{SweepRange, ViewBar, ViewBarAction};
-use crate::usage_log::{ActiveFile, Measured, UsageEvent, UsageMonitor};
+use crate::usage_log::{ActiveFile, Helpers, Measured, UsageEvent, UsageMonitor};
 use crate::value_detail::CellValue;
 use crate::worker::{
     FindRequest, StructureRequest, ValueOp, ValueOpKind, ViewId, ViewerWorker, WorkerEvent,
@@ -385,7 +385,7 @@ impl AppController {
             .as_deref()
             .map(|dir| QueryLog::new(dir.join("query-log")));
         let mut usage = UsageMonitor::new(app_dir.map(|dir| dir.join("usage-log")));
-        usage.record(UsageEvent::Start, None, None);
+        usage.record(UsageEvent::Start, None, Helpers::default());
         // Closing the window releases this view on the way to quitting.
         cx.on_release(|this, cx| {
             this.record_usage(UsageEvent::Exit, cx);
@@ -657,8 +657,12 @@ impl AppController {
 
     fn record_usage(&mut self, event: UsageEvent, cx: &App) -> Option<Measured> {
         let file = self.active_file(cx);
-        let core = self.document.read(cx).core_usage();
-        self.usage.record(event, file.as_ref(), core)
+        let document = self.document.read(cx);
+        let helpers = Helpers {
+            core: document.core_usage(),
+            pdf: document.pdf_usage(),
+        };
+        self.usage.record(event, file.as_ref(), helpers)
     }
 
     /// Records usage once this update has finished, so that what it dropped is gone from the reading.
@@ -2523,11 +2527,11 @@ impl Render for AppController {
             self.sweep = None;
         }
         let schema = self.active_tab().map(|tab| tab.schema.clone());
-        // Markdown and code read across the whole width, and a JSON document has no schema of its own.
+        // Markdown, code and PDF use the whole width, and a JSON document has no schema of its own.
         let document_kind = self.active_tab().and_then(|tab| tab.source.document_kind());
         let reads_across = matches!(
             document_kind,
-            Some(DocumentKind::Markdown | DocumentKind::Code)
+            Some(DocumentKind::Markdown | DocumentKind::Code | DocumentKind::Pdf)
         );
         let side_panel = (!reads_across).then(|| {
             div()

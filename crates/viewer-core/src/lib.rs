@@ -1,7 +1,7 @@
 //! Engine that opens Parquet files and SQLite tables read-only and decodes requested row and column ranges into
 //! Arrow batches.
 //! Also provides sequential column scans and row view computation for find, filter and sort, and reads Markdown,
-//! JSON, JSON Lines and source files into document models.
+//! JSON, JSON Lines and source files into document models, and defines the messages of the PDF worker.
 //!
 //! Public types consist only of Rust standard and Arrow types, with no dependency on GPUI.
 
@@ -16,6 +16,7 @@ mod find;
 mod json;
 mod markdown;
 mod model;
+mod pdf;
 mod query;
 mod reader;
 mod row_index;
@@ -44,6 +45,7 @@ pub use model::{
     FilterOp, RequestId, RowIds, SessionId, SortKey, ValueRequest, ValueSlice, ViewSpec,
     WindowRequest,
 };
+pub use pdf::{PdfInfo, PdfPageImage, PdfPageSize, PdfReply, PdfRequest, read_frame, write_frame};
 pub use query::{
     Query, QueryError, format_condition, format_filter, format_query, format_sort, format_value,
     op_text, parse_query, quote_name,

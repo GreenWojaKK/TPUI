@@ -23,6 +23,8 @@ arrow-schema = "60.1.0"
 arrow-select = "60.1.0"
 
 async-channel = "2.5.0"
+# The release GPUI uses, without codecs: only its frame type carries page images to GPUI.
+image = { version = "0.25", default-features = false }
 # Same releases as GPUI's Windows platform, so they are built once.
 raw-window-handle = "0.6"
 windows = "0.62.2"

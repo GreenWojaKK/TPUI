@@ -1,7 +1,7 @@
 //! The viewer's own use of memory and CPU: read when something happens, logged one JSON line each in a file per day such
 //! as `2026-11-05.jsonl`, and shown only when the user asks.
 //!
-//! A reading covers the viewer and the code core when it runs. Memory is the working set, and CPU comes from the time the
+//! A reading covers the viewer, and the code core and the PDF worker when they run. Memory is the working set, and CPU comes from the time the
 //! system counts per process, so the share between two readings is exact however far apart they are. The timer writes a
 //! line only when a shown value has changed. Lines are only ever appended, and the user deletes old files when they want
 //! to.
@@ -95,7 +95,7 @@ mod system {
         Duration::from_nanos(units.saturating_mul(100))
     }
 
-    fn usage(process: HANDLE, id: u32) -> Option<ProcessUsage> {
+    pub fn usage(process: HANDLE, id: u32) -> Option<ProcessUsage> {
         let mut memory = PROCESS_MEMORY_COUNTERS::default();
         let (mut created, mut ended, mut kernel, mut user) = Default::default();
         // SAFETY: both calls only write to the structures passed, and the handle stays open for the call.
@@ -146,26 +146,46 @@ pub fn read_child_process(child: &Child) -> Option<ProcessUsage> {
     system::child_process(child)
 }
 
-/// The viewer and the code core at one moment.
+/// What the process behind an open handle uses.
+#[cfg(target_os = "windows")]
+pub fn process_usage(process: windows::Win32::Foundation::HANDLE, id: u32) -> Option<ProcessUsage> {
+    system::usage(process, id)
+}
+
+/// The helper processes running beside the viewer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Helpers {
+    pub core: Option<ProcessUsage>,
+    pub pdf: Option<ProcessUsage>,
+}
+
+/// The viewer and its helpers at one moment.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Reading {
     viewer: ProcessUsage,
-    core: Option<ProcessUsage>,
+    helpers: Helpers,
+}
+
+/// CPU time a helper used since an earlier reading. A helper started in between counts from its start.
+fn helper_cpu(now: Option<ProcessUsage>, then: Option<ProcessUsage>) -> Duration {
+    match (now, then) {
+        (Some(now), Some(then)) if now.id == then.id => now.cpu.saturating_sub(then.cpu),
+        (Some(now), _) => now.cpu,
+        (None, _) => Duration::ZERO,
+    }
 }
 
 impl Reading {
     fn ram_bytes(&self) -> u64 {
-        self.viewer.ram_bytes + self.core.map_or(0, |core| core.ram_bytes)
+        let helper = |usage: Option<ProcessUsage>| usage.map_or(0, |usage| usage.ram_bytes);
+        self.viewer.ram_bytes + helper(self.helpers.core) + helper(self.helpers.pdf)
     }
 
-    /// CPU time used since an earlier reading. A core started in between counts from its start.
+    /// CPU time used since an earlier reading.
     fn cpu_since(&self, earlier: &Reading) -> Duration {
-        let core = match (self.core, earlier.core) {
-            (Some(now), Some(then)) if now.id == then.id => now.cpu.saturating_sub(then.cpu),
-            (Some(now), _) => now.cpu,
-            (None, _) => Duration::ZERO,
-        };
-        self.viewer.cpu.saturating_sub(earlier.viewer.cpu) + core
+        self.viewer.cpu.saturating_sub(earlier.viewer.cpu)
+            + helper_cpu(self.helpers.core, earlier.helpers.core)
+            + helper_cpu(self.helpers.pdf, earlier.helpers.pdf)
     }
 }
 
@@ -224,7 +244,8 @@ fn log_line(
         "ram_bytes": reading.ram_bytes(),
         "cpu_percent": cpu_percent,
         "viewer": reading.viewer.to_json(),
-        "core": reading.core.map(ProcessUsage::to_json),
+        "core": reading.helpers.core.map(ProcessUsage::to_json),
+        "pdf_worker": reading.helpers.pdf.map(ProcessUsage::to_json),
     })
 }
 
@@ -260,10 +281,10 @@ impl UsageMonitor {
         &mut self,
         event: UsageEvent,
         file: Option<&ActiveFile>,
-        core: Option<ProcessUsage>,
+        helpers: Helpers,
     ) -> Option<Measured> {
         let viewer = system::own_process()?;
-        let reading = Reading { viewer, core };
+        let reading = Reading { viewer, helpers };
         Some(self.take(event, file, reading, Instant::now(), Local::now()))
     }
 
@@ -324,7 +345,7 @@ mod tests {
     fn reading(ram_mib: u64, cpu_ms: u64) -> Reading {
         Reading {
             viewer: usage(1, ram_mib, cpu_ms),
-            core: None,
+            helpers: Helpers::default(),
         }
     }
 
@@ -365,21 +386,35 @@ mod tests {
     #[test]
     fn counts_the_core_and_its_restarts() {
         let mut earlier = reading(50, 1_000);
-        earlier.core = Some(usage(7, 30, 400));
+        earlier.helpers.core = Some(usage(7, 30, 400));
         let mut now = reading(60, 1_500);
-        now.core = Some(usage(7, 34, 700));
+        now.helpers.core = Some(usage(7, 34, 700));
         assert_eq!(now.ram_bytes(), 94 * MIB);
         assert_eq!(now.cpu_since(&earlier), Duration::from_millis(800));
         // A new core counts from its start, whatever the old one had used.
-        now.core = Some(usage(8, 5, 100));
+        now.helpers.core = Some(usage(8, 5, 100));
         assert_eq!(now.cpu_since(&earlier), Duration::from_millis(600));
         // A core that started after the earlier reading.
         assert_eq!(
             now.cpu_since(&reading(50, 1_000)),
             Duration::from_millis(600)
         );
-        now.core = None;
+        now.helpers.core = None;
         assert_eq!(now.cpu_since(&earlier), Duration::from_millis(500));
+    }
+
+    #[test]
+    fn counts_the_pdf_worker_beside_the_core() {
+        let mut earlier = reading(50, 1_000);
+        earlier.helpers.pdf = Some(usage(9, 60, 2_000));
+        let mut now = reading(50, 1_000);
+        now.helpers.pdf = Some(usage(9, 64, 2_250));
+        now.helpers.core = Some(usage(7, 30, 100));
+        assert_eq!(now.ram_bytes(), (50 + 64 + 30) * MIB);
+        assert_eq!(now.cpu_since(&earlier), Duration::from_millis(350));
+        // A worker started again counts from its start.
+        now.helpers.pdf = Some(usage(11, 40, 120));
+        assert_eq!(now.cpu_since(&earlier), Duration::from_millis(220));
     }
 
     #[test]
@@ -456,7 +491,7 @@ mod tests {
         };
         monitor.take(UsageEvent::Start, None, reading(50, 1_000), start, time());
         let mut with_core = reading(60, 2_000);
-        with_core.core = Some(usage(7, 30, 1_000));
+        with_core.helpers.core = Some(usage(7, 30, 1_000));
         let measured = monitor.take(
             UsageEvent::Read,
             Some(&file),

@@ -58,6 +58,10 @@ pub enum ViewerError {
         reason: &'static str,
     },
 
+    /// The PDF renderer of Windows could not open the file or draw a page.
+    #[error("PDF error: {0}")]
+    Pdf(String),
+
     /// The cancellation flag was set and the work stopped.
     #[error("the operation was cancelled")]
     Cancelled,

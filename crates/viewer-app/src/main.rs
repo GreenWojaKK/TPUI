@@ -4,6 +4,7 @@ mod app;
 mod cell_preview;
 mod code_core;
 mod open_requests;
+mod pdf_worker;
 mod query_log;
 mod usage_log;
 mod value_detail;
@@ -16,6 +17,7 @@ mod ui {
     pub mod grid;
     pub mod json_tree;
     pub mod markdown;
+    pub mod pdf;
     pub mod schema;
     pub mod structure;
     pub mod style;

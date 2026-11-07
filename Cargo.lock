@@ -5086,6 +5086,7 @@ dependencies = [
  "embed-resource",
  "gpui",
  "gpui_platform",
+ "image",
  "rusqlite",
  "serde_json",
  "tempfile",

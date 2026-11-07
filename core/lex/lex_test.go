@@ -78,6 +78,18 @@ func TestGo(t *testing.T) {
 	check(t, Go, "0x1p-2 1_000 1.5e3 3i 0b101 = .5", "number:0x1p-2", "number:1_000", "number:1.5e3", "number:3i", "number:0b101", "number:.5")
 }
 
+func TestGoCaseMarksExportsAndNotKinds(t *testing.T) {
+	// Exported fields, variables and constants are plain names; only a defined type and the predeclared ones are types.
+	check(t, Go, "type Endpoint struct {\n\tLabel string\n\tPoint Point\n\tID, URL int\n}",
+		"keyword:type", "type:Endpoint", "keyword:struct", "type:string", "type:int")
+	check(t, Go, "var MaxWalk = 1\nconst MAX_SIZE = 2", "keyword:var", "number:1", "keyword:const", "number:2")
+	check(t, Go, "fmt.Println(r.Label, time.Duration(5))", "function:Println", "function:Duration", "number:5")
+	check(t, Go, "func (r *Router) Analyze() {}", "keyword:func", "function:Analyze")
+	// Other languages still read kinds from case.
+	check(t, Python, "Point, MAX_SIZE", "type:Point", "constant:MAX_SIZE")
+	check(t, Rust, "let p = Point::new(MAX);", "keyword:let", "type:Point", "function:new", "constant:MAX")
+}
+
 func TestRustStrings(t *testing.T) {
 	check(t, Rust, `b"a" c"b" b'c' r"d\" r#"e"f"# br##"g"#h"## cr"i"`,
 		`string:b"a"`, `string:c"b"`, `string:b'c'`, `string:r"d\"`, `string:r#"e"f"#`, `string:br##"g"#h"##`, `string:cr"i"`)

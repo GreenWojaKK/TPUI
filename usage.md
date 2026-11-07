@@ -1,6 +1,6 @@
 # TPUI Usage
 
-This guide covers opening data, navigating the viewer, inspecting values, applying find, filter and sort queries, and reading Markdown, JSON, JSON Lines and code documents. For building and running the app, see [README.md](README.md#build-and-run). For implementation details and data contracts, see [architecture.md](architecture.md).
+This guide covers opening data, navigating the viewer, inspecting values, applying find, filter and sort queries, reading Markdown, JSON, JSON Lines and code documents, and checking PDF pages. For building and running the app, see [README.md](README.md#build-and-run). For implementation details and data contracts, see [architecture.md](architecture.md).
 
 ## Screen overview
 
@@ -25,7 +25,7 @@ This guide covers opening data, navigating the viewer, inspecting values, applyi
 ## Explorer
 
 - `Open Folder` selects the root directory. Expanding a folder lists only its direct children.
-- Directories, files with the `.parquet`, `.md`, `.markdown`, `.json` or `.jsonl` extension or a [code extension](#code-documents), and SQLite databases are shown. A database is a file with the `.sqlite`, `.sqlite3`, `.db`, `.db3`, `.s3db` or `.sl3` extension that starts with the SQLite header; other `.db` files are hidden. Extensions are case-insensitive.
+- Directories, files with the `.parquet`, `.md`, `.markdown`, `.json`, `.jsonl` or `.pdf` extension or a [code extension](#code-documents), and SQLite databases are shown. A database is a file with the `.sqlite`, `.sqlite3`, `.db`, `.db3`, `.s3db` or `.sl3` extension that starts with the SQLite header; other `.db` files are hidden. Extensions are case-insensitive.
 - Expanding a database lists its tables, views and virtual tables by name. Internal `sqlite_` tables and the shadow tables of virtual tables are left out. Views are tagged `view`.
 - Directories come first, then names in order within each kind. Symbolic links and directory junctions are not followed automatically.
 - Double-clicking a Parquet file, a document or a table, or selecting it and pressing Enter, opens it in a tab. A single click expands a folder or database.
@@ -35,7 +35,7 @@ This guide covers opening data, navigating the viewer, inspecting values, applyi
 
 - `Open File` or `Ctrl+O` opens the native file dialog. Cancelling keeps the current state.
 - A file given on the command line, as Windows does for a file associated with the viewer, opens the same way. When a viewer is already running, the file opens as a tab there and that window comes to the front; several files opened at once share the window. Starting the viewer without a file opens another window.
-- A selected file with the `.md`, `.markdown`, `.json` or `.jsonl` extension or a [code extension](#code-documents) opens as a [document](#markdown-documents). A selected file with the SQLite header opens its first table or view by name, and the explorer expands the database to show the others; a database without tables shows a notice in the status bar. Any other file is validated by the Parquet reader regardless of extension.
+- A selected file with the `.md`, `.markdown`, `.json`, `.jsonl` or `.pdf` extension or a [code extension](#code-documents) opens as a [document](#markdown-documents). A selected file with the SQLite header opens its first table or view by name, and the explorer expands the database to show the others; a database without tables shows a notice in the status bar. Any other file is validated by the Parquet reader regardless of extension.
 - Opening a new source creates a new tab, activates it and starts in the `Opening` state. A source is a Parquet file, a document, or a SQLite database and a table name. If the source is already open in a tab, that tab is activated. A SQLite tab is titled `table · file name`.
 - For Parquet, the footer and metadata provide the row count and schema before the first screen of data is read. Opening a SQLite table also inspects its rows to determine stored types and row positions.
 - When a file is opened directly and the explorer has no root, its parent directory becomes the explorer root. An existing root is kept.
@@ -241,18 +241,27 @@ Every applied query goes to the query log, `%LOCALAPPDATA%\TPUI\query-log\<date>
 - The status bar shows the language, line count and size. When `tpui-core.exe` cannot run or keeps ending, it says why and the file stays readable as plain text.
 - A file holding a NUL byte is treated as binary and shows the reason.
 
+## PDF documents
+
+- A file with the `.pdf` extension opens as its pages, one under another, at the width of the view up to 960 pixels. The view is for checking how a PDF came out: it has no zoom, text selection, find or links.
+- Windows draws the pages with its built-in PDF engine, in `tpui-pdf.exe`. This program runs while a PDF tab is shown and stays between PDF tabs; showing another kind of tab ends it, and coming back to a PDF tab starts it again.
+- Pages are drawn as they come near the screen. Pages far from the screen are released, and resizing the window draws the pages on screen again at the new width.
+- The wheel, arrow keys, `Page Up`, `Page Down`, `Ctrl+Home` and `Ctrl+End` scroll. A vertical scrollbar follows the document.
+- The status bar shows the page count and the page in the middle of the view.
+- A file Windows cannot read as a PDF shows the reason and `Retry`. When `tpui-pdf.exe` cannot start or ends, the tab says so, and `Retry` starts it again.
+
 ## How documents are read
 
 - A document's file is read when its tab is shown and released when another tab is shown; the tab remembers its scroll position, or its expanded values and selection. Nothing about a document is stored on disk.
 - While a document is shown, its file is checked every 0.5 seconds. A change is shown once the file has stayed the same for one more check, at the same place in the document. A file that can no longer be read shows the reason and `Retry`, and a later change is picked up by itself.
-- Files must be UTF-8; a UTF-8 byte order mark is dropped. Other encodings show the reason.
+- Text files must be UTF-8; a UTF-8 byte order mark is dropped. Other encodings show the reason.
 - The viewer never writes to these files.
 - Find, filter, sort and queries work on Parquet and SQLite tabs. On a document tab, `Ctrl+F` and queries show a notice in the status bar.
 
 ## Memory and CPU use
 
 - The status bar's `Usage` button shows what the viewer uses at that moment, such as `88.6 MiB · CPU 0.3% · 14:32:10`. Pressing it again takes a new reading; the shown values and their time stay until then.
-- Memory is the working set of the viewer and `tpui-core` together; GPU memory is not in it. CPU is their share of the whole machine since the previous reading.
+- Memory is the working set of the viewer, `tpui-core` and `tpui-pdf` together; GPU memory is not in it. CPU is their share of the whole machine since the previous reading.
 - Readings go to `%LOCALAPPDATA%\TPUI\usage-log\<date>.jsonl`, one JSON line each: at start and quit, when a data source opens or a document is read or read again, when another data tab becomes active, when a read code file's first tokens arrive, and at each press of the button. Once a minute a reading is written if memory has moved by a whole MiB or CPU by a tenth of a percent.
 - A line holds the local time, the event, the file on screen and its size, the memory total and the CPU share, and for each process its id, working set, largest working set and CPU seconds. The log opens in the viewer as a [JSON Lines document](#json-lines-documents), and the user deletes old files when they want to.
 - Readings work on Windows. Where a line cannot be written, the button's text ends with `not logged`.

@@ -96,6 +96,9 @@ type Language struct {
 	dollarNames bool
 	// capitalCallIsType colors `Name(` as a type, in languages where such calls mostly construct.
 	capitalCallIsType bool
+	// caseMarksExport means the case of a name tells whether a package exports it, as in Go, and so tells nothing of
+	// its kind: `Name` is not a type and `NAME` is not a constant there.
+	caseMarksExport bool
 	// macroBang colors `name!` as a function.
 	macroBang bool
 	// dotIsMember means a `.` before a name or at the start of a number always accesses a member: `1.max` and `x?.0`.
@@ -418,7 +421,8 @@ func (s *scanner) nameKind(start int, word string) Kind {
 			return kind
 		}
 	}
-	capital := isCapitalized(word)
+	byCase := !s.lang.caseMarksExport
+	capital := byCase && isCapitalized(word)
 	switch {
 	case s.nextIsCall():
 		if capital && s.lang.capitalCallIsType {
@@ -427,7 +431,7 @@ func (s *scanner) nameKind(start int, word string) Kind {
 		return Function
 	case capital:
 		return Type
-	case !member && isAllCaps(word):
+	case !member && byCase && isAllCaps(word):
 		return Constant
 	}
 	return 0
