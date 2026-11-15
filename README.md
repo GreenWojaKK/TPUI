@@ -20,6 +20,7 @@ The viewer focuses on locating source rows, inspecting full raw values and readi
 - Find, typed filters and single-column sorting, controlled by menus or query text
 - Parquet file structure and SQLite table structure views
 - Markdown, JSON, JSON Lines and code documents, read when their tab is shown and followed as their files change
+- `Open in Editor` for Markdown and code documents, with the cursor at the selected or right-clicked place
 - Colors for Python, Go, Rust, JavaScript and TypeScript, found from the file's text alone
 - PDF pages drawn at the width of the view by a separate worker that runs while a PDF tab is shown
 - Native query input on Windows, message-file input for external programs, and query logs

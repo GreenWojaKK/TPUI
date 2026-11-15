@@ -1,24 +1,27 @@
 //! Markdown reading view. Draws only the blocks on screen, in a centered column of a comfortable width.
 //!
 //! Text wraps at spaces, so Korean words stay whole. Text can be selected with the mouse and copied. Links to the web
-//! open in the browser; nothing else in a document acts when clicked.
+//! open in the browser; nothing else in a document acts when clicked. A right click asks for the document's context
+//! menu.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, Axis, ClipboardItem, Context, DispatchPhase, Div, Entity, FocusHandle, FontWeight,
-    Hsla, ListAlignment, ListOffset, ListState, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, ObjectFit, Pixels, RetainAllImageCache, SharedString, StyledImage, TextAlign,
-    Window, actions, canvas, div, img, list, point, prelude::*, px, relative,
+    AnyElement, App, Axis, ClipboardItem, Context, DispatchPhase, Div, Entity, EventEmitter,
+    FocusHandle, FontWeight, Hsla, ListAlignment, ListOffset, ListState, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit, Pixels, RetainAllImageCache,
+    SharedString, StyledImage, TextAlign, Window, actions, canvas, div, img, list, point,
+    prelude::*, px, relative,
 };
 use viewer_core::{
-    MarkdownDocument, MdAlign, MdBlock, MdBlockKind, MdMarker, MdSourceKind, MdText,
+    MarkdownDocument, MdAlign, MdBlock, MdBlockKind, MdMarker, MdPosition, MdSourceKind, MdText,
 };
 use viewer_ui::theme;
 use viewer_ui::wrap::{RichText, RichTextEvent, TextSelection, TextSpan};
 
 use super::doc_scrollbar::{ScrollMetrics, ScrollbarDrag, scrollbar};
+use super::document::DocumentMenu;
 use super::grid::{MoveDown, MoveToFirstRow, MoveToLastRow, MoveUp, PageDown, PageUp};
 use super::style;
 use super::value::CopyValue;
@@ -46,7 +49,11 @@ pub struct MarkdownView {
     /// Images of this document. Dropped with the view.
     images: Entity<RetainAllImageCache>,
     scrollbar: ScrollbarDrag,
+    /// Where the right button went down on text, for the menu the same press opens.
+    right_at: Option<MdPosition>,
 }
+
+impl EventEmitter<DocumentMenu> for MarkdownView {}
 
 impl MarkdownView {
     pub fn new(
@@ -70,6 +77,7 @@ impl MarkdownView {
             hovered_link: None,
             images: RetainAllImageCache::new(cx),
             scrollbar: ScrollbarDrag::default(),
+            right_at: None,
         }
     }
 
@@ -92,6 +100,38 @@ impl MarkdownView {
 
     pub fn block_count(&self) -> usize {
         self.doc.blocks.len()
+    }
+
+    pub fn focus(&self, window: &mut Window, cx: &mut App) {
+        self.focus_handle.focus(window, cx);
+    }
+
+    /// Asks for the context menu at a right click. The editor's cursor goes to the start of the selection, or to the
+    /// text right-clicked when nothing is selected.
+    fn open_menu(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        self.focus_handle.focus(window, cx);
+        let clicked = self.right_at.take();
+        let selected = (!self.selection.is_empty())
+            .then(|| self.selection.ordered())
+            .flatten();
+        let at = selected.map(|(start, _)| start).or(clicked);
+        cx.emit(DocumentMenu {
+            position: event.position,
+            at: at
+                .map(|at| self.doc.source_position(at))
+                .unwrap_or_default(),
+            can_copy: selected.is_some(),
+        });
+    }
+
+    /// Copies the selected text.
+    pub fn copy_selection(&self, cx: &mut App) {
+        if let Some((start, end)) = self.selection.ordered() {
+            let text = self.doc.text_between(start, end);
+            if !text.is_empty() {
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+            }
+        }
     }
 
     fn text_event(
@@ -140,6 +180,8 @@ impl MarkdownView {
                     cx.open_url(&link);
                 }
             }
+            // The view's own handler of the same press opens the menu.
+            RichTextEvent::RightDown { index } => self.right_at = Some((text.id, index)),
         }
     }
 
@@ -162,12 +204,7 @@ impl MarkdownView {
     }
 
     fn copy(&mut self, _: &CopyValue, _window: &mut Window, cx: &mut Context<Self>) {
-        if let Some((start, end)) = self.selection.ordered() {
-            let text = self.doc.text_between(start, end);
-            if !text.is_empty() {
-                cx.write_to_clipboard(ClipboardItem::new_string(text));
-            }
-        }
+        self.copy_selection(cx);
     }
 
     fn select_all(&mut self, _: &SelectAll, _window: &mut Window, cx: &mut Context<Self>) {
@@ -528,7 +565,9 @@ impl Render for MarkdownView {
                             cx.notify();
                         }
                     }),
-                );
+                )
+                // Runs after the texts' handlers of the same press, which note the text under the mouse.
+                .on_mouse_down(MouseButton::Right, cx.listener(Self::open_menu));
         if self.doc.blocks.is_empty() {
             return container
                 .flex()

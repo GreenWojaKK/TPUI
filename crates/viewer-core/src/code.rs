@@ -3,6 +3,36 @@
 
 use std::ops::Range;
 
+/// A place in a text file: line and column, both from 1. The column counts characters. The default is the file's start.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SourcePosition {
+    pub line: usize,
+    pub column: usize,
+}
+
+impl Default for SourcePosition {
+    fn default() -> Self {
+        Self { line: 1, column: 1 }
+    }
+}
+
+/// The place of byte `offset` in `text`, given where each line starts. An offset inside a character counts from that
+/// character's start.
+pub(crate) fn source_position(text: &str, line_starts: &[usize], offset: usize) -> SourcePosition {
+    let mut offset = offset.min(text.len());
+    while !text.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    let line = line_starts
+        .partition_point(|start| *start <= offset)
+        .saturating_sub(1);
+    let start = line_starts.get(line).copied().unwrap_or(0).min(offset);
+    SourcePosition {
+        line: line + 1,
+        column: text[start..offset].chars().count() + 1,
+    }
+}
+
 /// A source file, without its byte order mark.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CodeDocument {
@@ -81,6 +111,13 @@ impl CodeDocument {
     pub fn offset(&self, line: usize, byte: usize) -> usize {
         self.line_starts[line] + byte
     }
+
+    /// The line and column of a byte in a line.
+    pub fn source_position(&self, line: usize, byte: usize) -> SourcePosition {
+        let line = line.min(self.line_count() - 1);
+        let offset = self.offset(line, byte.min(self.line_range(line).len()));
+        source_position(&self.text, &self.line_starts, offset)
+    }
 }
 
 /// Width of a line in cells.
@@ -127,6 +164,19 @@ mod tests {
             &document.text()[document.offset(0, 0)..document.offset(1, 1)],
             "가\r\nb"
         );
+    }
+
+    #[test]
+    fn counts_columns_in_characters() {
+        let document = CodeDocument::new("ab\r\n가나다\tx\n".to_string());
+        let at = |line, column| SourcePosition { line, column };
+        assert_eq!(document.source_position(0, 1), at(1, 2));
+        // Bytes 3 to 6 are 나, and the tab is one character.
+        assert_eq!(document.source_position(1, 3), at(2, 2));
+        assert_eq!(document.source_position(1, 4), at(2, 2));
+        assert_eq!(document.source_position(1, 10), at(2, 5));
+        assert_eq!(document.source_position(1, 99), at(2, 6));
+        assert_eq!(document.source_position(9, 0), at(3, 1));
     }
 
     #[test]

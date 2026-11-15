@@ -10,14 +10,16 @@ use gpui::{
 };
 use viewer_core::{
     ColumnId, DataSource, DatasetInfo, DocumentKind, Filter, FilterCondition, FilterOp, LogicOp,
-    Query, RequestId, SessionId, SortKey, ValueRequest, ViewSpec, ViewerError, WindowRequest,
-    check_condition, document_kind, filter_ops, format_condition, format_query, format_sort,
-    format_value, is_sortable, is_sqlite_file, op_text, parse_query, sqlite_objects,
+    Query, RequestId, SessionId, SortKey, SourcePosition, ValueRequest, ViewSpec, ViewerError,
+    WindowRequest, check_condition, document_kind, filter_ops, format_condition, format_query,
+    format_sort, format_value, is_sortable, is_sqlite_file, op_text, parse_query, sqlite_objects,
 };
 
 use crate::open_requests::OpenRequest;
 use crate::query_log::{Entry, Origin, QueryLog};
-use crate::ui::document::{DocumentEvent, DocumentPosition, DocumentStatus, DocumentView};
+use crate::ui::document::{
+    DocumentEvent, DocumentMenu, DocumentPosition, DocumentStatus, DocumentView,
+};
 use crate::ui::explorer::{ExplorerEvent, ExplorerView};
 use crate::ui::find_bar::{FindBar, FindBarEvent, FindStatus};
 use crate::ui::grid::{
@@ -99,6 +101,13 @@ impl TabView {
             .as_ref()
             .map_or(&self.applied, |pending| &pending.spec)
     }
+}
+
+/// What takes the focus back when a context menu closes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MenuReturn {
+    Grid,
+    Document,
 }
 
 /// Content shown in the tab body.
@@ -340,23 +349,26 @@ impl AppController {
         );
 
         let document = cx.new(|_| DocumentView::new());
-        let document_events =
-            cx.subscribe(
-                &document,
-                |this, _, event: &DocumentEvent, cx| match event {
-                    DocumentEvent::Value(detail) => this
-                        .value
-                        .update(cx, |value, cx| value.set_detail((**detail).clone(), cx)),
-                    DocumentEvent::ValueGone => this.value.update(cx, |value, cx| value.clear(cx)),
-                    DocumentEvent::Read { again: false } => {
-                        this.record_usage_soon(UsageEvent::Read, cx)
-                    }
-                    DocumentEvent::Read { again: true } => {
-                        this.record_usage_soon(UsageEvent::Reread, cx)
-                    }
-                    DocumentEvent::TokensReady => this.record_usage_soon(UsageEvent::Tokens, cx),
-                },
-            );
+        let document_events = cx.subscribe_in(
+            &document,
+            window,
+            |this, _, event: &DocumentEvent, window, cx| match event {
+                DocumentEvent::Menu { path, menu } => {
+                    this.open_document_menu(path.clone(), *menu, window, cx)
+                }
+                DocumentEvent::Value(detail) => this
+                    .value
+                    .update(cx, |value, cx| value.set_detail((**detail).clone(), cx)),
+                DocumentEvent::ValueGone => this.value.update(cx, |value, cx| value.clear(cx)),
+                DocumentEvent::Read { again: false } => {
+                    this.record_usage_soon(UsageEvent::Read, cx)
+                }
+                DocumentEvent::Read { again: true } => {
+                    this.record_usage_soon(UsageEvent::Reread, cx)
+                }
+                DocumentEvent::TokensReady => this.record_usage_soon(UsageEvent::Tokens, cx),
+            },
+        );
         let document_changes = cx.observe(&document, |_, _, cx| cx.notify());
 
         let value = cx.new(ValueView::new);
@@ -1102,7 +1114,7 @@ impl AppController {
         match target {
             MenuTarget::Header(column) => {
                 if let Some(menu) = self.header_menu(column, cx) {
-                    self.show_menu(menu, position, window, cx);
+                    self.show_menu(menu, position, MenuReturn::Grid, window, cx);
                 }
             }
             // Selecting the cell already requested its value. The menu opens once the value arrives as filter input.
@@ -1120,6 +1132,7 @@ impl AppController {
         &mut self,
         menu: Entity<Menu>,
         position: Point<Pixels>,
+        back_to: MenuReturn,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1130,15 +1143,68 @@ impl AppController {
         let subscription = cx.subscribe_in(
             &menu,
             window,
-            |this, _, MenuEvent::Dismissed, window, cx| {
+            move |this, _, MenuEvent::Dismissed, window, cx| {
                 if this.context_menu.take().is_some() {
-                    this.grid.update(cx, |grid, cx| grid.focus(window, cx));
+                    match back_to {
+                        MenuReturn::Grid => this.grid.update(cx, |grid, cx| grid.focus(window, cx)),
+                        MenuReturn::Document => this
+                            .document
+                            .update(cx, |document, cx| document.focus(window, cx)),
+                    }
                     cx.notify();
                 }
             },
         );
         self.context_menu = Some((menu, position, subscription));
         cx.notify();
+    }
+
+    /// Copying the selection and opening the file in an editor at the place right-clicked.
+    fn open_document_menu(
+        &mut self,
+        path: PathBuf,
+        menu: DocumentMenu,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.context_menu = None;
+        let this = cx.entity().downgrade();
+        let document = self.document.downgrade();
+        let entity = cx.new(|cx| {
+            let mut items = Menu::new(cx);
+            if menu.can_copy {
+                items = items.item("Copy", move |_, cx| {
+                    document
+                        .update(cx, |document, cx| document.copy_selection(cx))
+                        .ok();
+                });
+            }
+            items.separator().item("Open in Editor", move |_, cx| {
+                this.update(cx, |this, cx| {
+                    this.open_in_editor(path.clone(), menu.at, cx)
+                })
+                .ok();
+            })
+        });
+        self.show_menu(entity, menu.position, MenuReturn::Document, window, cx);
+    }
+
+    /// Opens the file in the user's editor with the cursor at `at`. The editor saves the file, and the document view
+    /// reads it again when it changes.
+    fn open_in_editor(&mut self, path: PathBuf, at: SourcePosition, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            let opened = cx
+                .background_spawn(async move { crate::editor::open_in_editor(&path, at) })
+                .await;
+            if let Err(reason) = opened {
+                this.update(cx, |this, cx| {
+                    this.notice = Some(format!("Cannot open an editor: {reason}").into());
+                    cx.notify();
+                })
+                .ok();
+            }
+        })
+        .detach();
     }
 
     /// Sort and null filters of a column, and removal of its conditions.
@@ -1616,7 +1682,7 @@ impl AppController {
             }
             menu
         });
-        self.show_menu(menu, position, window, cx);
+        self.show_menu(menu, position, MenuReturn::Grid, window, cx);
     }
 
     /// The active tab's query as text: its target conditions and, while the find bar is open, the find value.
@@ -1719,7 +1785,7 @@ impl AppController {
             }
             menu
         });
-        self.show_menu(menu, position, window, cx);
+        self.show_menu(menu, position, MenuReturn::Grid, window, cx);
     }
 
     fn set_join(&mut self, clause: usize, ix: usize, op: LogicOp, cx: &mut Context<Self>) {
@@ -2187,7 +2253,7 @@ impl AppController {
                 {
                     self.pending_cell_menu = None;
                     if let Some(menu) = self.cell_menu(column, value, cx) {
-                        self.show_menu(menu, position, window, cx);
+                        self.show_menu(menu, position, MenuReturn::Grid, window, cx);
                     }
                 }
             }

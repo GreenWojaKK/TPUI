@@ -103,6 +103,7 @@ This guide covers opening data, navigating the viewer, inspecting values, applyi
 - Right-clicking a cell selects it and opens its menu once the cell's full value is read. A cell with a value offers conditions comparing the column with that value (`=`, `≠`, and `>`, `≥`, `<`, `≤` where the column type allows them), `Find` and `Copy Value`. A Null cell offers `Only Nulls` and `Exclude Nulls`. Nested values offer no conditions.
 - Condition items act with modifier keys: Shift+click joins the column's conditions with `or`, and Alt+click adds the opposite condition. While the menu is open, the labels follow the keys held, so they show what a click adds. A condition already in the filter is marked `✓`.
 - Conditions use the cell's full value. The value text is the copy text of the cell: strings as is, Binary as lowercase hexadecimal, other values as displayed, which parses back to the same value.
+- Right-clicking a Markdown or code document opens its menu: `Copy` while text is selected, and `Open in Editor` (see [Editing documents](#editing-documents)).
 - Choosing an item applies it and closes the menu. Clicking outside or `Esc` closes the menu without an action.
 
 ## Filter
@@ -257,6 +258,15 @@ Every applied query goes to the query log, `%LOCALAPPDATA%\TPUI\query-log\<date>
 - Text files must be UTF-8; a UTF-8 byte order mark is dropped. Other encodings show the reason.
 - The viewer never writes to these files.
 - Find, filter, sort and queries work on Parquet and SQLite tabs. On a document tab, `Ctrl+F` and queries show a notice in the status bar.
+
+## Editing documents
+
+- `Open in Editor` in the menu of a Markdown or code document opens its file in the user's editor. The cursor goes to the start of the selection, or to the place right-clicked when nothing is selected.
+- In a Markdown document the cursor goes to the same place in the source, such as inside the backticks of inline code. Right-clicking outside the text opens the file at its start.
+- The editor is `$VISUAL`, then `$EDITOR`, then the app the system opens the file with: `xdg-open` on Linux, and on Windows the app registered for the extension, or Notepad when there is none.
+- The cursor's place reaches vim, Neovim, nano, gedit, Emacs, VS Code, VSCodium, Cursor and Notepad++, and vi gets the line. Other editors open the file at its start.
+- vi, vim, Neovim, nano, micro, Helix and Kakoune open in a terminal window of their own. On Linux the terminal is `$TERMINAL`, or the first found of `x-terminal-emulator`, `gnome-terminal`, `konsole`, `xfce4-terminal`, `alacritty`, `kitty`, `foot`, `wezterm` and `xterm`; on Windows it is a new console window.
+- The editor saves the file, and the open document shows the change once the file settles. An editor that cannot start shows the reason in the status bar.
 
 ## Memory and CPU use
 

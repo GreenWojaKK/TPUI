@@ -3,6 +3,7 @@
 mod app;
 mod cell_preview;
 mod code_core;
+mod editor;
 mod open_requests;
 mod pdf_worker;
 mod query_log;

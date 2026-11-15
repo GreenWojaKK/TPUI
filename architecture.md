@@ -155,7 +155,7 @@ flowchart TB
 | `GridView` | The active tab's logical scroll position, visible row and column ranges, cell previews and source row numbers, sort and filter marks in headers, input and rendering |
 | `ValueView` | Value tree nodes and expansion, selected node, body value and display line index, body scroll position |
 | `DocumentView` | The active tab's document, its file's last stamp, the Markdown, JSON, code or PDF view showing it, and the connections to the code core and the PDF worker |
-| `MarkdownView` | The parsed document, list state, text selection, the link under the mouse, the document's images |
+| `MarkdownView` | The parsed document, list state, text selection, the link under the mouse, the text under the last right click, the document's images |
 | `JsonView` | The parsed document, expanded paths, selected path, flattened rows, scroll position |
 | `CodeView` | The file's text, scroll position, text selection, the tokens around the screen and the bytes asked for |
 | `CodeCore` | The `tpui-core` process, the latest request waiting to be sent, and the threads writing requests and reading answers |
@@ -195,7 +195,7 @@ Charts and maps in `viewer-ui` are drawn directly as GPUI custom `Element`s.
 
 `WrappedText` wraps only at whitespace and newlines, the way CSS `word-break: keep-all` sets Korean text; no-break spaces join their neighbours, and only a word wider than the whole line is broken between graphemes. It fills its parent's width and requests a measured layout, so its height follows its line count. Line widths are measured with `layout_line`, whose results GPUI caches across frames.
 
-`RichText` wraps by the same rules and draws runs of different fonts, weights, colors and backgrounds. Widths are measured with each run's font, a word wider than a line is split by a search among the graphemes that can fit, and a selection is painted between the backgrounds and the glyphs. It reports the mouse as byte positions of its text. `TextSelection` turns those reports into a selection across the numbered texts of a view: press, drag and release, words and whole texts by click count, and the selected bytes of each text. For code it keeps every space and line, continues long lines on the next line, and draws tabs as spaces up to the next tab stop while reporting positions in the original text.
+`RichText` wraps by the same rules and draws runs of different fonts, weights, colors and backgrounds. Widths are measured with each run's font, a word wider than a line is split by a search among the graphemes that can fit, and a selection is painted between the backgrounds and the glyphs. It reports the mouse as byte positions of its text, and a right press as `RightDown` before the press reaches the elements around the text. `TextSelection` turns those reports into a selection across the numbered texts of a view: press, drag and release, words and whole texts by click count, and the selected bytes of each text. For code it keeps every space and line, continues long lines on the next line, and draws tabs as spaces up to the next tab stop while reporting positions in the original text.
 
 `table::row` has a fixed height for `uniform_list`, and text that does not fit is truncated and shown in a tooltip. `table::wrapped_row` puts each cell in a `WrappedText`, so a row grows to fit its longest cell; it is for short tables of sentences laid out in an ordinary column. `table::element_header` and `table::element_row` lay out cells the caller draws, such as selectable text. Table functions take column names as `&'static str` or as `SharedString` known only at run time.
 
@@ -230,6 +230,7 @@ TPUI/
     │       ├── worker.rs
     │       ├── cell_preview.rs
     │       ├── code_core.rs
+    │       ├── editor.rs
     │       ├── pdf_worker.rs
     │       ├── value_detail.rs
     │       ├── query_log.rs
@@ -686,6 +687,14 @@ While a document is shown, the controller's 500ms poll asks `DocumentView` to ch
 `CodeView` draws through a custom element. Every line has one height and stays on one row, so the scroll position alone gives the lines on screen, and only those are shaped. A line is shaped up to `MAX_DRAWN_LINE_BYTES` with a note of what is left. The scroll range follows the widest drawn line.
 
 The text is on screen before any token exists. During layout the view compares the bytes on screen with the tokens it holds and the bytes already asked for; when neither covers them it emits `NeedTokens` for the lines on screen plus `TOKEN_MARGIN_LINES` on each side. A token crossing lines, such as a block comment, colors each line it touches. A token that does not fit the text is left out, and `style::token_color` turns its kind into a color.
+
+### Opening an editor
+
+A right click in `MarkdownView` or `CodeView` emits a `DocumentMenu`: the window position, a `SourcePosition` (line and column from 1, the column in characters) and whether text is selected. The position is the selection's start, or the place right-clicked. `MarkdownView` notes the text under the mouse from `RichTextEvent::RightDown` and opens the menu from its container's handler of the same press, which GPUI runs after the texts' handlers. `DocumentView` adds the path, and `AppController` shows `Copy` and `Open in Editor` and gives the focus back to the document when the menu closes.
+
+`MarkdownDocument` keeps, per text, the source range of each piece the text was built from, narrowed to where the piece's text is written, such as between backticks. `source_position` maps a `(number, byte)` position through those pieces to a line and column of the source with its line breaks as `\n`, which keeps the file's line count. `CodeDocument::source_position` uses the document's line starts.
+
+`editor::open_in_editor` runs in a background task. It splits `$VISUAL` or `$EDITOR` into words, recognizes the editor by its program name and adds the position in that editor's form. A terminal editor starts through a terminal program on Linux, and through `cmd /c start` on Windows, which gives it a console of its own. Without either variable the file goes to `xdg-open`, or on Windows to `ShellExecuteW` when `AssocQueryStringW` finds an app for the extension and to Notepad otherwise, on a thread that initializes COM. Started processes get none of the viewer's standard streams, and a thread waits for each so that none lingers after it ends. The editor writes the file, and the document's change watch reads it again.
 
 ### Code core
 

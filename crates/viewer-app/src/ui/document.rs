@@ -10,10 +10,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui::{
-    ClickEvent, Context, Entity, EventEmitter, ListOffset, SharedString, Subscription, Task,
-    Window, div, prelude::*,
+    App, ClickEvent, Context, Entity, EventEmitter, ListOffset, Pixels, Point, SharedString,
+    Subscription, Task, Window, div, prelude::*,
 };
-use viewer_core::{Document, DocumentKind, FileStamp, ViewerError, file_stamp, read_document};
+use viewer_core::{
+    Document, DocumentKind, FileStamp, SourcePosition, ViewerError, file_stamp, read_document,
+};
 use viewer_ui::format::{format_bytes, format_quantity};
 use viewer_ui::theme;
 
@@ -47,9 +49,20 @@ pub enum DocumentStatus {
     Failed,
 }
 
+/// A right click in a Markdown or code document: where the menu opens, where an editor's cursor should go, and whether
+/// text is selected.
+#[derive(Clone, Copy, Debug)]
+pub struct DocumentMenu {
+    pub position: Point<Pixels>,
+    pub at: SourcePosition,
+    pub can_copy: bool,
+}
+
 pub enum DocumentEvent {
     /// The selected JSON value, for the Value panel.
     Value(Box<ValueDetail>),
+    /// The document's context menu was asked for.
+    Menu { path: PathBuf, menu: DocumentMenu },
     /// The file could not be read, so no value is selected.
     ValueGone,
     /// A read finished. `again` tells a read after a change from the first read in this tab.
@@ -382,7 +395,11 @@ impl DocumentView {
                         _ => None,
                     };
                     let path = self.path.clone().unwrap_or_default();
-                    self.body = Body::Markdown(cx.new(|cx| MarkdownView::new(doc, &path, top, cx)));
+                    let view = cx.new(|cx| MarkdownView::new(doc, &path, top, cx));
+                    self._body_events = Some(cx.subscribe(&view, |this, _, menu, cx| {
+                        this.ask_for_menu(*menu, cx);
+                    }));
+                    self.body = Body::Markdown(view);
                 }
             }
             Ok(Document::Json(doc)) => {
@@ -413,11 +430,13 @@ impl DocumentView {
                         _ => CodeScroll::default(),
                     };
                     let view = cx.new(|cx| CodeView::new(doc, scroll, cx));
-                    self._body_events =
-                        Some(cx.subscribe(&view, |this, _, event: &CodeEvent, cx| {
-                            let CodeEvent::NeedTokens(range) = event;
-                            this.request_tokens(range.clone(), cx);
-                        }));
+                    self._body_events = Some(cx.subscribe(
+                        &view,
+                        |this, _, event: &CodeEvent, cx| match event {
+                            CodeEvent::NeedTokens(range) => this.request_tokens(range.clone(), cx),
+                            CodeEvent::Menu(menu) => this.ask_for_menu(*menu, cx),
+                        },
+                    ));
                     self.body = Body::Code(view);
                 }
             }
@@ -449,6 +468,30 @@ impl DocumentView {
         }
         cx.emit(DocumentEvent::Read { again });
         cx.notify();
+    }
+
+    fn ask_for_menu(&mut self, menu: DocumentMenu, cx: &mut Context<Self>) {
+        if let Some(path) = self.path.clone() {
+            cx.emit(DocumentEvent::Menu { path, menu });
+        }
+    }
+
+    /// Focuses the document, as after its context menu closes.
+    pub fn focus(&self, window: &mut Window, cx: &mut App) {
+        match &self.body {
+            Body::Markdown(view) => view.update(cx, |view, cx| view.focus(window, cx)),
+            Body::Code(view) => view.update(cx, |view, cx| view.focus(window, cx)),
+            _ => {}
+        }
+    }
+
+    /// Copies the selected text of a Markdown or code document.
+    pub fn copy_selection(&self, cx: &mut App) {
+        match &self.body {
+            Body::Markdown(view) => view.update(cx, |view, cx| view.copy_selection(cx)),
+            Body::Code(view) => view.update(cx, |view, cx| view.copy_selection(cx)),
+            _ => {}
+        }
     }
 
     /// Checks the file in a background task, and reads it again once it has changed.

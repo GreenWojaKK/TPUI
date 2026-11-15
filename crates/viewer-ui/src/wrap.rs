@@ -361,6 +361,11 @@ pub enum RichTextEvent {
         index: usize,
         click_count: usize,
     },
+    /// The right button went down, as for a context menu. It comes before the press reaches the views around the
+    /// text.
+    RightDown {
+        index: usize,
+    },
     /// `pressed` tells whether the left button is held.
     Move {
         index: usize,
@@ -940,19 +945,21 @@ impl Element for RichText {
 
         let (on_down, lines, area) = (listener.clone(), layout.lines.clone(), hitbox.clone());
         window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
-            if phase == DispatchPhase::Bubble
-                && event.button == MouseButton::Left
-                && area.is_hovered(window)
-            {
-                let index = index_at(&lines, bounds, line_height, align, event.position);
-                on_down(
+            if phase != DispatchPhase::Bubble || !area.is_hovered(window) {
+                return;
+            }
+            let index = index_at(&lines, bounds, line_height, align, event.position);
+            match event.button {
+                MouseButton::Left => on_down(
                     RichTextEvent::Down {
                         index,
                         click_count: event.click_count,
                     },
                     window,
                     cx,
-                );
+                ),
+                MouseButton::Right => on_down(RichTextEvent::RightDown { index }, window, cx),
+                _ => {}
             }
         });
 

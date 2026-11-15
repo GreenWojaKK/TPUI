@@ -1,7 +1,7 @@
 //! Code reading view. Lines have one height and do not wrap, so a file of any length draws only the lines on screen.
 //!
 //! The text shows at once. Colors come from the code core for the lines around the screen, and whatever has no colors yet,
-//! or never gets any, stays plain text.
+//! or never gets any, stays plain text. A right click asks for the document's context menu.
 
 use std::cell::Cell;
 use std::ops::Range;
@@ -20,6 +20,7 @@ use viewer_ui::theme;
 use viewer_ui::wrap::{TabStop, TextSelection, drawn_index, expand_tabs, text_index};
 
 use super::doc_scrollbar::{ScrollMetrics, ScrollbarDrag, scrollbar};
+use super::document::DocumentMenu;
 use super::grid::{
     MoveDown, MoveLeft, MoveRight, MoveToFirstRow, MoveToLastRow, MoveUp, PageDown, PageUp,
 };
@@ -44,6 +45,7 @@ const DRAG_SCROLL_SHARE: f64 = 0.5;
 pub enum CodeEvent {
     /// The view needs the tokens touching these bytes.
     NeedTokens(Range<usize>),
+    Menu(DocumentMenu),
 }
 
 /// Scroll position kept while another tab is shown.
@@ -360,6 +362,39 @@ impl CodeView {
         );
     }
 
+    pub fn focus(&self, window: &mut Window, cx: &mut App) {
+        self.focus_handle.focus(window, cx);
+    }
+
+    /// Asks for the context menu at a right click on `clicked`, a line and a byte in it. The editor's cursor goes to the
+    /// start of the selection, or to the place right-clicked when nothing is selected.
+    fn open_menu(
+        &mut self,
+        position: Point<Pixels>,
+        clicked: Option<(usize, usize)>,
+        cx: &mut Context<Self>,
+    ) {
+        let selected = self.selected_bytes().and(self.selection.ordered());
+        let at = selected
+            .map(|(start, _)| (start.0 as usize, start.1))
+            .or(clicked)
+            .map(|(line, byte)| self.doc.source_position(line, byte))
+            .unwrap_or_default();
+        cx.emit(CodeEvent::Menu(DocumentMenu {
+            position,
+            at,
+            can_copy: selected.is_some(),
+        }));
+    }
+
+    /// Copies the selected text.
+    pub fn copy_selection(&self, cx: &mut App) {
+        if let Some(bytes) = self.selected_bytes() {
+            let text = self.doc.text()[bytes].to_string();
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
+    }
+
     /// The selection as a range of the file's bytes.
     fn selected_bytes(&self) -> Option<Range<usize>> {
         let (start, end) = self.selection.ordered()?;
@@ -371,10 +406,7 @@ impl CodeView {
     }
 
     fn copy(&mut self, _: &CopyValue, _window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(bytes) = self.selected_bytes() {
-            let text = self.doc.text()[bytes].to_string();
-            cx.write_to_clipboard(ClipboardItem::new_string(text));
-        }
+        self.copy_selection(cx);
     }
 
     fn select_all(&mut self, _: &SelectAll, _window: &mut Window, cx: &mut Context<Self>) {
@@ -761,19 +793,23 @@ impl CodeElement {
         let (view, hitbox) = (self.view.clone(), layout.hitbox.clone());
         let (lines, down_doc) = (layout.lines.clone(), doc.clone());
         window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
-            if phase != DispatchPhase::Bubble
-                || event.button != MouseButton::Left
-                || !hitbox.is_hovered(window)
-            {
+            if phase != DispatchPhase::Bubble || !hitbox.is_hovered(window) {
                 return;
             }
             let at = geometry.position_in(&lines, &down_doc, event.position);
-            view.update(cx, |view, cx| {
-                view.focus_handle.focus(window, cx);
-                if let Some((line, index)) = at {
-                    view.mouse_down(line, index, event.click_count, cx);
-                }
-            });
+            match event.button {
+                MouseButton::Left => view.update(cx, |view, cx| {
+                    view.focus_handle.focus(window, cx);
+                    if let Some((line, index)) = at {
+                        view.mouse_down(line, index, event.click_count, cx);
+                    }
+                }),
+                MouseButton::Right => view.update(cx, |view, cx| {
+                    view.focus_handle.focus(window, cx);
+                    view.open_menu(event.position, at, cx);
+                }),
+                _ => {}
+            }
         });
 
         let view = self.view.clone();

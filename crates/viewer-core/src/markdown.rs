@@ -9,6 +9,8 @@ use std::sync::Arc;
 
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 
+use crate::code::{SourcePosition, source_position};
+
 /// Inline styles of a run of text.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MdStyle {
@@ -132,11 +134,42 @@ impl MdBlock {
 /// A position in the document's text: the text's number and a byte within it.
 pub type MdPosition = (u32, usize);
 
+/// Where a piece of a text came from: its first byte in the text and the source bytes it was read from.
+type Piece = (usize, Range<usize>);
+
+/// Where the pieces of one text came from in the source, in order.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct TextSource {
+    /// The source byte for a text with no pieces.
+    start: usize,
+    pieces: Vec<Piece>,
+}
+
+impl TextSource {
+    /// The source byte that a byte of the text came from. Text shown longer than its source, such as a footnote
+    /// reference, maps its extra bytes to the end of the source piece.
+    fn offset(&self, index: usize) -> usize {
+        let ix = self.pieces.partition_point(|(at, _)| *at <= index);
+        match ix.checked_sub(1).map(|ix| &self.pieces[ix]) {
+            Some((at, source)) => source.start + (index - at).min(source.len()),
+            None => self
+                .pieces
+                .first()
+                .map_or(self.start, |(_, source)| source.start),
+        }
+    }
+}
+
 /// A parsed Markdown file.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MarkdownDocument {
     pub blocks: Vec<MdBlock>,
     text_count: u32,
+    /// The source with line breaks as `\n`. Positions from [`Self::source_position`] refer to it.
+    source: Arc<str>,
+    line_starts: Vec<usize>,
+    /// Indexed by text number.
+    sources: Vec<TextSource>,
 }
 
 impl MarkdownDocument {
@@ -157,14 +190,37 @@ impl MarkdownDocument {
             | Options::ENABLE_MATH
             | Options::ENABLE_YAML_STYLE_METADATA_BLOCKS;
         let mut builder = Builder::default();
-        for event in Parser::new_ext(source, options) {
+        for (event, range) in Parser::new_ext(source, options).into_offset_iter() {
+            builder.at = match &event {
+                Event::Text(text)
+                | Event::Code(text)
+                | Event::Html(text)
+                | Event::InlineHtml(text) => narrowed(source, text, range),
+                _ => range,
+            };
             builder.event(event);
         }
         builder.flush_inline();
+        let line_starts = std::iter::once(0)
+            .chain(source.match_indices('\n').map(|(ix, _)| ix + 1))
+            .collect();
         Self {
             blocks: builder.blocks,
             text_count: builder.next_text,
+            source: source.into(),
+            line_starts,
+            sources: builder.sources,
         }
+    }
+
+    /// The line and column in the file of a position in the text. A position in text shown differently from its
+    /// source, such as an escape or a footnote reference, lands at or next to its source.
+    pub fn source_position(&self, position: MdPosition) -> SourcePosition {
+        let offset = self
+            .sources
+            .get(position.0 as usize)
+            .map_or(0, |source| source.offset(position.1));
+        source_position(&self.source, &self.line_starts, offset)
     }
 
     /// First and last positions of the document's text, or `None` when it has none.
@@ -213,6 +269,17 @@ impl MarkdownDocument {
     }
 }
 
+/// The part of an event's source that holds its text as written, such as the code between backticks. A text written
+/// differently from how it shows, such as an entity, keeps the event's whole source.
+fn narrowed(source: &str, text: &str, range: Range<usize>) -> Range<usize> {
+    source
+        .get(range.clone())
+        .and_then(|written| written.find(text))
+        .map_or(range.clone(), |at| {
+            range.start + at..range.start + at + text.len()
+        })
+}
+
 /// List items and table rows follow each other without a blank line when copied.
 fn is_tight(block: &MdBlock) -> bool {
     block.list_depth > 0 || matches!(block.kind, MdBlockKind::TableRow { .. })
@@ -222,6 +289,7 @@ fn is_tight(block: &MdBlock) -> bool {
 struct Inline {
     text: String,
     spans: Vec<MdSpan>,
+    pieces: Vec<Piece>,
     bold: u32,
     italic: u32,
     strikethrough: u32,
@@ -237,11 +305,12 @@ impl Inline {
         self.text.is_empty() && self.images.is_empty()
     }
 
-    fn push(&mut self, text: &str, code: bool, muted: bool) {
+    fn push(&mut self, text: &str, source: Range<usize>, code: bool, muted: bool) {
         if text.is_empty() {
             return;
         }
         let start = self.text.len();
+        self.pieces.push((start, source));
         self.text.push_str(text);
         let style = MdStyle {
             bold: self.bold > 0,
@@ -288,6 +357,9 @@ enum Verbatim {
 struct Builder {
     blocks: Vec<MdBlock>,
     next_text: u32,
+    /// Source bytes of the event being read.
+    at: Range<usize>,
+    sources: Vec<TextSource>,
     quote_depth: u16,
     /// Open lists and footnotes, with the next number of ordered lists.
     lists: Vec<Option<u64>>,
@@ -295,13 +367,17 @@ struct Builder {
     inline: Inline,
     heading: Option<u8>,
     table: Option<TableBuilder>,
-    verbatim: Option<(Verbatim, String)>,
+    verbatim: Option<(Verbatim, String, Vec<Piece>)>,
 }
 
 impl Builder {
-    fn text(&mut self, text: String, spans: Vec<MdSpan>) -> MdText {
+    fn text(&mut self, text: String, spans: Vec<MdSpan>, pieces: Vec<Piece>) -> MdText {
         let id = self.next_text;
         self.next_text += 1;
+        self.sources.push(TextSource {
+            start: self.at.start,
+            pieces,
+        });
         MdText {
             id,
             text: text.into(),
@@ -339,7 +415,7 @@ impl Builder {
             }
             return;
         }
-        let text = self.text(inline.text, inline.spans);
+        let text = self.text(inline.text, inline.spans, inline.pieces);
         self.push_block(MdBlockKind::Paragraph(text));
     }
 
@@ -364,15 +440,23 @@ impl Builder {
                         .filter(|language| !language.is_empty()),
                     CodeBlockKind::Indented => None,
                 };
-                self.verbatim = Some((Verbatim::Code(language), String::new()));
+                self.verbatim = Some((Verbatim::Code(language), String::new(), Vec::new()));
             }
             Tag::HtmlBlock => {
                 self.flush_inline();
-                self.verbatim = Some((Verbatim::Source(MdSourceKind::Html), String::new()));
+                self.verbatim = Some((
+                    Verbatim::Source(MdSourceKind::Html),
+                    String::new(),
+                    Vec::new(),
+                ));
             }
             Tag::MetadataBlock(_) => {
                 self.flush_inline();
-                self.verbatim = Some((Verbatim::Source(MdSourceKind::Metadata), String::new()));
+                self.verbatim = Some((
+                    Verbatim::Source(MdSourceKind::Metadata),
+                    String::new(),
+                    Vec::new(),
+                ));
             }
             Tag::List(first) => {
                 self.flush_inline();
@@ -426,7 +510,7 @@ impl Builder {
             TagEnd::Heading(_) => {
                 let inline = std::mem::take(&mut self.inline);
                 let level = self.heading.take().unwrap_or(1);
-                let text = self.text(inline.text, inline.spans);
+                let text = self.text(inline.text, inline.spans, inline.pieces);
                 self.push_block(MdBlockKind::Heading { level, text });
             }
             TagEnd::BlockQuote(_) => {
@@ -434,11 +518,11 @@ impl Builder {
                 self.quote_depth = self.quote_depth.saturating_sub(1);
             }
             TagEnd::CodeBlock | TagEnd::HtmlBlock | TagEnd::MetadataBlock(_) => {
-                if let Some((kind, mut text)) = self.verbatim.take() {
+                if let Some((kind, mut text, pieces)) = self.verbatim.take() {
                     if text.ends_with('\n') {
                         text.pop();
                     }
-                    let text = self.text(text, Vec::new());
+                    let text = self.text(text, Vec::new(), pieces);
                     self.push_block(match kind {
                         Verbatim::Code(language) => MdBlockKind::Code { language, text },
                         Verbatim::Source(kind) => MdBlockKind::Source { kind, text },
@@ -453,7 +537,7 @@ impl Builder {
                 self.flush_inline();
                 // An empty item still shows its marker.
                 if self.marker.is_some() {
-                    let text = self.text(String::new(), Vec::new());
+                    let text = self.text(String::new(), Vec::new(), Vec::new());
                     self.push_block(MdBlockKind::Paragraph(text));
                 }
                 if tag == TagEnd::FootnoteDefinition {
@@ -462,7 +546,7 @@ impl Builder {
             }
             TagEnd::TableCell => {
                 let inline = std::mem::take(&mut self.inline);
-                let text = self.text(inline.text, inline.spans);
+                let text = self.text(inline.text, inline.spans, inline.pieces);
                 if let Some(table) = &mut self.table {
                     table.row.push(text);
                 }
@@ -512,26 +596,30 @@ impl Builder {
     }
 
     fn event(&mut self, event: Event<'_>) {
+        let at = self.at.clone();
         match event {
             Event::Start(tag) => self.start(tag),
             Event::End(tag) => self.end(tag),
-            Event::Text(text) => match &mut self.verbatim {
-                Some((_, buffer)) => buffer.push_str(&text),
-                None => self.inline.push(&text, false, false),
-            },
-            Event::Code(text) => self.inline.push(&text, true, false),
-            Event::InlineMath(text) => self.inline.push(&format!("${text}$"), true, false),
-            Event::DisplayMath(text) => self.inline.push(&format!("$${text}$$"), true, false),
-            Event::Html(text) => match &mut self.verbatim {
-                Some((_, buffer)) => buffer.push_str(&text),
-                None => self.inline.push(&text, false, true),
-            },
-            Event::InlineHtml(text) => self.inline.push(&text, false, true),
-            Event::FootnoteReference(label) => {
-                self.inline.push(&format!("[{label}]"), false, true);
+            Event::Text(text) | Event::Html(text) if self.verbatim.is_some() => {
+                if let Some((_, buffer, pieces)) = &mut self.verbatim {
+                    pieces.push((buffer.len(), at));
+                    buffer.push_str(&text);
+                }
             }
-            Event::SoftBreak => self.inline.push(" ", false, false),
-            Event::HardBreak => self.inline.push("\n", false, false),
+            Event::Text(text) => self.inline.push(&text, at, false, false),
+            Event::Code(text) => self.inline.push(&text, at, true, false),
+            Event::InlineMath(text) => self.inline.push(&format!("${text}$"), at, true, false),
+            Event::DisplayMath(text) => {
+                self.inline.push(&format!("$${text}$$"), at, true, false);
+            }
+            Event::Html(text) | Event::InlineHtml(text) => {
+                self.inline.push(&text, at, false, true);
+            }
+            Event::FootnoteReference(label) => {
+                self.inline.push(&format!("[{label}]"), at, false, true);
+            }
+            Event::SoftBreak => self.inline.push(" ", at, false, false),
+            Event::HardBreak => self.inline.push("\n", at, false, false),
             Event::Rule => {
                 self.flush_inline();
                 self.push_block(MdBlockKind::Rule);
@@ -771,5 +859,31 @@ mod tests {
         let blocks = parse("a\r\nb\r\n\r\n```\r\nc\r\nd\r\n```\r\n");
         assert_eq!(plain(&blocks[0]), "a b");
         assert_eq!(plain(&blocks[1]), "c\nd");
+    }
+
+    #[test]
+    fn maps_text_positions_to_lines_and_columns_of_the_file() {
+        let source = "# 제목\r\n\r\n첫 **굵게** 문장\r\n이어짐\r\n\r\n- 항목 `코드`\r\n\r\n| a | 셀 |\r\n|---|---|\r\n| c | d |\r\n\r\n```\r\nx = 1\r\ny\r\n```\r\n";
+        let doc = MarkdownDocument::parse(source);
+        let at = |line, column| SourcePosition { line, column };
+        let position = |text: u32, byte: usize| doc.source_position((text, byte));
+        // The heading text starts after "# ".
+        assert_eq!(position(0, 0), at(1, 3));
+        assert_eq!(position(0, "제".len()), at(1, 4));
+        // In the paragraph, the bold markers take source columns the rendered text does not have.
+        assert_eq!(position(1, "첫 ".len()), at(3, 5));
+        assert_eq!(position(1, "첫 굵게 ".len()), at(3, 10));
+        // The soft break is the line break, so the next line starts at its first column.
+        assert_eq!(position(1, "첫 굵게 문장 ".len()), at(4, 1));
+        // Inline code lands inside its backticks.
+        assert_eq!(position(2, "항목 ".len()), at(6, 7));
+        assert_eq!(position(2, "항목 코".len()), at(6, 8));
+        // Table cells: the head's second cell, then the body's first.
+        assert_eq!(position(4, 0), at(8, 7));
+        assert_eq!(position(5, 0), at(10, 3));
+        assert_eq!(position(7, "x = 1\ny".len() - 1), at(14, 1));
+        // A position past the text stays at the text's end, and an unknown text goes to the start.
+        assert_eq!(position(0, 99), at(1, 5));
+        assert_eq!(position(99, 0), at(1, 1));
     }
 }

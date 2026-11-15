@@ -26,7 +26,7 @@ mod sqlite;
 mod structure;
 
 pub use cache::DEFAULT_CACHE_BUDGET;
-pub use code::CodeDocument;
+pub use code::{CodeDocument, SourcePosition};
 pub use condition::{
     CompiledFilter, ValueClass, check_condition, filter_ops, is_sortable, parse_value, value_class,
 };
