@@ -1,26 +1,23 @@
-# TPUI Usage
+# TPUI Viewer Usage
 
-This guide covers opening data, navigating the viewer, inspecting values, applying find, filter and sort queries, reading Markdown, JSON, JSON Lines and code documents, and checking PDF pages. For building and running the app, see [README.md](README.md#build-and-run). For implementation details and data contracts, see [architecture.md](architecture.md).
+English | [한국어](docs-translate/ko/usage.md)
 
-## Screen overview
+This guide covers `viewer-app`, the file viewer built with TPUI. Use it to open source code, documents and structured data and move between their views. For building the viewer or using TPUI components in an app, see [README](README.md). The [architecture](architecture.md) describes the shared UI and the viewer's implementation.
 
-```text
-┌─────────────────────────────────────────────────────────────────────┐
-│ Open File    Open Folder               Active file name   Light Mode │
-├────────────────┬──────────────────────────────────┬─────────────────┤
-│ Explorer       │ [a.parquet ×][b.parquet ×] [Data|File Structure] │ Schema │
-│                │ Find bar · Filter and sort bar    │ Fields · types  │
-│ Expand folders │ Data Grid                        │ nullable        │
-│ Select files   │ Fixed headers · sort/filter marks │ Nested fields   │
-│                │ Source row numbers / visible cells├─────────────────┤
-│                │ Vertical/horizontal scroll · cell │                 │
-│                │ selection                        │ Value           │
-│                │                                  │ Raw value       │
-│                │                                  │ Nested value tree│
-├────────────────┴──────────────────────────────────┴─────────────────┤
-│ Active tab's path · total rows · columns · Row Groups · read state  │
-└─────────────────────────────────────────────────────────────────────┘
-```
+- [Opening files](#opening-files) · [Explorer](#explorer) · [Tabs](#tabs)
+- [Code](#code-documents) · [Markdown](#markdown-documents) · [JSON](#json-documents) · [JSON Lines](#json-lines-documents) · [PDF](#pdf-documents)
+- [Parquet and SQLite](#parquet-and-sqlite) · [Queries](#queries-and-message-files)
+- [Theme and usage](#theme-and-usage)
+
+## Opening files
+
+- `Open File` or `Ctrl+O` opens the native file dialog. Cancelling keeps the current state.
+- A file given on the command line, as Windows does for a file associated with the viewer, opens the same way. On Windows, when a viewer is already running, the file opens as a tab there and that window comes to the front; several files opened at once share the window. Starting the viewer without a file opens another window.
+- A selected file with the `.md`, `.markdown`, `.json`, `.jsonl` or `.pdf` extension or a [code extension](#code-documents) opens as a [document](#markdown-documents). A selected file with the SQLite header opens its first table or view by name, and the explorer expands the database to show the others; a database without tables shows a notice in the status bar. Any other file is validated by the Parquet reader regardless of extension.
+- Opening a new source creates and activates a tab, then reads the source for its view. A source is a Parquet file, a document, or a SQLite database and a table name. If the source is already open in a tab, that tab is activated. A SQLite tab is titled `table · file name`.
+- For Parquet, the footer and metadata provide the row count and schema before the first screen of data is read. Opening a SQLite table also inspects its rows to determine stored types and row positions.
+- When a file is opened directly and the explorer has no root, its parent directory becomes the explorer root. An existing root is kept.
+- To associate files on Windows, keep the viewer executables in a stable folder and choose `viewer-app.exe` under `Open with → Choose another app` for the file type.
 
 ## Explorer
 
@@ -31,27 +28,97 @@ This guide covers opening data, navigating the viewer, inspecting values, applyi
 - Double-clicking a Parquet file, a document or a table, or selecting it and pressing Enter, opens it in a tab. A single click expands a folder or database.
 - A failed folder listing shows an error and retry on that node. Grids of files already open are kept.
 
-## Opening files
+## Screen overview
 
-- `Open File` or `Ctrl+O` opens the native file dialog. Cancelling keeps the current state.
-- A file given on the command line, as Windows does for a file associated with the viewer, opens the same way. When a viewer is already running, the file opens as a tab there and that window comes to the front; several files opened at once share the window. Starting the viewer without a file opens another window.
-- A selected file with the `.md`, `.markdown`, `.json`, `.jsonl` or `.pdf` extension or a [code extension](#code-documents) opens as a [document](#markdown-documents). A selected file with the SQLite header opens its first table or view by name, and the explorer expands the database to show the others; a database without tables shows a notice in the status bar. Any other file is validated by the Parquet reader regardless of extension.
-- Opening a new source creates a new tab, activates it and starts in the `Opening` state. A source is a Parquet file, a document, or a SQLite database and a table name. If the source is already open in a tab, that tab is activated. A SQLite tab is titled `table · file name`.
-- For Parquet, the footer and metadata provide the row count and schema before the first screen of data is read. Opening a SQLite table also inspects its rows to determine stored types and row positions.
-- When a file is opened directly and the explorer has no root, its parent directory becomes the explorer root. An existing root is kept.
+The toolbar opens files and folders and switches the theme. The explorer lists files and database objects. Tabs select the active source, whose type determines the main view and supporting panels.
+
+| Active source | Main view | Supporting panels |
+|---|---|---|
+| Code | Source lines and line numbers | Full-width document area |
+| Markdown | Formatted document | Full-width document area |
+| JSON and JSON Lines | Expandable tree | Value panel for the selected node |
+| Parquet and SQLite | Data grid or storage structure | Schema and Value panels |
+| PDF | Pages fitted to the view width | Full-width document area |
+
+The status bar shows the active path, file-specific information and read status. Shared navigation uses the explorer and tabs; each format's controls are described below.
 
 ## Tabs
 
-- Each source opens in one tab. Reopening the same Parquet file or the same SQLite table activates its existing tab; different tables of one database have separate tabs.
-- The tab bar above the grid shows file names and close buttons. Clicking a tab switches to it; `Ctrl+Tab` and `Ctrl+Shift+Tab` go to the next and previous tab, and `Ctrl+W` closes the active tab.
-- With many tabs, widths shrink evenly down to a minimum; beyond that the tab bar scrolls horizontally. It scrolls with the mouse wheel, and scrolls to keep the active tab visible when it changes. When tabs overflow, a scroll position indicator is shown below the bar.
-- Hovering a tab shows the file's full path as a tooltip, so files stay distinguishable when shrunk tabs truncate their names.
-- Dropping a dragged tab on another tab moves it to that tab's slot; dropping it on empty space moves it to the last slot. While dragging, the tab at the drop slot is highlighted. Reordering keeps the active tab. Holding a dragged tab near either end of the bar keeps scrolling the bar that way, so it can be moved to slots out of view.
-- The grid, schema, Value panel and status bar show the active tab's content.
-- Each tab remembers its scroll position, selected cell and schema expansion. Returning to a tab requests cell data again from that state, and blocks still in the cache are shown without I/O.
-- Closing the active tab activates the tab to its right, or else to its left. Closing all tabs returns to the empty state.
+- Click a tab to switch files. `Ctrl+Tab` and `Ctrl+Shift+Tab` move between tabs; `Ctrl+W` closes the active tab.
+- Drag tabs to reorder them. Hold a dragged tab near an edge to reach tabs outside the visible area. Scroll an overflowing tab bar with the wheel.
+- Hover a tab to see its full path.
+- Data tabs remember grid position, selection, schema expansion and row view. Document tabs remember their reading position; JSON also remembers expanded values and the selected path.
+- Closing the active tab selects its right neighbour, or its left neighbour when there is none to the right.
 
-## Schema view
+## Documents and source code
+
+### Code documents
+
+- A file with one of these extensions opens as code, in a tab of its own that reads across the whole width: `.py`, `.pyi`, `.go`, `.rs`, `.ts`, `.tsx`, `.mts`, `.cts`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.c`, `.h`, `.cc`, `.cpp`, `.hpp`, `.cs`, `.java`, `.kt`, `.swift`, `.lua`, `.php`, `.rb`, `.css`, `.html`, `.xml`, `.sql`, `.sh`, `.bash`, `.ps1`, `.toml`, `.yaml`, `.yml`.
+- Python, Go, Rust, JavaScript and TypeScript have syntax colors; other supported extensions display as plain text. Opening code does not execute it.
+- Lines stay on one row; use `Shift` with the wheel to scroll horizontally. Very long lines show an omitted-length note. A selection reaching that note copies the whole line.
+- Drag to select text, double-click a word, or triple-click a line. `Ctrl+A` selects the file and `Ctrl+C` copies the selection with its original line endings.
+- Arrow keys, `Page Up`, `Page Down`, `Ctrl+Home` and `Ctrl+End` scroll the document.
+- If the code token service cannot run, the status bar shows the reason and the file remains readable as plain text. Files containing a NUL byte are reported as binary.
+
+### Markdown documents
+
+- A file with the `.md` or `.markdown` extension opens as a document, in a tab of its own. The text fills a centered column, and the side panels make way for it.
+- Text wraps at spaces and line breaks, so Korean words stay whole; a word wider than the whole line is broken between characters.
+- Headings, paragraphs, bold, italic, strikethrough, inline code, bullet, numbered and task lists, quotes, tables with their column alignment, code blocks, rules, footnotes and a metadata block at the top are drawn.
+- Code blocks keep their spaces and lines. A long line continues on the next line, tabs are drawn up to the next stop of four columns, and copying gives the original text.
+- HTML, math and text in double brackets are shown as written.
+- An image alone in its paragraph is drawn at up to the column's width, from a path relative to the document or an absolute path. A PNG, JPEG, WebP or GIF that can be read is shown; otherwise its alt text is. An image at a web address shows its alt text and address.
+- Clicking a `http`, `https` or `mailto` link opens it in the browser. Other link destinations are shown as links and stay where they are.
+- Dragging selects text across blocks, a double click selects a word and a triple click a whole text. `Ctrl+A` selects the document and `Ctrl+C` copies the selection as plain text, with table cells separated by tabs.
+- Arrow keys, `Page Up`, `Page Down`, `Ctrl+Home` and `Ctrl+End` scroll. A vertical scrollbar follows the document.
+
+### JSON documents
+
+- A file with the `.json` extension opens as a tree. Objects and arrays expand on a click, or with the arrow keys and `Enter`. Large arrays and objects group their children into expandable ranges.
+- Keys stay in the file's order, duplicates included, and numbers stay as written: `1.10` reads `1.10`.
+- The Value panel shows the selected value's place in the document, such as `$.routes[3].name`, its type and its full text. `Ctrl+C` copies strings without their quotes and escapes, and other values as they stand in the file.
+- The file must be JSON as defined by RFC 8259. A file with comments or trailing commas shows the reason with its line and character column.
+
+### JSON Lines documents
+
+- A file with the `.jsonl` extension opens as a tree of its lines, one JSON value per line. Each row shows the file's line number and the line's text. Blank lines are skipped, and long files group lines into expandable ranges.
+- Clicking a line opens its value, which reads as in a JSON document. The Value panel shows the place as `line 12: $.routes[3].name`.
+- A line that is not valid JSON stays in its place in the error color, and the other lines stay readable. Selecting it shows the reason and its character column in the Value panel, and the status bar counts these lines.
+- `Ctrl+C` copies a line as it stands in the file, and on the `file` row the whole file.
+
+### PDF documents
+
+- On Windows, PDF pages appear vertically at the view width. This view supports page viewing and scrolling; zoom, text selection, find and links are unavailable.
+- Use the wheel, arrow keys, `Page Up`, `Page Down`, `Ctrl+Home` or `Ctrl+End` to scroll. The status bar shows the page count and current page.
+- A read or rendering failure shows the reason. `Retry` reloads the document and restarts its worker when needed.
+
+### How documents are read
+
+- Active documents follow saved file changes and restore the reading position after reloading.
+- A failed read shows the reason and `Retry`. File checks continue so a later saved change can be picked up.
+- Text files must be UTF-8; a UTF-8 byte order mark is accepted. JSON and JSON Lines files must be smaller than 4 GiB.
+- Find, filter, sort and queries apply to Parquet and SQLite. On document tabs, `Ctrl+F` and queries show a notice.
+
+### Editing documents
+
+Right-click a Markdown or code document and choose `Open in Editor`. The file opens at the selection's start, or the right-clicked position when nothing is selected. Markdown positions refer to the source text; clicking outside text opens the file at its start.
+
+Set `$VISUAL` or `$EDITOR` to choose the editor, in that priority order. Otherwise Windows uses the registered app or Notepad, and Linux uses `xdg-open`.
+
+| Cursor support | Editors |
+|---|---|
+| Line and column | vim, Neovim, nano, gedit, Emacs, VS Code, VSCodium, Cursor, Notepad++ |
+| Line | vi |
+| File start | Other editors |
+
+Terminal editors open in their own terminal window. On Linux, `$TERMINAL` selects the terminal; otherwise an installed terminal is chosen automatically. Saving in the editor refreshes the open document. A launch failure is shown in the status bar.
+
+## Parquet and SQLite
+
+These tabs provide a data grid, schema, full values and storage structure. Find, filter and sort select source rows and their display order.
+
+### Schema view
 
 - Shows the Arrow schema's field names, data types and nullability.
 - Expand `Struct`, `List` and `Map` fields to inspect their child types.
@@ -59,7 +126,7 @@ This guide covers opening data, navigating the viewer, inspecting values, applyi
 - The file summary shows the total rows, top-level columns, Row Groups and file size.
 - A file with zero rows still shows its schema and column headers, with an empty data state in the body.
 
-## Data grid
+### Data grid
 
 - Uses fixed-height rows, fixed-width columns, and fixed header and row number areas.
 - Provides vertical and horizontal scrollbars, mouse wheel, and Shift+wheel for horizontal movement.
@@ -68,16 +135,13 @@ This guide covers opening data, navigating the viewer, inspecting values, applyi
 - Cells being read show a placeholder and are updated when data arrives.
 - A cell is a one-line preview of its value. Newlines, tabs and control characters become display symbols, and long values get an ellipsis at the preview length. The full raw value is shown in value detail.
 
-## Value detail
+### Value detail
 
-- The Value panel shows the selected cell's value exactly as stored. Without a selected cell, it shows an empty state.
-- The top of the panel shows the row number, column name, type and value size. The value size is the byte length and character count for strings, the byte length for Binary, and the element or entry count for List and Map.
-- Strings are shown in full with their newlines, and Binary as a hex dump of all bytes. Any value can be scrolled to its end regardless of length.
-- `Struct`, `List` and `Map` values expand into a value tree. Selecting a node in the tree shows that node's raw value in the body.
-- `Ctrl+C` copies the raw value of the selected cell or node.
-- The Value panel keeps its value even when the selected cell scrolls out of the grid.
+- Select a cell to inspect its full value in the Value panel. Strings retain their line breaks, and Binary values appear as a hex dump. The panel keeps the value when the cell scrolls off screen.
+- Expand `Struct`, `List` or `Map` and select a child to inspect it. The panel shows the source row, column, type and value size.
+- `Ctrl+C` copies the selected cell or node. Strings copy as original text, Binary as lowercase hexadecimal, Null as `null` and other scalars as displayed text. Nested values copy as JSON; Map entries become key/value objects, and nested Binary, non-finite numbers and time values become strings.
 
-## Row view
+### Row view
 
 - Each tab has filter conditions and a sort key. Together they decide which rows the grid shows and in what order; this is the row view. Without filter or sort, the row view is the source file's row order.
 - Grid row positions, scrolling, selection and key movement follow the row view's order. The row number area shows the source file's row numbers, and so does the Value panel.
@@ -85,32 +149,31 @@ This guide covers opening data, navigating the viewer, inspecting values, applyi
 - The filter and sort bar is shown when there are conditions and reads as the query text: each condition and the sort is a chip removed with `×`, operators are boxes with `▾`, and conditions joined by `or` are in parentheses. `Copy Query` copies the whole query text, including the find value while the find bar is open, and `Clear All` returns to source order. The status bar shows the row view's row count together with the total.
 - Each tab remembers its row view. Conditions and results survive tab switches.
 
-## Find
+### Find
 
 - `Ctrl+F` opens the query window with the active tab's conditions and a `find` line, the cursor after `find` (on systems without the query window, the message file is pointed to). The value can also come from `Find` in a cell's context menu or from a `find` line in any query.
 - The find bar above the grid shows the value being found, `Change…`, which opens the query window again, `Previous`, `Next`, the status and `×`. `Esc` in the grid closes the find bar.
 - Find locates cells whose whole value exactly equals the input. Matching is case-sensitive.
-- The comparison target is the full text shown for the cell: the original text for strings, the text of the cell display contract for numbers, times and Boolean, and the same lowercase hexadecimal as the copy text for Binary. Hexadecimal input is case-insensitive. Null cells and `Struct`, `List` and `Map` cells are not find targets.
+- Find compares the complete displayed value: original text for strings, displayed numbers, times and Boolean values, and hexadecimal for Binary. Hexadecimal input is case-insensitive. Null cells and `Struct`, `List` and `Map` cells are not find targets.
 - `F3` and `Next` move to the next match, `Shift+F3` and `Previous` to the previous one. The order is the row view's row order, then column order within a row. The search starts from the selected cell and wraps around at the end.
 - The found cell is selected and scrolled into view. The find bar shows the number of matching cells in the whole row view, and the grid highlights matching cells.
 - `Find` in a cell's context menu puts the cell's full value into the find bar and moves to its next match.
 - The first search for a new value reads the file to compute match positions. During the computation, the find bar shows progress, and grid scrolling, cell selection and tab switching keep working.
 - A find sent together with new conditions runs once they are applied. `F3` while conditions are being applied shows a notice in the find bar. After a tab switch, find results are recomputed for the new tab.
 
-## Context menus
+### Context menus
 
 - Right-clicking a column header opens its menu: `Sort Ascending`, `Sort Descending`, `Clear Sort` on the sorted column, `Only Nulls`, `Exclude Nulls`, and `Remove Conditions on This Column` when the column has conditions.
 - Right-clicking a cell selects it and opens its menu once the cell's full value is read. A cell with a value offers conditions comparing the column with that value (`=`, `≠`, and `>`, `≥`, `<`, `≤` where the column type allows them), `Find` and `Copy Value`. A Null cell offers `Only Nulls` and `Exclude Nulls`. Nested values offer no conditions.
-- Condition items act with modifier keys: Shift+click joins the column's conditions with `or`, and Alt+click adds the opposite condition. While the menu is open, the labels follow the keys held, so they show what a click adds. A condition already in the filter is marked `✓`.
+- Condition items act with modifier keys: Shift+click joins the column's conditions with `or`, and Alt+click adds the opposite condition.
 - Conditions use the cell's full value. The value text is the copy text of the cell: strings as is, Binary as lowercase hexadecimal, other values as displayed, which parses back to the same value.
-- Right-clicking a Markdown or code document opens its menu: `Copy` while text is selected, and `Open in Editor` (see [Editing documents](#editing-documents)).
 - Choosing an item applies it and closes the menu. Clicking outside or `Esc` closes the menu without an action.
 
-## Filter
+### Filter
 
 - Conditions come from the context menus and from query text (see below).
 - A filter has the shape of a spreadsheet filter: clauses that must all hold, joined by `and`. A clause is one or more conditions on one column of which at least one must hold, joined by `or` and drawn in parentheses when there are several: `(OBE_ID == "366" or OBE_ID == "977") and id >= 5 and id < 20`. So `or` joins conditions on one column only, and parentheses never nest.
-- Clauses on the same column sit next to each other, in the order their columns first appear, so each column's conditions read together.
+- Clauses on the same column sit next to each other, in the order their columns first appear.
 - A condition from a menu is added with `and` after the column's other clauses. With Shift it joins the column's last clause with `or`. An `=` condition on a column that already has an `=` condition joins that clause with `or` without Shift, since two different values joined by `and` match no row.
 - Each operator box in the filter and sort bar switches between `and` and `or`. Inside parentheses, `and` splits the clause there into two; between two clauses on one column, `or` merges them. Between clauses on different columns only `and` can be chosen.
 - Dragging across conditions in reading order sweeps a range. Releasing it over the conditions makes the range exactly one clause, joined by `or` inside and by `and` to the conditions just outside it; a range of one condition or of several columns changes nothing, and `Esc` or releasing elsewhere drops the sweep. While sweeping, the bar shows what releasing does.
@@ -128,7 +191,7 @@ This guide covers opening data, navigating the viewer, inspecting values, applyi
 - Comparison operators and `contains` never match Null cells. Null cells are selected with the `null` operator.
 - Columns with a filter show their header name in the accent color.
 
-## Sort
+### Sort
 
 - Each header click cycles ascending, descending, then no sort. The header's context menu sets a direction or clears the sort directly. The sort key is a single column; clicking another column's header switches to ascending on that column. The header shows the direction with `▲` or `▼`.
 - With a filter, only rows that pass the filter are sorted.
@@ -136,7 +199,22 @@ This guide covers opening data, navigating the viewer, inspecting values, applyi
 - Strings sort by UTF-8 byte order, and floating-point NaN sorts as the largest value.
 - Columns of `Struct`, `List`, `Map` and types without display support are not sorted. Clicking such a header shows a notice in the filter and sort bar that the column cannot be sorted.
 
-## Query text
+### File structure
+
+- Switch between `Data` and `File Structure` at the tab bar. Each tab remembers its choice; `Ctrl+F` returns to data and opens find.
+- Inspect the file summary, column storage information and Row Groups. Select a Row Group to show its columns; `All` shows the combined information. Hover truncated cells for full text and encodings.
+- Statistics use `≈` when truncated in the file and `-` when absent or for nested leaves. Null counts are combined only when every Row Group records them.
+
+### Table structure
+
+- SQLite tabs provide `Table Structure` for the table or view definition, row order, columns, indexes and database properties.
+- Column information includes the declared type and the Arrow type derived from stored values. The table's `CREATE` statement is shown beside the indexes; hover an index for its `CREATE INDEX` statement.
+
+## Queries and message files
+
+Queries apply to the active Parquet or SQLite tab. Menus, the query window and message files update the same filter, sort and find state.
+
+### Query text
 
 A query is the text form of a row view and a find value, one command per line. The filter and sort bar shows conditions in this form, context menus label their items with it, and `Copy Query` writes it.
 
@@ -158,124 +236,31 @@ sort -created_at
 - Values are parsed as their column types with the same rules as conditions from the menus. An error names the line and character column and the reason, such as ``line 1, column 8: this `(` is not closed``.
 - Writing a query and reading it back gives the same conditions, sort and find value.
 
-## Query input and log
+### Query input and log
 
-Queries reach a tab in three ways, all applied the same way and logged the same way.
+A query replaces the active Parquet or SQLite tab's filter, sort and find state. Parsing errors preserve the existing state and show the line, column and reason. Find submitted with new conditions starts after those conditions are applied.
 
-| Way | For |
+On Windows, choose `Query → Write Query…` to edit the current query. `Ctrl+Enter` or `Apply` applies it and keeps the window open; `Esc` or `Close` closes it. Reopening the window reloads the active tab's query.
+
+External programs can choose `Copy Message File Path` and write the complete query as UTF-8 to that file. UTF-8 BOM and CRLF line endings are accepted. The query is applied after the file settles; the file is removed when the viewer exits.
+
+| Platform | App storage directory |
 |---|---|
-| Context menus and header clicks | Quick changes with the mouse |
-| Query window (Windows) | A person writing a query, such as `contains` or a value not on screen |
-| Message file | Agents and other programs, and systems without the query window |
+| Windows | `%LOCALAPPDATA%\TPUI` |
+| Linux | `$XDG_STATE_HOME/tpui`, or `~/.local/state/tpui` when unset |
 
-- A query text states the whole view of the active tab: its conditions, sort and find value replace the current ones. A text that does not parse changes nothing; the reason, with line and column, is shown on a line of its own in the filter and sort bar and in the query window's status.
-- A find sent with new conditions runs once their row view is applied, since find works on finished row views.
-- The toolbar's `Query` menu has `Write Query…`, `Copy Query`, `Copy Message File Path` and `Open Query Log Folder`. The context menus of headers and cells also have `Write Query…`.
+Message files use `inbox/<process id>.txt` under this directory. Queries and parse errors are appended to `query-log/<date>.jsonl` with the source, query and result or error. A row-view query is logged when it completes; superseded computations and clicks that leave the query unchanged add no entry.
 
-On Windows, the query window uses the operating system's text input control.
+`Open Query Log Folder` opens the log location. Logs contain query text, including any cell values in the query, and remain until the user deletes them.
 
-- It holds the system's multi-line edit control, so typing, Korean IME composition, clipboard and undo are the system's. It opens over the viewer, owned by it, filled with the active tab's current query; opening it again refills it and brings it to the front.
-- `Ctrl+Enter` or `Apply` applies the text and keeps the window open; `Esc` or `Close` closes it. The status line shows the row count once the row view is applied, or the error.
+## Theme and usage
 
-Agents and other programs can apply a query by writing its complete text to the message file.
-
-- Each running viewer has its own file, `%LOCALAPPDATA%\TPUI\inbox\<process id>.txt` (`~/.local/state/tpui/inbox/` elsewhere), created empty at start. `Copy Message File Path` copies its path.
-- The file is checked every 0.5 seconds. A change is applied once the file has stayed the same for one more check, which skips the empty file a writer leaves between truncating and writing. A UTF-8 byte order mark is dropped and `\r\n` line ends are read as `\n`.
-- The file is removed when the viewer quits. Files of viewers that ended without quitting are removed when the next viewer starts.
-
-Every applied query goes to the query log, `%LOCALAPPDATA%\TPUI\query-log\<date>.jsonl`, one JSON line per query.
-
-- A line holds the local time, the source file and SQLite table, the origin (`click`, `window` or `file`), the whole query text, and the row count of the resulting row view or the error. A text that does not parse is logged as received, with its error.
-- A query that starts a row view computation is logged when the computation ends. A computation replaced by a newer query before it ends is not logged, and a click that leaves the query unchanged is not logged again.
-- Lines are only appended; the log is never rewritten or trimmed. The log stays in the app's own folder. Queries can contain cell values, so the log can hold personal data from the files viewed; `Open Query Log Folder` shows where it is, and the user deletes it when they want to.
-
-## File structure
-
-- `Data` and `File Structure` at the right of the tab bar switch the tab body. Each tab remembers its last choice. `Ctrl+F` in the file structure returns to the data and opens find.
-- The file structure shows stored Parquet metadata without scanning data pages.
-- The top shows the file summary: Parquet format version, the program that wrote the file, compressed and uncompressed data size and ratio, and the keys and value sizes of the key-value metadata.
-- The middle table shows, per leaf column, the path, physical and logical type, codec, compressed and uncompressed size, ratio, null count, min, max, and whether a page index and Bloom filter exist. Hovering a cell shows truncated content in full and the list of encodings as a tooltip.
-- The bottom table shows, per Row Group, the row count, compressed and uncompressed size, and ratio. The first row, `All`, is the total over all Row Groups. Selecting a Row Group switches the middle table to that Row Group's information.
-- Min and max use the same display format as data cells. Statistics truncated in the file get a `≈` prefix. Without statistics, or for leaves of nested columns, `-` is shown. Null counts are summed only when every Row Group records them.
-
-## Table structure
-
-- For a SQLite tab, the structure button reads `Table Structure`. It shows the schema and pragmas of the table; no rows are read.
-- The top shows the kind (table, view or virtual table, with `WITHOUT ROWID` and `STRICT`), the row count, the row order, and the database: file size, page count and size, text encoding and journal mode.
-- The column table shows, per column, the name, declared type, the Arrow type the grid shows it as, the storage classes found in it, `NOT NULL`, the default and the primary key position.
-- The bottom shows the indexes (name, columns, uniqueness, origin and whether partial, with the `CREATE INDEX` statement as a tooltip) next to the table's `CREATE` statement.
-
-## Markdown documents
-
-- A file with the `.md` or `.markdown` extension opens as a document, in a tab of its own. The text fills a centered column, and the side panels make way for it.
-- Text wraps at spaces and line breaks, so Korean words stay whole; a word wider than the whole line is broken between characters. Every document reads this way.
-- Headings, paragraphs, bold, italic, strikethrough, inline code, bullet, numbered and task lists, quotes, tables with their column alignment, code blocks, rules, footnotes and a metadata block at the top are drawn.
-- Code blocks keep their spaces and lines. A long line continues on the next line, tabs are drawn up to the next stop of four columns, and copying gives the original text.
-- HTML, math and text in double brackets are shown as written.
-- An image alone in its paragraph is drawn at up to the column's width, from a path relative to the document or an absolute path. A PNG, JPEG, WebP or GIF that can be read is shown; otherwise its alt text is. An image at a web address shows its alt text and address.
-- Clicking a `http`, `https` or `mailto` link opens it in the browser. Other link destinations are shown as links and stay where they are.
-- Dragging selects text across blocks, a double click selects a word and a triple click a whole text. `Ctrl+A` selects the document and `Ctrl+C` copies the selection as plain text, with table cells separated by tabs.
-- Arrow keys, `Page Up`, `Page Down`, `Ctrl+Home` and `Ctrl+End` scroll. A vertical scrollbar follows the document.
-
-## JSON documents
-
-- A file with the `.json` extension opens as a tree. Objects and arrays expand on a click, or with the arrow keys and `Enter`. Arrays and objects with more than 1,000 members group them into ranges.
-- Keys stay in the file's order, duplicates included, and numbers stay as written: `1.10` reads `1.10`.
-- The Value panel shows the selected value's place in the document, such as `$.routes[3].name`, its type and its full text. `Ctrl+C` copies strings without their quotes and escapes, and other values as they stand in the file.
-- The file must be JSON as defined by RFC 8259. A file with comments or trailing commas shows the reason with its line and character column.
-
-## JSON Lines documents
-
-- A file with the `.jsonl` extension opens as a tree of its lines, one JSON value per line. Each row shows the file's line number and the line's text. Blank lines are skipped, and more than 1,000 lines group into ranges of line numbers.
-- Clicking a line opens its value, which reads as in a JSON document. The Value panel shows the place as `line 12: $.routes[3].name`.
-- A line that is not valid JSON stays in its place in the error color, and the other lines stay readable. Selecting it shows the reason and its character column in the Value panel, and the status bar counts these lines.
-- `Ctrl+C` copies a line as it stands in the file, and on the `file` row the whole file.
-
-## Code documents
-
-- A file with one of these extensions opens as code, in a tab of its own that reads across the whole width: `.py`, `.pyi`, `.go`, `.rs`, `.ts`, `.tsx`, `.mts`, `.cts`, `.js`, `.jsx`, `.mjs`, `.cjs`, `.c`, `.h`, `.cc`, `.cpp`, `.hpp`, `.cs`, `.java`, `.kt`, `.swift`, `.lua`, `.php`, `.rb`, `.css`, `.html`, `.xml`, `.sql`, `.sh`, `.bash`, `.ps1`, `.toml`, `.yaml`, `.yml`.
-- The text shows as soon as the file is read. Python, Go, Rust, JavaScript and TypeScript files then get colors for comments, strings, numbers, keywords, constants, types, functions and attributes. Other extensions stay plain text.
-- Colors come from the file's text alone. The viewer runs no interpreter, compiler or language server, and nothing in the file is executed.
-- Each line has its number and stays on one row. Tabs are drawn up to the next stop of four columns. A line over 8 KiB is drawn up to that size with the number of bytes left; a selection reaching that note copies the whole line.
-- Dragging selects text across lines, a double click selects a word and a triple click a whole line. `Ctrl+A` selects the file and `Ctrl+C` copies the selection as it stands in the file.
-- The wheel, arrow keys, `Page Up`, `Page Down`, `Ctrl+Home` and `Ctrl+End` scroll, and `Shift` with the wheel scrolls sideways. Scrollbars follow both directions.
-- The status bar shows the language, line count and size. When `tpui-core.exe` cannot run or keeps ending, it says why and the file stays readable as plain text.
-- A file holding a NUL byte is treated as binary and shows the reason.
-
-## PDF documents
-
-- A file with the `.pdf` extension opens as its pages, one under another, at the width of the view up to 960 pixels. The view is for checking how a PDF came out: it has no zoom, text selection, find or links.
-- Windows draws the pages with its built-in PDF engine, in `tpui-pdf.exe`. This program runs while a PDF tab is shown and stays between PDF tabs; showing another kind of tab ends it, and coming back to a PDF tab starts it again.
-- Pages are drawn as they come near the screen. Pages far from the screen are released, and resizing the window draws the pages on screen again at the new width.
-- The wheel, arrow keys, `Page Up`, `Page Down`, `Ctrl+Home` and `Ctrl+End` scroll. A vertical scrollbar follows the document.
-- The status bar shows the page count and the page in the middle of the view.
-- A file Windows cannot read as a PDF shows the reason and `Retry`. When `tpui-pdf.exe` cannot start or ends, the tab says so, and `Retry` starts it again.
-
-## How documents are read
-
-- A document's file is read when its tab is shown and released when another tab is shown; the tab remembers its scroll position, or its expanded values and selection. Nothing about a document is stored on disk.
-- While a document is shown, its file is checked every 0.5 seconds. A change is shown once the file has stayed the same for one more check, at the same place in the document. A file that can no longer be read shows the reason and `Retry`, and a later change is picked up by itself.
-- Text files must be UTF-8; a UTF-8 byte order mark is dropped. Other encodings show the reason.
-- The viewer never writes to these files.
-- Find, filter, sort and queries work on Parquet and SQLite tabs. On a document tab, `Ctrl+F` and queries show a notice in the status bar.
-
-## Editing documents
-
-- `Open in Editor` in the menu of a Markdown or code document opens its file in the user's editor. The cursor goes to the start of the selection, or to the place right-clicked when nothing is selected.
-- In a Markdown document the cursor goes to the same place in the source, such as inside the backticks of inline code. Right-clicking outside the text opens the file at its start.
-- The editor is `$VISUAL`, then `$EDITOR`, then the app the system opens the file with: `xdg-open` on Linux, and on Windows the app registered for the extension, or Notepad when there is none.
-- The cursor's place reaches vim, Neovim, nano, gedit, Emacs, VS Code, VSCodium, Cursor and Notepad++, and vi gets the line. Other editors open the file at its start.
-- vi, vim, Neovim, nano, micro, Helix and Kakoune open in a terminal window of their own. On Linux the terminal is `$TERMINAL`, or the first found of `x-terminal-emulator`, `gnome-terminal`, `konsole`, `xfce4-terminal`, `alacritty`, `kitty`, `foot`, `wezterm` and `xterm`; on Windows it is a new console window.
-- The editor saves the file, and the open document shows the change once the file settles. An editor that cannot start shows the reason in the status bar.
-
-## Memory and CPU use
-
-- The status bar's `Usage` button shows what the viewer uses at that moment, such as `88.6 MiB · CPU 0.3% · 14:32:10`. Pressing it again takes a new reading; the shown values and their time stay until then.
-- Memory is the working set of the viewer, `tpui-core` and `tpui-pdf` together; GPU memory is not in it. CPU is their share of the whole machine since the previous reading.
-- Readings go to `%LOCALAPPDATA%\TPUI\usage-log\<date>.jsonl`, one JSON line each: at start and quit, when a data source opens or a document is read or read again, when another data tab becomes active, when a read code file's first tokens arrive, and at each press of the button. Once a minute a reading is written if memory has moved by a whole MiB or CPU by a tenth of a percent.
-- A line holds the local time, the event, the file on screen and its size, the memory total and the CPU share, and for each process its id, working set, largest working set and CPU seconds. The log opens in the viewer as a [JSON Lines document](#json-lines-documents), and the user deletes old files when they want to.
-- Readings work on Windows. Where a line cannot be written, the button's text ends with `not logged`.
-
-## Theme
+### Theme
 
 - Colors come in a light and a dark set. At startup the app follows the Windows app color setting and keeps following its changes. The toolbar's `Light Mode` / `Dark Mode` button switches the theme, after which the app no longer follows the setting until restart.
+
+### Memory and CPU use
+
+- On Windows, press `Usage` in the status bar for a new reading. Its values remain until the next press.
+- Memory is the viewer and its code/PDF processes' combined working set, excluding GPU memory. CPU is their share of the whole machine since the previous reading.
+- Daily readings are stored as `usage-log/<date>.jsonl` in the [app storage directory](#query-input-and-log). Open them as JSON Lines and delete old logs when desired. `not logged` indicates that a reading could not be written.

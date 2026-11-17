@@ -1,60 +1,25 @@
 # TPUI
 
-A Windows desktop viewer for the raw data and structure of local Parquet files and SQLite tables for reading Markdown, JSON, JSON Lines and source files, and for checking how PDF pages came out, plus a UI component crate shared with other GPUI apps. Built with Rust, [GPUI](https://github.com/zed-industries/zed/tree/main/crates/gpui) and [arrow-rs](https://github.com/apache/arrow-rs), with a small Go program that finds the tokens of source files and a worker program that draws PDF pages with the PDF engine built into Windows.
+English | [한국어](docs-translate/ko/README.md)
 
-The viewer focuses on locating source rows, inspecting full raw values and reading documents as they stand on disk. Its display rules, such as Korean line breaking, are built in.
+TPUI is a desktop UI foundation built on a fork of [GPUI](https://github.com/GreenWojaKK/zed), developed for a workspace that brings coding agents, terminal sessions and their working files together. The intended setup uses Rust/GPUI for the interface, Go for the agent core, and tmux for terminal session management.
 
-## Documentation
+The aim is to keep the interface's added memory use small while several agents and development tools run alongside it.
 
-| Document | Contents |
+The bundled `viewer-app` is the first application of this stack. It uses this foundation to browse source code, documents and structured data.
+
+## UI components
+
+| Area | Components |
 |---|---|
-| [Usage guide](usage.md) | Screens, keyboard shortcuts, context menus, query syntax, message files, query logs and usage logs |
-| [Architecture](architecture.md) | Component boundaries, state ownership, engine contracts, rendering, scheduling and memory |
-| This README | Build and run instructions, shared UI integration and dependency provenance |
+| Text | Wrapping and styled text, selection |
+| Layout and navigation | Tables, tabs, menus and buttons |
+| Visualization | Line and band charts, bar and strip charts, heatmaps and route maps |
+| App integration | Light and dark themes, Windows native input window, message-file inbox |
 
-## Features
+Apps supply data and handle component events. See [Architecture](architecture.md#shared-ui-components) for component responsibilities.
 
-- Read-only Parquet files and SQLite tables or views, opened in separate tabs
-- Explorer, nested schema tree, and a grid virtualized over rows and columns
-- Full value detail and copy support for strings, Binary and nested values
-- Find, typed filters and single-column sorting, controlled by menus or query text
-- Parquet file structure and SQLite table structure views
-- Markdown, JSON, JSON Lines and code documents, read when their tab is shown and followed as their files change
-- `Open in Editor` for Markdown and code documents, with the cursor at the selected or right-clicked place
-- Colors for Python, Go, Rust, JavaScript and TypeScript, found from the file's text alone
-- PDF pages drawn at the width of the view by a separate worker that runs while a PDF tab is shown
-- Native query input on Windows, message-file input for external programs, and query logs
-- The viewer's own memory and CPU use, shown on request and kept in a daily log
-- Light and dark themes that initially follow the Windows app color setting
-
-## Crates
-
-| Crate | Contents |
-|---|---|
-| `viewer-core` | Parquet and SQLite reading, filter/sort/find computation, query text, file and table structure, Markdown, JSON, JSON Lines and code documents, PDF worker messages |
-| `viewer-ui` | GPUI components: light and dark themes, context menu, query window (Windows), message file, tab bar, tables with fixed or wrapping rows, styled wrapping text, buttons, line/band charts, bar charts, strip charts, heatmap, route map |
-| `viewer-app` | The viewer app and `tpui-pdf`, the PDF worker |
-
-The Go module in `core/` builds `tpui-core`, the program the viewer asks for tokens. It uses the Go standard library only.
-
-## Build and run
-
-Requires Windows x64, Visual Studio Build Tools 2022 (MSVC) and the Windows SDK. The Rust toolchain is set by [rust-toolchain.toml](rust-toolchain.toml). Go 1.24 or later builds the code core; without Go the viewer still builds, and source files show as plain text.
-
-Run these commands from the repository root:
-
-```powershell
-cargo build --release -p viewer-app
-.\target\release\viewer-app.exe
-```
-
-The build puts `tpui-core.exe` and `tpui-pdf.exe` next to `viewer-app.exe`. Keep the three together when moving the viewer.
-
-To open files from Windows, copy all three to a folder that builds do not replace, such as `%LOCALAPPDATA%\Programs\TPUI`, then choose `viewer-app.exe` under `Open with` → `Choose another app` for each file type.
-
-Start with [opening a file](usage.md#opening-files), then use the [query reference](usage.md#query-text) for find, filter and sort.
-
-## Using `viewer-ui` in another app
+## Using `viewer-ui` in an app
 
 Add it as a git dependency and pin GPUI to the same fork commit as this repository. With a different commit, GPUI is built twice and the types do not match.
 
@@ -64,7 +29,7 @@ viewer-ui = { git = "https://github.com/GreenWojaKK/TPUI", rev = "<TPUI commit>"
 gpui = { git = "https://github.com/GreenWojaKK/zed", rev = "f941f6a1c26a295c051e2a3776d9897093b3db8c" }
 ```
 
-Components read colors by role and take their fonts and densities from the theme. An app with its own look starts from the default theme, changes the fields it needs and installs it once, before the first window opens. Colors of the app's own views come from `theme::pick(dark, light)`.
+Customize the default theme and install it before opening the first window:
 
 ```rust
 let mut theme = viewer_ui::theme::Theme::default();
@@ -75,9 +40,45 @@ viewer_ui::theme::install(theme);
 
 ## GPUI fork
 
-GPUI is the UI framework in Zed Industries' [Zed](https://github.com/zed-industries/zed) repository, licensed under the Apache License 2.0. This repository takes GPUI from the fork [`GreenWojaKK/zed`](https://github.com/GreenWojaKK/zed), branch `tpui/v1.26.2-slim-image`, commit `f941f6a1`.
+TPUI uses [GreenWojaKK/zed](https://github.com/GreenWojaKK/zed), based on Zed v1.26.2, with image codecs selected to reduce executable size. The dependency example above pins the required commit. Fork changes are recorded in [FORK.md](https://github.com/GreenWojaKK/zed/blob/tpui/v1.26.2-slim-image/FORK.md).
 
-Starting from the Zed v1.26.2 release (`c4273271`), the fork only narrows the `image` crate features in Zed's root `Cargo.toml` to the gif, jpeg, png and webp that gpui uses, to shrink the executable. GPUI source code is unchanged. The change is described in the fork's [`FORK.md`](https://github.com/GreenWojaKK/zed/blob/tpui/v1.26.2-slim-image/FORK.md) and in a comment next to the changed lines.
+## Repository
+
+| Location | Role |
+|---|---|
+| `crates/viewer-ui` | Reusable GPUI components and theme |
+| `crates/viewer-core` | File readers, document models and table queries |
+| `crates/viewer-app` | Viewer application and PDF worker |
+| `core` | Source-code token service |
+
+## Viewer application
+
+`viewer-app` uses TPUI to browse files in an explorer and tabs.
+
+| Files | View and actions |
+|---|---|
+| Source code and configuration files | Line numbers, text selection and copy; syntax colors for Python, Go, Rust, JavaScript and TypeScript |
+| Markdown | Formatted text, tables, code blocks, local images, links and text selection |
+| JSON and JSON Lines | Expandable trees, value paths and full values; key order, duplicate keys and number text are preserved |
+| Parquet and SQLite tables or views | Data grid, schema, full values, find, typed filters, single-column sorting and storage structure |
+| PDF | Pages fitted to the view width, rendered on Windows |
+
+See [Viewer usage](usage.md) for controls, queries and editor integration.
+
+### Build and run
+
+The Windows x64 build requires Visual Studio Build Tools 2022 (MSVC), the Windows SDK and the toolchain in [rust-toolchain.toml](rust-toolchain.toml). Go 1.24 or later builds the source-code token service; without Go, source files display as plain text.
+
+Run from the repository root:
+
+```powershell
+cargo build --release -p viewer-app
+.\target\release\viewer-app.exe
+```
+
+Cargo builds `viewer-app.exe` and `tpui-pdf.exe`. When Go is available, the build also produces `tpui-core.exe`. Keep the built executables together when moving the viewer.
+
+Component design and the viewer's implementation are described in [Architecture](architecture.md).
 
 ## License
 
