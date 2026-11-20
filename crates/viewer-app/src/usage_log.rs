@@ -13,7 +13,7 @@ use std::process::Child;
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Local, SecondsFormat};
-use viewer_ui::format::format_bytes;
+use tpui::format::format_bytes;
 
 /// How often the timer takes a reading when nothing else has.
 const TICK_INTERVAL: Duration = Duration::from_secs(60);

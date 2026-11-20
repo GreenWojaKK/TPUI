@@ -1,7 +1,7 @@
-//! Sizes and colors of the viewer's own views. Shared roles and sizes come from `viewer_ui::theme`.
+//! Sizes and colors of the viewer's own views. Shared roles and sizes come from `tpui::theme`.
 
 use gpui::{Pixels, Rgba, px};
-use viewer_ui::theme;
+use tpui::theme;
 
 pub const TOOLBAR_HEIGHT: Pixels = px(36.);
 pub const STATUS_BAR_HEIGHT: Pixels = px(24.);

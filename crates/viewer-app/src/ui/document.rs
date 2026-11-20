@@ -13,11 +13,11 @@ use gpui::{
     App, ClickEvent, Context, Entity, EventEmitter, ListOffset, Pixels, Point, SharedString,
     Subscription, Task, Window, div, prelude::*,
 };
+use tpui::format::{format_bytes, format_quantity};
+use tpui::theme;
 use viewer_core::{
     Document, DocumentKind, FileStamp, SourcePosition, ViewerError, file_stamp, read_document,
 };
-use viewer_ui::format::{format_bytes, format_quantity};
-use viewer_ui::theme;
 
 use super::code::{CodeEvent, CodeScroll, CodeView};
 use super::json_tree::{JsonEvent, JsonPosition, JsonView};

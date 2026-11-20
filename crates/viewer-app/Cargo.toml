@@ -19,7 +19,7 @@ image.workspace = true
 serde_json.workspace = true
 unicode-width.workspace = true
 viewer-core.workspace = true
-viewer-ui.workspace = true
+tpui.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { workspace = true, features = [

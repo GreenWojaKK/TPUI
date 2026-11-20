@@ -5,9 +5,9 @@
 
 use gpui::{ClickEvent, Context, EventEmitter, SharedString, Window, div, prelude::*, px};
 
-use viewer_ui::format::format_quantity;
-use viewer_ui::theme;
-use viewer_ui::widgets::small_button;
+use tpui::format::format_quantity;
+use tpui::theme;
+use tpui::widgets::small_button;
 
 pub enum FindBarEvent {
     /// Finds the next (backward = false) or previous match.

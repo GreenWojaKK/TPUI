@@ -14,11 +14,11 @@ use gpui::{
     SharedString, StyledImage, TextAlign, Window, actions, canvas, div, img, list, point,
     prelude::*, px, relative,
 };
+use tpui::theme;
+use tpui::wrap::{RichText, RichTextEvent, TextSelection, TextSpan};
 use viewer_core::{
     MarkdownDocument, MdAlign, MdBlock, MdBlockKind, MdMarker, MdPosition, MdSourceKind, MdText,
 };
-use viewer_ui::theme;
-use viewer_ui::wrap::{RichText, RichTextEvent, TextSelection, TextSpan};
 
 use super::doc_scrollbar::{ScrollMetrics, ScrollbarDrag, scrollbar};
 use super::document::DocumentMenu;

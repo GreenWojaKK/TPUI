@@ -15,9 +15,9 @@ use gpui::{
     MouseUpEvent, Pixels, Point, ScrollEvent, ShapedLine, Size, Style, TextAlign, TextRun, Window,
     div, fill, point, prelude::*, px, relative, size,
 };
+use tpui::theme;
+use tpui::wrap::{TabStop, TextSelection, drawn_index, expand_tabs, text_index};
 use viewer_core::CodeDocument;
-use viewer_ui::theme;
-use viewer_ui::wrap::{TabStop, TextSelection, drawn_index, expand_tabs, text_index};
 
 use super::doc_scrollbar::{ScrollMetrics, ScrollbarDrag, scrollbar};
 use super::document::DocumentMenu;

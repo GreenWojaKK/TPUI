@@ -12,8 +12,8 @@ use arrow_array::{Array, ArrayRef, downcast_dictionary_array};
 use arrow_cast::display::{ArrayFormatter, FormatOptions};
 use arrow_schema::DataType;
 use gpui::SharedString;
+use tpui::format::format_quantity;
 use viewer_core::{ValueClass, ValueSlice, value_class};
-use viewer_ui::format::format_quantity;
 
 use crate::cell_preview::{CellPreview, is_number, preview_column};
 

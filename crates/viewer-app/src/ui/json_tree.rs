@@ -11,9 +11,9 @@ use gpui::{
     MouseDownEvent, Pixels, Point, ScrollStrategy, SharedString, Stateful, UniformListScrollHandle,
     Window, div, point, prelude::*, px, relative, uniform_list,
 };
+use tpui::format::format_quantity;
+use tpui::theme;
 use viewer_core::{JsonDocument, JsonKind, JsonNodeId};
-use viewer_ui::format::format_quantity;
-use viewer_ui::theme;
 
 use super::doc_scrollbar::{ScrollMetrics, ScrollbarDrag, scrollbar};
 use super::explorer::OpenSelected;

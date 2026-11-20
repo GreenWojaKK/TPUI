@@ -193,7 +193,7 @@ mod system {
 
     pub(super) fn begin(paths: Vec<PathBuf>) -> Startup {
         let (sender, receiver) = async_channel::unbounded();
-        let app_dir = viewer_ui::storage::app_dir("TPUI");
+        let app_dir = tpui::storage::app_dir("TPUI");
         if let Some(name) = app_dir.as_deref().map(pipe_name) {
             let deadline = Instant::now() + HANDOVER_WAIT;
             loop {

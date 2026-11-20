@@ -13,8 +13,8 @@ use gpui::{
 };
 use viewer_core::LogicOp;
 
-use viewer_ui::theme;
-use viewer_ui::widgets::small_button;
+use tpui::theme;
+use tpui::widgets::small_button;
 
 #[derive(Clone, Debug)]
 pub enum ViewBarAction {

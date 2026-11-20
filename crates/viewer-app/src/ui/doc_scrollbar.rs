@@ -8,7 +8,7 @@ use gpui::{
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Window, canvas, fill, point, prelude::*,
     px, size,
 };
-use viewer_ui::theme;
+use tpui::theme;
 
 use super::style;
 

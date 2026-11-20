@@ -13,9 +13,9 @@ use gpui::{
     Style, Window, div, fill, point, prelude::*, px, relative, size,
 };
 use image::{Frame, RgbaImage};
+use tpui::format::format_quantity;
+use tpui::theme;
 use viewer_core::{PdfInfo, PdfPageImage};
-use viewer_ui::format::format_quantity;
-use viewer_ui::theme;
 
 use super::doc_scrollbar::{ScrollMetrics, ScrollbarDrag, scrollbar};
 use super::grid::{MoveDown, MoveToFirstRow, MoveToLastRow, MoveUp, PageDown, PageUp};

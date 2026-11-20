@@ -13,10 +13,10 @@ use gpui::{
     div, prelude::*, uniform_list,
 };
 
+use tpui::theme;
 use viewer_core::{
     DataSource, DocumentKind, SqliteObjectKind, document_kind, is_sqlite_file, sqlite_objects,
 };
-use viewer_ui::theme;
 
 use super::style;
 

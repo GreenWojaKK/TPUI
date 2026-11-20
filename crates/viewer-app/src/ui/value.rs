@@ -17,7 +17,7 @@ use unicode_width::UnicodeWidthChar;
 
 use crate::cell_preview::{CellKind, control_picture};
 use crate::value_detail::{ValueBody, ValueDetail, ValueHeader, ValueNode};
-use viewer_ui::theme;
+use tpui::theme;
 
 use super::style;
 

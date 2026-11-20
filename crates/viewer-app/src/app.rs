@@ -35,14 +35,14 @@ use crate::value_detail::CellValue;
 use crate::worker::{
     FindRequest, StructureRequest, ValueOp, ValueOpKind, ViewId, ViewerWorker, WorkerEvent,
 };
-use viewer_ui::format::{format_bytes, format_count, format_quantity};
-use viewer_ui::inbox::Inbox;
+use tpui::format::{format_bytes, format_count, format_quantity};
+use tpui::inbox::Inbox;
 #[cfg(target_os = "windows")]
-use viewer_ui::input_window::{self, InputEvent, InputWindow};
-use viewer_ui::menu::{self, Menu, MenuEvent};
-use viewer_ui::tab_bar::{TabBar, TabBarState, TabLabel, TabStatus};
-use viewer_ui::theme;
-use viewer_ui::widgets::{small_button, toggle_button};
+use tpui::input_window::{self, InputEvent, InputWindow};
+use tpui::menu::{self, Menu, MenuEvent};
+use tpui::tab_bar::{TabBar, TabBarState, TabLabel, TabStatus};
+use tpui::theme;
+use tpui::widgets::{small_button, toggle_button};
 
 actions!(
     viewer,
@@ -391,7 +391,7 @@ impl AppController {
             ValueEvent::Retry => this.request_value(cx),
         });
 
-        let app_dir = viewer_ui::storage::app_dir("TPUI");
+        let app_dir = tpui::storage::app_dir("TPUI");
         let inbox = app_dir.as_deref().and_then(|dir| Inbox::create(dir).ok());
         let query_log = app_dir
             .as_deref()

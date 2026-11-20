@@ -2,7 +2,7 @@
 
 [English](../../README.md) | 한국어
 
-TPUI는 코딩 에이전트, 터미널 세션, 작업 중인 파일을 함께 다루는 작업 환경을 위해 개발하는 데스크톱 UI 기반이며, [GPUI](https://github.com/GreenWojaKK/zed) fork를 사용한다. Rust/GPUI가 화면을, Go가 에이전트 코어를 맡고 tmux로 터미널 세션을 관리하는 구성을 목표로 한다.
+TPUI는 코딩 에이전트, 터미널 세션, 작업 중인 파일을 함께 다루는 작업 환경인 TPFP를 위해 개발하는 데스크톱 UI 기반이며, [GPUI](https://github.com/GreenWojaKK/zed) fork를 사용한다. Rust/GPUI가 화면을, Go가 에이전트 코어를 맡고 Linux에서는 tmux로 터미널 세션을 관리하는 구성을 목표로 한다.
 
 여러 에이전트와 개발 도구를 동시에 실행하는 환경에서 UI가 더하는 메모리 부담을 작게 유지하려 한다.
 
@@ -19,23 +19,23 @@ TPUI는 코딩 에이전트, 터미널 세션, 작업 중인 파일을 함께 �
 
 앱이 데이터를 전달하고 컴포넌트 이벤트를 처리한다. 구성별 책임은 [아키텍처](architecture.md#공용-ui-컴포넌트)를 참조한다.
 
-## 앱에서 `viewer-ui` 사용하기
+## 앱에서 `tpui` 사용하기
 
 Git 의존성으로 추가하고 GPUI를 이 저장소와 동일한 fork commit으로 고정한다. 다른 commit을 사용하면 GPUI가 두 번 빌드되고 타입이 일치하지 않는다.
 
 ```toml
 [dependencies]
-viewer-ui = { git = "https://github.com/GreenWojaKK/TPUI", rev = "<TPUI commit>" }
+tpui = { git = "https://github.com/GreenWojaKK/TPUI", rev = "<TPUI commit>" }
 gpui = { git = "https://github.com/GreenWojaKK/zed", rev = "f941f6a1c26a295c051e2a3776d9897093b3db8c" }
 ```
 
 기본 테마에서 필요한 값을 바꾼 뒤 첫 창을 열기 전에 설치한다.
 
 ```rust
-let mut theme = viewer_ui::theme::Theme::default();
+let mut theme = tpui::theme::Theme::default();
 theme.light.text = gpui::rgb(0x345575);
 theme.metrics.list_row_height = gpui::px(32.);
-viewer_ui::theme::install(theme);
+tpui::theme::install(theme);
 ```
 
 ## GPUI fork
@@ -46,7 +46,7 @@ TPUI는 Zed v1.26.2를 기반으로 실행 파일 크기를 줄이도록 이미�
 
 | 위치 | 역할 |
 |---|---|
-| `crates/viewer-ui` | 공용 GPUI 컴포넌트와 테마 |
+| `crates/tpui` | 공용 GPUI 컴포넌트와 테마 |
 | `crates/viewer-core` | 파일 리더, 문서 모델, 테이블 질의 |
 | `crates/viewer-app` | Viewer 앱과 PDF worker |
 | `core` | 소스 코드 토큰 서비스 |

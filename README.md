@@ -2,7 +2,7 @@
 
 English | [한국어](docs-translate/ko/README.md)
 
-TPUI is a desktop UI foundation built on a fork of [GPUI](https://github.com/GreenWojaKK/zed), developed for a workspace that brings coding agents, terminal sessions and their working files together. The intended setup uses Rust/GPUI for the interface, Go for the agent core, and tmux for terminal session management.
+TPUI is a desktop UI foundation built on a fork of [GPUI](https://github.com/GreenWojaKK/zed), developed for TPFP, a workspace that brings coding agents, terminal sessions and their working files together. The intended setup uses Rust/GPUI for the interface, Go for the agent core, and tmux for terminal sessions on Linux.
 
 The aim is to keep the interface's added memory use small while several agents and development tools run alongside it.
 
@@ -19,23 +19,23 @@ The bundled `viewer-app` is the first application of this stack. It uses this fo
 
 Apps supply data and handle component events. See [Architecture](architecture.md#shared-ui-components) for component responsibilities.
 
-## Using `viewer-ui` in an app
+## Using `tpui` in an app
 
 Add it as a git dependency and pin GPUI to the same fork commit as this repository. With a different commit, GPUI is built twice and the types do not match.
 
 ```toml
 [dependencies]
-viewer-ui = { git = "https://github.com/GreenWojaKK/TPUI", rev = "<TPUI commit>" }
+tpui = { git = "https://github.com/GreenWojaKK/TPUI", rev = "<TPUI commit>" }
 gpui = { git = "https://github.com/GreenWojaKK/zed", rev = "f941f6a1c26a295c051e2a3776d9897093b3db8c" }
 ```
 
 Customize the default theme and install it before opening the first window:
 
 ```rust
-let mut theme = viewer_ui::theme::Theme::default();
+let mut theme = tpui::theme::Theme::default();
 theme.light.text = gpui::rgb(0x345575);
 theme.metrics.list_row_height = gpui::px(32.);
-viewer_ui::theme::install(theme);
+tpui::theme::install(theme);
 ```
 
 ## GPUI fork
@@ -46,7 +46,7 @@ TPUI uses [GreenWojaKK/zed](https://github.com/GreenWojaKK/zed), based on Zed v1
 
 | Location | Role |
 |---|---|
-| `crates/viewer-ui` | Reusable GPUI components and theme |
+| `crates/tpui` | Reusable GPUI components and theme |
 | `crates/viewer-core` | File readers, document models and table queries |
 | `crates/viewer-app` | Viewer application and PDF worker |
 | `core` | Source-code token service |

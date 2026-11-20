@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/viewer-app", "crates/viewer-core", "crates/viewer-ui"]
+members = ["crates/tpui", "crates/viewer-app", "crates/viewer-core"]
 
 [workspace.package]
 version = "0.1.0"
@@ -9,8 +9,8 @@ publish = false
 license = "Apache-2.0"
 
 [workspace.dependencies]
+tpui = { path = "crates/tpui" }
 viewer-core = { path = "crates/viewer-core" }
-viewer-ui = { path = "crates/viewer-ui" }
 
 # parquet and the Arrow crates used directly stay on the same arrow-rs release.
 parquet = "60.1.0"

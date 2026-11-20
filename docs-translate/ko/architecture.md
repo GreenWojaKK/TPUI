@@ -9,14 +9,14 @@ TPUI는 GPUI fork와 재사용할 UI 컴포넌트로 구성된다. 앱은 컴포
 | 컴포넌트 | 책임 |
 |---|---|
 | GPUI fork | 창, 레이아웃, 텍스트, 렌더링 |
-| [viewer-ui](../../crates/viewer-ui/src/lib.rs) | 공용 컴포넌트와 테마 |
+| [tpui](../../crates/tpui/src/lib.rs) | 공용 컴포넌트와 테마 |
 | [viewer-core](../../crates/viewer-core/src/lib.rs) | Rust·Arrow 타입을 사용하는 파일 읽기, 문서 모델, 테이블 질의 |
 | [viewer-app](../../crates/viewer-app/src/app.rs) | Viewer 상태, 상호작용, 백그라운드 작업 |
 | [tpui-core](../../core/main.go) / [tpui-pdf](../../crates/viewer-app/src/bin/tpui-pdf.rs) | Viewer의 코드 토큰 / PDF 페이지 렌더링 |
 
 ```mermaid
 flowchart TB
-    GPUI[GPUI fork] --> UI[viewer-ui]
+    GPUI[GPUI fork] --> UI[tpui]
     GPUI --> App[사용하는 앱]
     UI --> App
     UI --> Viewer[viewer-app]
@@ -24,7 +24,7 @@ flowchart TB
     Workers[코드·PDF 프로세스] --> Viewer
 ```
 
-앱과 `viewer-ui`는 타입을 공유하도록 같은 GPUI revision을 사용한다. 의존성 설정은 [README](README.md#앱에서-viewer-ui-사용하기)에 있다.
+앱과 `tpui`는 타입을 공유하도록 같은 GPUI revision을 사용한다. 의존성 설정은 [README](README.md#앱에서-tpui-사용하기)에 있다.
 
 ## 공용 UI 컴포넌트
 
@@ -40,7 +40,7 @@ flowchart TB
 
 고정 높이 행은 가상화 목록에 사용한다. 줄바꿈 행은 내용에 맞춰 높이가 늘어난다.
 
-인터페이스는 [wrap.rs](../../crates/viewer-ui/src/wrap.rs)와 [table.rs](../../crates/viewer-ui/src/table.rs)에 있다.
+인터페이스는 [wrap.rs](../../crates/tpui/src/wrap.rs)와 [table.rs](../../crates/tpui/src/table.rs)에 있다.
 
 ### 차트와 지도
 
@@ -48,7 +48,7 @@ flowchart TB
 
 지도는 `[latitude, longitude]` 좌표와 표시 영역의 중심 위도를 기준으로 하는 정거원통도법을 사용한다. 경로·marker·레이블이 맞춤 범위를 결정하며 배경 영역은 범위에 포함하지 않는다.
 
-차트·지도 인터페이스는 [viewer-ui](../../crates/viewer-ui/src/lib.rs)에서 제공한다.
+차트·지도 인터페이스는 [tpui](../../crates/tpui/src/lib.rs)에서 제공한다.
 
 ## Viewer 앱
 
@@ -107,7 +107,7 @@ Markdown·코드 뷰는 선택이나 클릭을 원본 위치에 대응시킨다.
 
 Windows에서는 명령줄 파일을 수신 중인 viewer에 전달한다. Linux에서는 새 프로세스에서 연다. PDF 렌더링과 프로세스 사용량 측정은 Windows 서비스를 사용한다.
 
-플랫폼 연동은 [editor.rs](../../crates/viewer-app/src/editor.rs), [open_requests.rs](../../crates/viewer-app/src/open_requests.rs), [input_window.rs](../../crates/viewer-ui/src/input_window.rs), [inbox.rs](../../crates/viewer-ui/src/inbox.rs)에 있다.
+플랫폼 연동은 [editor.rs](../../crates/viewer-app/src/editor.rs), [open_requests.rs](../../crates/viewer-app/src/open_requests.rs), [input_window.rs](../../crates/tpui/src/input_window.rs), [inbox.rs](../../crates/tpui/src/inbox.rs)에 있다.
 
 ## 검증
 
@@ -119,4 +119,5 @@ Windows에서는 명령줄 파일을 수신 중인 viewer에 전달한다. Linux
 cargo fmt --all
 cargo clippy --workspace --all-targets
 cargo test --workspace
+go -C core test ./...
 ```

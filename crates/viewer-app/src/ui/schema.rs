@@ -8,7 +8,7 @@ use gpui::{
     ClickEvent, Context, Div, SharedString, Stateful, Window, div, prelude::*, uniform_list,
 };
 
-use viewer_ui::theme;
+use tpui::theme;
 
 use super::style;
 

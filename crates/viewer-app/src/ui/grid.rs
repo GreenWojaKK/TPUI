@@ -19,7 +19,7 @@ use viewer_core::ColumnId;
 use crate::cell_preview::{CellKind, CellPreview};
 use crate::ui::value::CopyValue;
 use crate::worker::WindowCells;
-use viewer_ui::theme;
+use tpui::theme;
 
 use super::style;
 

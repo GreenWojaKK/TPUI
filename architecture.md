@@ -9,14 +9,14 @@ TPUI combines a GPUI fork with reusable UI components. Apps own the data and int
 | Component | Responsibility |
 |---|---|
 | GPUI fork | Windows, layout, text and rendering |
-| [viewer-ui](crates/viewer-ui/src/lib.rs) | Shared components and theme |
+| [tpui](crates/tpui/src/lib.rs) | Shared components and theme |
 | [viewer-core](crates/viewer-core/src/lib.rs) | File reading, document models and table queries using Rust and Arrow types |
 | [viewer-app](crates/viewer-app/src/app.rs) | Viewer state, interaction and background work |
 | [tpui-core](core/main.go) / [tpui-pdf](crates/viewer-app/src/bin/tpui-pdf.rs) | Code tokens / rendered PDF pages for the viewer |
 
 ```mermaid
 flowchart TB
-    GPUI[GPUI fork] --> UI[viewer-ui]
+    GPUI[GPUI fork] --> UI[tpui]
     GPUI --> App[Consumer app]
     UI --> App
     UI --> Viewer[viewer-app]
@@ -24,7 +24,7 @@ flowchart TB
     Workers[Code and PDF processes] --> Viewer
 ```
 
-Consumer apps and `viewer-ui` use the same GPUI revision to share its types. Dependency setup is in [README](README.md#using-viewer-ui-in-an-app).
+Consumer apps and `tpui` use the same GPUI revision to share its types. Dependency setup is in [README](README.md#using-tpui-in-an-app).
 
 ## Shared UI components
 
@@ -40,7 +40,7 @@ Wrapping text breaks at spaces and line breaks, splitting an overlong word betwe
 
 Fixed-height table rows support virtualized lists. Wrapping rows grow to fit their contents.
 
-The interfaces are in [wrap.rs](crates/viewer-ui/src/wrap.rs) and [table.rs](crates/viewer-ui/src/table.rs).
+The interfaces are in [wrap.rs](crates/tpui/src/wrap.rs) and [table.rs](crates/tpui/src/table.rs).
 
 ### Charts and maps
 
@@ -48,7 +48,7 @@ Charts receive computed values and report the point, cell or series under the po
 
 Maps use `[latitude, longitude]` coordinates and an equirectangular projection around the fitted region's center latitude. Routes, markers and labels determine the fitted extent; background areas do not.
 
-Chart and map interfaces are exposed by [viewer-ui](crates/viewer-ui/src/lib.rs).
+Chart and map interfaces are exposed by [tpui](crates/tpui/src/lib.rs).
 
 ## Viewer application
 
@@ -107,7 +107,7 @@ Markdown and code views map a selection or click to a source location. The contr
 
 On Windows, command-line files are forwarded to an existing listening viewer. On Linux, they open in the new process. PDF rendering and process-usage measurement use Windows services.
 
-The platform integration lives in [editor.rs](crates/viewer-app/src/editor.rs), [open_requests.rs](crates/viewer-app/src/open_requests.rs), [input_window.rs](crates/viewer-ui/src/input_window.rs) and [inbox.rs](crates/viewer-ui/src/inbox.rs).
+The platform integration lives in [editor.rs](crates/viewer-app/src/editor.rs), [open_requests.rs](crates/viewer-app/src/open_requests.rs), [input_window.rs](crates/tpui/src/input_window.rs) and [inbox.rs](crates/tpui/src/inbox.rs).
 
 ## Verification
 
@@ -119,4 +119,5 @@ Run from the repository root:
 cargo fmt --all
 cargo clippy --workspace --all-targets
 cargo test --workspace
+go -C core test ./...
 ```

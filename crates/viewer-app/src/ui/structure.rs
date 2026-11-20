@@ -11,9 +11,9 @@ use gpui::{
 };
 use viewer_core::{ColumnChunkInfo, FileStructure, SqliteObjectKind, StatValue, TableStructure};
 
-use viewer_ui::format::{format_bytes, format_count, format_quantity, format_ratio};
-use viewer_ui::table::{self, Cell, ColumnSpec};
-use viewer_ui::theme;
+use tpui::format::{format_bytes, format_count, format_quantity, format_ratio};
+use tpui::table::{self, Cell, ColumnSpec};
+use tpui::theme;
 
 pub enum StructureEvent {
     /// Selects the Row Group shown in the column table. `None` is all of them.
